@@ -83,9 +83,8 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		g.sessions = append(g.sessions, r.session)
 		added := 0
 		for _, tool := range r.tools {
-			namespaced, err := g.addTool(name, r.session, tool)
-			if err != nil {
-				log.Warn("tool skipped", "upstream", name, "tool", namespaced, "err", err)
+			if err := g.addTool(name, r.session, tool); err != nil {
+				log.Warn("tool skipped", "upstream", name, "tool", name+separator+tool.Name, "err", err)
 				continue
 			}
 			added++
@@ -164,14 +163,14 @@ func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u con
 	return r, nil
 }
 
-// addTool serves tool as a Namespaced tool and returns its name. A tool that
-// Agents or the SDK would reject is not added, and the error says why.
-func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp.Tool) (name string, err error) {
+// addTool serves tool as a Namespaced tool. A tool that Agents or the SDK
+// would reject is not added, and the error says why.
+func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp.Tool) (err error) {
 	original := tool.Name
 	namespaced := *tool
 	namespaced.Name = upstream + separator + original
 	if !validToolName.MatchString(namespaced.Name) {
-		return namespaced.Name, fmt.Errorf("name must match %s", validToolName)
+		return fmt.Errorf("name must match %s", validToolName)
 	}
 	// AddTool panics on a tool it finds invalid, such as one without an
 	// object input schema, before adding anything.
@@ -190,7 +189,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		return res, err
 	})
 	g.log.Debug("tool", "name", namespaced.Name)
-	return namespaced.Name, nil
+	return nil
 }
 
 // Serve serves MCP to one Agent over stdin/stdout until the Agent

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,12 +145,25 @@ func runFakeUpstream() int {
 			})
 	}
 	if name := os.Getenv(envFakeBadSchemaTool); name != "" {
-		schema := map[string]any{"type": "object"}
-		server.AddTool(&mcp.Tool{Name: name, InputSchema: schema},
+		// AddTool insists on an object schema, so the bad one is put into
+		// the tools/list result on its way out.
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) { return nil, nil })
-		// AddTool insists on an object schema but keeps the map, so changing
-		// it afterwards is the only way to serve a bad one.
-		schema["type"] = "string"
+		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				res, err := next(ctx, method, req)
+				if list, ok := res.(*mcp.ListToolsResult); ok {
+					for i, tool := range list.Tools {
+						if tool.Name == name {
+							bad := *tool
+							bad.InputSchema = map[string]any{"type": "string"}
+							list.Tools[i] = &bad
+						}
+					}
+				}
+				return res, err
+			}
+		})
 	}
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "fake upstream:", err)
@@ -187,14 +201,24 @@ func startFakeGateway(t *testing.T, env ...string) *gateway {
 	return startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)}), env)
 }
 
-// fakeUpstreamEntry returns a Config entry that launches the fake Upstream.
-func fakeUpstreamEntry(t *testing.T) map[string]any {
+// fakeUpstreamEntry returns a Config entry that launches the fake Upstream,
+// with env (VAR=value pairs) as the entry's env.
+func fakeUpstreamEntry(t *testing.T, env ...string) map[string]any {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]any{"command": exe, "args": []string{"-test.run=^$"}}
+	entry := map[string]any{"command": exe, "args": []string{"-test.run=^$"}}
+	if len(env) > 0 {
+		vars := map[string]string{}
+		for _, kv := range env {
+			k, v, _ := strings.Cut(kv, "=")
+			vars[k] = v
+		}
+		entry["env"] = vars
+	}
+	return entry
 }
 
 // writeConfig writes a Config with the given Upstreams and returns its path.
@@ -260,18 +284,50 @@ func runSprut(t *testing.T, env []string, args ...string) (code int, stdout, std
 	return code, out.String(), errOut.String()
 }
 
-// closeAgent closes the Agent's side (EOF on the Gateway's stdin) and returns
-// the Gateway's exit code.
-func (g *gateway) closeAgent(t *testing.T) int {
+// closeAgent closes the Agent's side (EOF on the Gateway's stdin) and checks
+// that the Gateway exits cleanly.
+func (g *gateway) closeAgent(t *testing.T) {
 	t.Helper()
 	_ = g.Agent.Close()
 	select {
 	case code := <-g.exit:
-		return code
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, g.stderr)
+		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("Gateway did not exit after EOF on stdin\nstderr:\n%s", g.stderr)
-		return -1
 	}
+}
+
+// wantTools checks that the Agent's tools are exactly want, by name.
+func (g *gateway) wantTools(t *testing.T, want ...string) {
+	t.Helper()
+	res, err := g.Agent.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var got []string
+	for _, tool := range res.Tools {
+		got = append(got, tool.Name)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("tools = %v, want %v\nstderr:\n%s", got, want, g.stderr)
+	}
+}
+
+// wantLogLine checks that some stderr line has level and contains every one
+// of parts.
+func (g *gateway) wantLogLine(t *testing.T, level string, parts ...string) {
+	t.Helper()
+	for _, line := range g.stderr.Lines() {
+		if strings.Contains(line, "level="+level+" ") &&
+			!slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) }) {
+			return
+		}
+	}
+	t.Errorf("no %s line containing all of %q; stderr:\n%s", level, parts, g.stderr)
 }
 
 // syncBuffer is a bytes.Buffer safe for concurrent use.
