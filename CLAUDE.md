@@ -4,6 +4,10 @@ Before every commit, `make check` must pass: it runs exactly what CI runs.
 
 Only `main` touches `os.Args`, env, std streams and `os.Exit`; tests live only in `internal/cli` and `internal/config`. `make lint` enforces both (`.golangci.yml`).
 
+## Library gotchas
+
+go-sdk or urfave/cli: read `docs/agents/library-gotchas.md` before working with either.
+
 ## Agent skills
 
 ### Issue tracker
