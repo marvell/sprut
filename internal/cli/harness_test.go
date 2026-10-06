@@ -29,6 +29,18 @@ const (
 	// envFakeEnvFile, if set, is a path the fake Upstream writes its
 	// environment to, one VAR=value per line.
 	envFakeEnvFile = "SPRUT_TEST_FAKE_ENVFILE"
+	// envFakeStartup, if set, makes the fake Upstream misbehave at startup:
+	// "fail" exits with an error before speaking MCP; "hang" never answers
+	// and ignores its stdin closing, so only a signal stops it.
+	envFakeStartup = "SPRUT_TEST_FAKE_STARTUP"
+	// envFakeRendezvous, if set to N:DIR, makes the fake Upstream mark its
+	// arrival in DIR and not answer until N Upstreams have arrived there.
+	envFakeRendezvous = "SPRUT_TEST_FAKE_RENDEZVOUS"
+	// envFakeExtraTools, if set, is a comma-separated list of names of
+	// further tools the fake Upstream offers, each taking no arguments and
+	// answering with the value of envFakeID.
+	envFakeExtraTools = "SPRUT_TEST_FAKE_EXTRA_TOOLS"
+	envFakeID         = "SPRUT_TEST_FAKE_ID"
 )
 
 func TestMain(m *testing.M) {
@@ -83,6 +95,22 @@ func runFakeUpstream() int {
 		}
 	}
 
+	if v := os.Getenv(envFakeRendezvous); v != "" {
+		if err := rendezvous(v); err != nil {
+			fmt.Fprintln(os.Stderr, "fake upstream:", err)
+			return 1
+		}
+	}
+
+	switch os.Getenv(envFakeStartup) {
+	case "fail":
+		fmt.Fprintln(os.Stderr, "fake upstream: failing at startup")
+		return 1
+	case "hang":
+		time.Sleep(time.Hour)
+		return 1
+	}
+
 	server := mcp.NewServer(&mcp.Implementation{Name: "fake-upstream", Version: "0.0.1"}, nil)
 	server.AddTool(echoTool, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args struct{ Text string }
@@ -101,11 +129,42 @@ func runFakeUpstream() int {
 			IsError: true,
 		}, nil
 	})
+	for name := range strings.SplitSeq(os.Getenv(envFakeExtraTools), ",") {
+		if name == "" {
+			continue
+		}
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: os.Getenv(envFakeID)}}}, nil
+			})
+	}
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "fake upstream:", err)
 		return 1
 	}
 	return 0
+}
+
+// rendezvous implements envFakeRendezvous.
+func rendezvous(v string) error {
+	n, dir, _ := strings.Cut(v, ":")
+	want, err := strconv.Atoi(n)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(os.Getpid())), nil, 0o644); err != nil {
+		return err
+	}
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		if len(entries) >= want {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // startFakeGateway runs `sprut serve` with a Config holding one Upstream,
@@ -148,9 +207,9 @@ type gateway struct {
 	exit   chan int
 }
 
-// startGateway runs `sprut serve -c configPath` with env and connects an
-// Agent to it.
-func startGateway(t *testing.T, configPath string, env []string) *gateway {
+// startGateway runs `sprut serve -c configPath` plus args with env and
+// connects an Agent to it.
+func startGateway(t *testing.T, configPath string, env []string, args ...string) *gateway {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
@@ -161,7 +220,7 @@ func startGateway(t *testing.T, configPath string, env []string) *gateway {
 
 	env = append([]string{envFakeUpstream + "=1"}, env...)
 	go func() {
-		code := cli.Run(ctx, []string{"sprut", "serve", "-c", configPath}, env,
+		code := cli.Run(ctx, append([]string{"sprut", "serve", "-c", configPath}, args...), env,
 			agentToGateway, io.MultiWriter(gatewayToAgent, g.stdout), g.stderr)
 		_ = gatewayToAgent.Close()
 		g.exit <- code

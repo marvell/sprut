@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -274,5 +276,176 @@ func TestServeConfigErrorsExit1(t *testing.T) {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
 		})
+	}
+}
+
+// toolNames lists the Agent's tools by name.
+func toolNames(t *testing.T, g *gateway) []string {
+	t.Helper()
+	res, err := g.Agent.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var names []string
+	for _, tool := range res.Tools {
+		names = append(names, tool.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// hasLogLine reports whether some stderr line has level and contains every
+// one of parts.
+func hasLogLine(g *gateway, level string, parts ...string) bool {
+	for _, line := range g.stderr.Lines() {
+		if !strings.Contains(line, "level="+level+" ") {
+			continue
+		}
+		if !slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) }) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestServeExcludesUpstreamThatFailsAtStartupAndServesTheOthers(t *testing.T) {
+	t.Parallel()
+	failing := fakeUpstreamEntry(t)
+	failing["env"] = map[string]string{envFakeStartup: "fail"}
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "failing": failing}), nil)
+
+	if got, want := toolNames(t, g), []string{"fake__echo", "fake__fail"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	if !hasLogLine(g, "WARN", "upstream=failing", "err=") {
+		t.Errorf("no WARN line with upstream=failing and err=; stderr:\n%s", g.stderr)
+	}
+	if !hasLogLine(g, "INFO", "ready=1", "failed=1", "tools=2") {
+		t.Errorf("no INFO startup summary with ready=1 failed=1 tools=2; stderr:\n%s", g.stderr)
+	}
+	if code := g.closeAgent(t); code != 0 {
+		t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, g.stderr)
+	}
+}
+
+func TestServeExcludesUpstreamThatHangsPastStartupTimeout(t *testing.T) {
+	t.Parallel()
+	hanging := fakeUpstreamEntry(t)
+	hanging["env"] = map[string]string{envFakeStartup: "hang"}
+	begin := time.Now()
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "hanging": hanging}), nil,
+		"--startup-timeout", "300ms")
+	// Well under the ~5s grace a hung Upstream gets to exit once stopped:
+	// stopping it must not hold up startup.
+	if took := time.Since(begin); took > 3*time.Second {
+		t.Errorf("startup took %s with a 300ms startup timeout", took)
+	}
+
+	if got, want := toolNames(t, g), []string{"fake__echo", "fake__fail"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	if !hasLogLine(g, "WARN", "upstream=hanging", "err=", "300ms") {
+		t.Errorf("no WARN line with upstream=hanging and an err= naming the 300ms timeout; stderr:\n%s", g.stderr)
+	}
+	if code := g.closeAgent(t); code != 0 {
+		t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, g.stderr)
+	}
+}
+
+func TestServeStartsUpstreamsConcurrently(t *testing.T) {
+	t.Parallel()
+	// Each Upstream waits for all three to be running before it answers, so
+	// started one after another the first would never become ready.
+	rendezvous := "3:" + t.TempDir()
+	upstreams := map[string]any{}
+	for _, name := range []string{"one", "two", "three"} {
+		entry := fakeUpstreamEntry(t)
+		entry["env"] = map[string]string{envFakeRendezvous: rendezvous}
+		upstreams[name] = entry
+	}
+	g := startGateway(t, writeConfig(t, upstreams), nil, "--startup-timeout", "5s")
+
+	want := []string{"one__echo", "one__fail", "three__echo", "three__fail", "two__echo", "two__fail"}
+	if got := toolNames(t, g); !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v\nstderr:\n%s", got, want, g.stderr)
+	}
+}
+
+func TestServeSkipsToolWhoseNamespacedNameBreaksTheNameRules(t *testing.T) {
+	t.Parallel()
+	fits := strings.Repeat("a", 58)    // fake__ + 58 = 64 characters
+	tooLong := strings.Repeat("b", 59) // fake__ + 59 = 65 characters
+	entry := fakeUpstreamEntry(t)
+	entry["env"] = map[string]string{envFakeExtraTools: strings.Join([]string{fits, tooLong, "has.dot"}, ",")}
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
+
+	want := []string{"fake__" + fits, "fake__echo", "fake__fail"}
+	if got := toolNames(t, g); !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	for _, skipped := range []string{"fake__" + tooLong, "fake__has.dot"} {
+		if !hasLogLine(g, "WARN", "upstream=fake", skipped) {
+			t.Errorf("no WARN line naming skipped tool %s; stderr:\n%s", skipped, g.stderr)
+		}
+	}
+	if !hasLogLine(g, "INFO", "upstream=fake", "tools=3") {
+		t.Errorf("no INFO line reporting Upstream fake ready with tools=3; stderr:\n%s", g.stderr)
+	}
+}
+
+func TestServeWithNoEnabledUpstreamsServesZeroTools(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		upstreams map[string]any
+	}{
+		{name: "empty mcpServers", upstreams: map[string]any{}},
+		{name: "all disabled", upstreams: map[string]any{
+			"off": map[string]any{"command": "sprut-test-no-such-command", "disabled": true},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			g := startGateway(t, writeConfig(t, tt.upstreams), nil)
+
+			if got := toolNames(t, g); len(got) != 0 {
+				t.Errorf("tools = %v, want none", got)
+			}
+			if !hasLogLine(g, "INFO", "ready=0", "failed=0", "tools=0") {
+				t.Errorf("no INFO startup summary with ready=0 failed=0 tools=0; stderr:\n%s", g.stderr)
+			}
+			if code := g.closeAgent(t); code != 0 {
+				t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, g.stderr)
+			}
+		})
+	}
+}
+
+func TestServeRoutesEachNamespacedToolToItsOwnUpstream(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{}
+	for _, name := range []string{"one", "two"} {
+		entry := fakeUpstreamEntry(t)
+		entry["env"] = map[string]string{envFakeExtraTools: "whoami", envFakeID: "upstream " + name}
+		upstreams[name] = entry
+	}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+
+	want := []string{"one__echo", "one__fail", "one__whoami", "two__echo", "two__fail", "two__whoami"}
+	if got := toolNames(t, g); !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	for tool, want := range map[string]string{"one__whoami": "upstream one", "two__whoami": "upstream two"} {
+		res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: tool})
+		if err != nil {
+			t.Fatalf("tools/call %s: %v", tool, err)
+		}
+		if len(res.Content) != 1 {
+			t.Fatalf("tools/call %s: content = %v, want one text", tool, res.Content)
+		}
+		if text, ok := res.Content[0].(*mcp.TextContent); !ok || text.Text != want {
+			t.Errorf("tools/call %s answered by %v, want %q", tool, res.Content[0], want)
+		}
 	}
 }

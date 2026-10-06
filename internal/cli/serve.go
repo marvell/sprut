@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	ucli "github.com/urfave/cli/v3"
 
@@ -20,6 +21,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Usage: "run the Gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
 			&ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the Config file"},
+			&ucli.DurationFlag{Name: "startup-timeout", Value: 30 * time.Second, Usage: "how long each Upstream may take to start"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			log := slog.New(slog.NewTextHandler(stderr, nil))
@@ -41,10 +43,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 				log.Warn(w.Message, "upstream", w.Upstream)
 			}
 
-			gw, err := gateway.Start(ctx, upstreams, env, version(), log)
-			if err != nil {
-				return err
-			}
+			gw := gateway.Start(ctx, upstreams, env, cmd.Duration("startup-timeout"), version(), log)
 			defer gw.Close()
 
 			// The Agent going away (EOF on stdin) or ctx being cancelled by a
