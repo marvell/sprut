@@ -19,16 +19,10 @@ jobs:
           go-version-file: go.mod
 
       - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "These files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
+        run: make fmt-check
 
       - name: go vet
-        run: go vet ./...
+        run: make vet
 
       - name: go test -race
-        run: go test -race ./...
+        run: make test
