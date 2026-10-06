@@ -10,7 +10,7 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 - **`Server.AddTool` panics** on a tool whose input schema is missing or is not `type: object` (v1.8.0). It panics before adding anything, so the Gateway recovers around it and skips the tool.
 - **`Server.Run` ends the session on stdin EOF** and drops responses that are still in flight (v1.8.0).
 - **`CommandTransport.Close`** closes the child's stdin, waits (5s by default), and then sends SIGTERM to that one process (v1.8.0). It does not use process groups, so the child's own children can outlive it.
-- **A failed `Client.Connect` closes the session before returning** (v1.8.0). Over `CommandTransport` that is the `Close` above, so a deadline on `Connect`'s ctx does not bound how long `Connect` takes to return when the child ignores stdin EOF. To enforce a deadline, stop waiting on `Connect` at the deadline and let it finish in the background.
+- **A failed `Client.Connect` closes the session before returning** (v1.8.0). Over `CommandTransport` that is the `Close` above, so a deadline on `Connect`'s ctx does not bound how long `Connect` takes to return when the child ignores stdin EOF. To enforce a deadline, stop waiting on `Connect` at the deadline and let it finish in the background, as `gateway.startUpstream` does.
 - **`Connect`'s ctx bounds only the handshake** (v1.8.0). The connection detaches from its cancellation, so a short-lived startup ctx is safe: cancelling it later leaves the session open.
 - **`Server.AddReceivingMiddleware` can rewrite any outgoing result** (v1.8.0). Use it in a fake Upstream to serve what the SDK's own API refuses to register, such as a tool whose input schema is not an object.
 
