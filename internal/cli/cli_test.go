@@ -10,6 +10,7 @@ import (
 )
 
 func TestBareSprutPrintsUsageToStderrAndExits2(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 
 	code := cli.Run(context.Background(), []string{"sprut"}, nil, strings.NewReader(""), &stdout, &stderr)

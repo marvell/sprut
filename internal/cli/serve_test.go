@@ -17,8 +17,8 @@ import (
 )
 
 func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
-	config := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)})
-	g := startGateway(t, config, nil)
+	t.Parallel()
+	g := startFakeGateway(t)
 
 	res, err := g.Agent.ListTools(context.Background(), nil)
 	if err != nil {
@@ -49,8 +49,8 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 }
 
 func TestServeRoutesToolCallsToUpstreamAndReturnsResultUnchanged(t *testing.T) {
-	config := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)})
-	g := startGateway(t, config, nil)
+	t.Parallel()
+	g := startFakeGateway(t)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -89,8 +89,8 @@ func TestServeRoutesToolCallsToUpstreamAndReturnsResultUnchanged(t *testing.T) {
 }
 
 func TestServeIdentifiesAsSprutAndAdvertisesOnlyTools(t *testing.T) {
-	config := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)})
-	g := startGateway(t, config, nil)
+	t.Parallel()
+	g := startFakeGateway(t)
 
 	init := g.Agent.InitializeResult()
 	if init.ServerInfo == nil || init.ServerInfo.Name != "sprut" || init.ServerInfo.Version == "" {
@@ -102,9 +102,9 @@ func TestServeIdentifiesAsSprutAndAdvertisesOnlyTools(t *testing.T) {
 }
 
 func TestServeShutsDownGatewayAndUpstreamOnStdinEOF(t *testing.T) {
+	t.Parallel()
 	pidFile := filepath.Join(t.TempDir(), "upstream.pid")
-	config := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)})
-	g := startGateway(t, config, []string{envFakePIDFile + "=" + pidFile})
+	g := startFakeGateway(t, envFakePIDFile+"="+pidFile)
 
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -124,8 +124,8 @@ func TestServeShutsDownGatewayAndUpstreamOnStdinEOF(t *testing.T) {
 }
 
 func TestServeLogsLogfmtToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
-	config := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)})
-	g := startGateway(t, config, nil)
+	t.Parallel()
+	g := startFakeGateway(t)
 	ctx := context.Background()
 	if _, err := g.Agent.ListTools(ctx, nil); err != nil {
 		t.Fatal(err)

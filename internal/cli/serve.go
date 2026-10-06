@@ -34,7 +34,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			}
 			upstreams, err := config.Parse(data)
 			if err != nil {
-				return fmt.Errorf("%s: %w", path, err)
+				return fmt.Errorf("config %s: %w", path, err)
 			}
 
 			gw, err := gateway.Start(ctx, upstreams, env, version(), log)

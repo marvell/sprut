@@ -19,7 +19,6 @@ const separator = "__"
 
 // Gateway is a started set of Upstreams and the MCP server exposing their tools.
 type Gateway struct {
-	impl     *mcp.Implementation
 	server   *mcp.Server
 	sessions []*mcp.ClientSession // one per started Upstream
 	log      *slog.Logger
@@ -30,15 +29,15 @@ type Gateway struct {
 func Start(ctx context.Context, upstreams []config.Upstream, env []string, version string, log *slog.Logger) (*Gateway, error) {
 	impl := &mcp.Implementation{Name: "sprut", Version: version}
 	g := &Gateway{
-		impl: impl,
 		server: mcp.NewServer(impl, &mcp.ServerOptions{
 			// Advertise only tools; the tool list is fixed for the session.
 			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		}),
 		log: log,
 	}
+	client := mcp.NewClient(impl, nil)
 	for _, u := range upstreams {
-		if err := g.startUpstream(ctx, u, env); err != nil {
+		if err := g.startUpstream(ctx, client, u, env); err != nil {
 			g.Close()
 			return nil, fmt.Errorf("upstream %s: %w", u.Name, err)
 		}
@@ -46,10 +45,9 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, versi
 	return g, nil
 }
 
-func (g *Gateway) startUpstream(ctx context.Context, u config.Upstream, env []string) error {
+func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) error {
 	cmd := exec.Command(u.Command, u.Args...)
 	cmd.Env = env
-	client := mcp.NewClient(g.impl, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return err

@@ -2,9 +2,9 @@
 package config
 
 import (
+	"cmp"
 	"encoding/json"
-	"fmt"
-	"sort"
+	"slices"
 )
 
 // Upstream is one resolved Upstream definition from the Config.
@@ -25,12 +25,12 @@ type file struct {
 func Parse(data []byte) ([]Upstream, error) {
 	var f file
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+		return nil, err
 	}
 	upstreams := make([]Upstream, 0, len(f.MCPServers))
 	for name, s := range f.MCPServers {
 		upstreams = append(upstreams, Upstream{Name: name, Command: s.Command, Args: s.Args})
 	}
-	sort.Slice(upstreams, func(i, j int) bool { return upstreams[i].Name < upstreams[j].Name })
+	slices.SortFunc(upstreams, func(a, b Upstream) int { return cmp.Compare(a.Name, b.Name) })
 	return upstreams, nil
 }

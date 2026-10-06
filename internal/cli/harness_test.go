@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -52,19 +51,17 @@ var (
 			"echoed": map[string]any{"type": "string"},
 		},
 	}
-	fakeTools = []*mcp.Tool{
-		{
-			Name:         "echo",
-			Title:        "Echo",
-			Description:  "Echoes its text argument back.",
-			InputSchema:  echoInputSchema,
-			OutputSchema: echoOutputSchema,
-		},
-		{
-			Name:        "fail",
-			Description: "Always returns an isError result.",
-			InputSchema: map[string]any{"type": "object"},
-		},
+	echoTool = &mcp.Tool{
+		Name:         "echo",
+		Title:        "Echo",
+		Description:  "Echoes its text argument back.",
+		InputSchema:  echoInputSchema,
+		OutputSchema: echoOutputSchema,
+	}
+	failTool = &mcp.Tool{
+		Name:        "fail",
+		Description: "Always returns an isError result.",
+		InputSchema: map[string]any{"type": "object"},
 	}
 )
 
@@ -77,7 +74,7 @@ func runFakeUpstream() int {
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "fake-upstream", Version: "0.0.1"}, nil)
-	server.AddTool(fakeTools[0], func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	server.AddTool(echoTool, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args struct{ Text string }
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 			return nil, err
@@ -88,7 +85,7 @@ func runFakeUpstream() int {
 			Meta:              mcp.Meta{"fake/trace": "abc"},
 		}, nil
 	})
-	server.AddTool(fakeTools[1], func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	server.AddTool(failTool, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "it failed"}},
 			IsError: true,
@@ -99,6 +96,13 @@ func runFakeUpstream() int {
 		return 1
 	}
 	return 0
+}
+
+// startFakeGateway runs `sprut serve` with a Config holding one Upstream,
+// "fake", launched with env added to its environment.
+func startFakeGateway(t *testing.T, env ...string) *gateway {
+	t.Helper()
+	return startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t)}), env)
 }
 
 // fakeUpstreamEntry returns a Config entry that launches the fake Upstream.
@@ -197,10 +201,8 @@ func (b *syncBuffer) String() string {
 
 func (b *syncBuffer) Lines() []string {
 	var lines []string
-	sc := bufio.NewScanner(strings.NewReader(b.String()))
-	sc.Buffer(nil, 16<<20)
-	for sc.Scan() {
-		lines = append(lines, sc.Text())
+	for line := range strings.Lines(b.String()) {
+		lines = append(lines, strings.TrimSuffix(line, "\n"))
 	}
 	return lines
 }
