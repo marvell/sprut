@@ -1,0 +1,55 @@
+# Mechanical checks for the seam rules of the Sprut v0.1 spec (the Linear
+# project description; see docs/agents/issue-tracker.md). Run with `make lint`.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - forbidigo
+
+  settings:
+    forbidigo:
+      # Match by package path, so an aliased import of os is still caught.
+      analyze-types: true
+      forbid:
+        - pattern: ^os\.(Args|Environ|Getenv|LookupEnv|Stdin|Stdout|Stderr|Exit)$
+          pkg: ^os$
+          msg: "seam 1 owns the process boundary: only main may touch it; take args, env and streams as parameters of cli.Run instead"
+
+    depguard:
+      rules:
+        tests-at-the-seams:
+          # Strict: anything not allowed is a breach, so a new internal
+          # package is covered too.
+          list-mode: strict
+          files:
+            - $test
+          allow:
+            - $gostd
+            - github.com/modelcontextprotocol/go-sdk
+            - github.com/marvell/sprut/internal/cli
+            - github.com/marvell/sprut/internal/config
+          deny:
+            # Already blocked by strict mode; listed for the explanatory message.
+            - pkg: github.com/marvell/sprut/internal/gateway
+              desc: "tests live at the two seams: of this module, import only internal/cli and internal/config, never internal/gateway"
+        tests-only-in-seam-packages:
+          # A white-box test inside another package needs no import to reach
+          # its internals, so catch it by its import of testing instead.
+          files:
+            - $test
+            - "!**/internal/cli/**"
+            - "!**/internal/config/**"
+          deny:
+            - pkg: testing
+              desc: "tests live at the two seams: test files belong in internal/cli or internal/config only"
+
+  exclusions:
+    rules:
+      # main wires the process boundary into cli.Run; the fake Upstream in
+      # the tests reads its env and exits.
+      - path: ^main\.go$
+        linters: [forbidigo]
+      - path: _test\.go$
+        linters: [forbidigo]

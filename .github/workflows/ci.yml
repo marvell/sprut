@@ -24,5 +24,8 @@ jobs:
       - name: go vet
         run: make vet
 
+      - name: golangci-lint (seam rules)
+        run: make lint
+
       - name: go test -race
         run: make test
