@@ -106,9 +106,9 @@ func TestParse(t *testing.T) {
 				{Name: "remote", Transport: config.HTTP, URL: "https://example.com/mcp"},
 			},
 			warnings: []config.Warning{
-				{Upstream: "local", Message: `field "headers" does not apply to a stdio upstream; ignored`},
-				{Upstream: "remote", Message: `field "args" does not apply to an http upstream; ignored`},
-				{Upstream: "remote", Message: `field "env" does not apply to an http upstream; ignored`},
+				{Upstream: "local", Message: `field "headers" does not apply to stdio upstreams; ignored`},
+				{Upstream: "remote", Message: `field "args" does not apply to http upstreams; ignored`},
+				{Upstream: "remote", Message: `field "env" does not apply to http upstreams; ignored`},
 			},
 		},
 		{

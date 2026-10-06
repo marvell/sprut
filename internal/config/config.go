@@ -119,22 +119,32 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		typ      string
 		disabled bool
 	)
-	for _, f := range []struct {
-		name string
-		dst  any
-		want string
+	// known are the fields of an entry, by the transport they apply to ("" for
+	// every entry).
+	known := map[string]struct {
+		transport Transport
+		dst       any
+		want      string
 	}{
-		{"type", &typ, "a string"},
-		{"disabled", &disabled, "a boolean"},
-		{"command", &u.Command, "a string"},
-		{"args", &u.Args, "an array of strings"},
-		{"env", &u.Env, "an object of strings"},
-		{"url", &u.URL, "a string"},
-		{"headers", &u.Headers, "an object of strings"},
-	} {
-		if v, ok := fields[f.name]; ok {
-			if err := json.Unmarshal(v, f.dst); err != nil {
-				return nil, nil, fmt.Errorf("%q must be %s", f.name, f.want)
+		"type":     {"", &typ, "a string"},
+		"disabled": {"", &disabled, "a boolean"},
+		"command":  {"", &u.Command, "a string"},
+		"url":      {"", &u.URL, "a string"},
+		"args":     {Stdio, &u.Args, "an array of strings"},
+		"env":      {Stdio, &u.Env, "an object of strings"},
+		"headers":  {HTTP, &u.Headers, "an object of strings"},
+	}
+	decode := func(name string) error {
+		f := known[name]
+		if v, ok := fields[name]; ok && json.Unmarshal(v, f.dst) != nil {
+			return fmt.Errorf("%q must be %s", name, f.want)
+		}
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(known)) {
+		if known[name].transport == "" {
+			if err := decode(name); err != nil {
+				return nil, nil, err
 			}
 		}
 	}
@@ -144,7 +154,8 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		return nil, nil, nil
 	}
 
-	switch typ {
+	u.Transport = Transport(typ)
+	switch u.Transport {
 	case "":
 		switch {
 		case u.Command != "" && u.URL != "":
@@ -156,42 +167,35 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		default:
 			return nil, nil, errors.New(`needs "command" (stdio) or "url" (http)`)
 		}
-	case string(Stdio):
-		if u.Command == "" || u.URL != "" {
-			return nil, nil, errors.New(`type "stdio" needs "command" and no "url"`)
-		}
-		u.Transport = Stdio
-	case string(HTTP):
-		if u.URL == "" || u.Command != "" {
-			return nil, nil, errors.New(`type "http" needs "url" and no "command"`)
-		}
-		u.Transport = HTTP
+	case Stdio, HTTP:
 	case "sse":
 		return nil, []string{"SSE transport is not supported; upstream skipped"}, nil
 	default:
 		return nil, nil, fmt.Errorf(`unknown type %q, want "stdio", "http" or "sse"`, typ)
 	}
+	set := map[string]bool{"command": u.Command != "", "url": u.URL != ""}
+	need, other := "command", "url"
+	if u.Transport == HTTP {
+		need, other = other, need
+	}
+	if !set[need] || set[other] {
+		return nil, nil, fmt.Errorf("type %q needs %q and no %q", u.Transport, need, other)
+	}
 
 	var warnings []string
-	for _, field := range slices.Sorted(maps.Keys(fields)) {
-		switch field {
-		case "type", "disabled", "command", "url":
-		case "args", "env":
-			if u.Transport == HTTP {
-				warnings = append(warnings, fmt.Sprintf("field %q does not apply to an http upstream; ignored", field))
-			}
-		case "headers":
-			if u.Transport == Stdio {
-				warnings = append(warnings, fmt.Sprintf("field %q does not apply to a stdio upstream; ignored", field))
-			}
+	for _, name := range slices.Sorted(maps.Keys(fields)) {
+		f, ok := known[name]
+		switch {
+		case !ok:
+			warnings = append(warnings, fmt.Sprintf("unknown field %q ignored", name))
+		case f.transport == "":
+		case f.transport != u.Transport:
+			warnings = append(warnings, fmt.Sprintf("field %q does not apply to %s upstreams; ignored", name, u.Transport))
 		default:
-			warnings = append(warnings, fmt.Sprintf("unknown field %q ignored", field))
+			if err := decode(name); err != nil {
+				return nil, nil, err
+			}
 		}
-	}
-	if u.Transport == Stdio {
-		u.Headers = nil
-	} else {
-		u.Args, u.Env = nil, nil
 	}
 
 	if missing := interpolate(&u, lookupEnv); len(missing) > 0 {
@@ -206,7 +210,7 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 }
 
 // varRef is a ${VAR} reference.
-var varRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+var varRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // interpolate replaces ${VAR} references in the fields that allow them (in
 // env and headers, only the values) and returns the names of unset variables, sorted.
@@ -214,7 +218,7 @@ func interpolate(u *Upstream, lookupEnv LookupEnv) []string {
 	missing := map[string]bool{}
 	expand := func(s string) string {
 		return varRef.ReplaceAllStringFunc(s, func(ref string) string {
-			name := varRef.FindStringSubmatch(ref)[1]
+			name := ref[len("${") : len(ref)-len("}")]
 			v, ok := lookupEnv(name)
 			if !ok {
 				missing[name] = true
