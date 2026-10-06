@@ -14,7 +14,7 @@ Each Linear project holds exactly one spec, and that spec is the **project descr
 ## Conventions
 
 - **Create an issue**: `save_issue` with `team: "Personal"`, `project: <current project>`, `title`, `description` (Markdown, literal newlines).
-- **Read an issue**: `get_issue` with the identifier (e.g. `P-123`), plus `list_comments` for the conversation.
+- **Read an issue**: `get_issue` with the identifier (e.g. `P-123`) and `includeRelations: true`, plus `list_comments` for the conversation.
 - **List issues**: `list_issues` with `project: <current project>` and `label` / `state` filters.
 - **Make an issue a sub-issue of a parent**: `save_issue` with `parentId: <parent>`.
 - **Comment on an issue**: `save_comment` on the issue.
@@ -34,7 +34,13 @@ Statuses in Personal: Backlog, Todo, In Progress, Waiting, Done, Canceled, Dupli
 
 ## When a skill says "fetch the relevant ticket"
 
-`get_issue` with the identifier (e.g. `P-123`), then `list_comments`.
+A ticket's context has three parts. Fetch all of them:
+
+1. **The ticket**: read the issue (see Conventions).
+2. **The spec**: fetch the spec (above) of the issue's `project`.
+3. **Out-of-scope work**: the issues in the ticket's `blocks` relations. These are later tickets built on this one, so what they cover is deferred work, out of scope here. Their titles usually suffice; `get_issue` one whose title leaves its scope unclear.
+
+When a skill dispatches a subagent that needs ticket context (e.g. `/code-review`'s Spec sub-agent), the identifier is the whole hand-off: pass it with a pointer to this section, and the subagent fetches all three parts itself.
 
 ## Wayfinding operations
 
