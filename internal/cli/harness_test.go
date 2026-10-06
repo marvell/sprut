@@ -163,7 +163,7 @@ func startGateway(t *testing.T, configPath string, env []string) *gateway {
 	go func() {
 		code := cli.Run(ctx, []string{"sprut", "serve", "-c", configPath}, env,
 			agentToGateway, io.MultiWriter(gatewayToAgent, g.stdout), g.stderr)
-		gatewayToAgent.Close()
+		_ = gatewayToAgent.Close()
 		g.exit <- code
 	}()
 
@@ -173,7 +173,7 @@ func startGateway(t *testing.T, configPath string, env []string) *gateway {
 		t.Fatalf("Agent failed to connect: %v\nstderr:\n%s", err, g.stderr)
 	}
 	g.Agent = session
-	t.Cleanup(func() { session.Close() })
+	t.Cleanup(func() { _ = session.Close() })
 	return g
 }
 
@@ -192,7 +192,7 @@ func runSprut(t *testing.T, env []string, args ...string) (code int, stdout, std
 // the Gateway's exit code.
 func (g *gateway) closeAgent(t *testing.T) int {
 	t.Helper()
-	g.Agent.Close()
+	_ = g.Agent.Close()
 	select {
 	case code := <-g.exit:
 		return code

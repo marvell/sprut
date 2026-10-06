@@ -3,7 +3,7 @@
 version: "2"
 
 linters:
-  default: none
+  default: standard
   enable:
     - depguard
     - forbidigo
@@ -13,7 +13,7 @@ linters:
       # Match by package path, so an aliased import of os is still caught.
       analyze-types: true
       forbid:
-        - pattern: ^os\.(Args|Environ|Getenv|LookupEnv|Stdin|Stdout|Stderr|Exit)$
+        - pattern: ^os\.(Args|Environ|Getenv|LookupEnv|ExpandEnv|Setenv|Unsetenv|Clearenv|UserHomeDir|UserConfigDir|UserCacheDir|Stdin|Stdout|Stderr|Exit)$
           pkg: ^os$
           msg: "seam 1 owns the process boundary: only main may touch it; take args, env and streams as parameters of cli.Run instead"
 

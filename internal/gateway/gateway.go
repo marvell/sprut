@@ -103,7 +103,8 @@ func (g *Gateway) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) 
 // Close shuts every Upstream down.
 func (g *Gateway) Close() {
 	for _, s := range g.sessions {
-		s.Close()
+		// An Upstream stopped by a signal reports an error; shutdown goes on.
+		_ = s.Close()
 	}
 }
 

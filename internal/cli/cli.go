@@ -41,10 +41,10 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 	var exitErr ucli.ExitCoder
 	if errors.As(err, &exitErr) {
 		if msg := exitErr.Error(); msg != "" {
-			fmt.Fprintln(stderr, msg)
+			_, _ = fmt.Fprintln(stderr, msg)
 		}
 		return exitErr.ExitCode()
 	}
-	fmt.Fprintln(stderr, "sprut:", err)
+	_, _ = fmt.Fprintln(stderr, "sprut:", err)
 	return 1
 }
