@@ -27,10 +27,6 @@ const separator = "__"
 // doesn't match is skipped, never truncated or renamed.
 var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
-func namespace(upstream, tool string) string {
-	return upstream + separator + tool
-}
-
 // Gateway is a started set of Upstreams and the MCP server exposing their tools.
 type Gateway struct {
 	server   *mcp.Server
@@ -54,7 +50,7 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 	}
 	client := mcp.NewClient(impl, nil)
 
-	started := make([]*started, len(upstreams))
+	results := make([]*ready, len(upstreams))
 	var (
 		wg       sync.WaitGroup
 		attempts int
@@ -71,7 +67,7 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 				log.Warn("upstream failed; skipped", "upstream", u.Name, "err", err)
 				return
 			}
-			started[i] = s
+			results[i] = s
 		})
 	}
 	wg.Wait()
@@ -79,27 +75,36 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 	// Tools are added in Config order, so the tool list doesn't depend on
 	// which Upstream was quickest.
 	tools := 0
-	for i, s := range started {
-		if s == nil {
+	for i, r := range results {
+		if r == nil {
 			continue
 		}
-		g.sessions = append(g.sessions, s.session)
-		for _, tool := range s.tools {
-			g.addTool(upstreams[i].Name, s.session, tool)
+		name := upstreams[i].Name
+		g.sessions = append(g.sessions, r.session)
+		added := 0
+		for _, tool := range r.tools {
+			namespaced, err := g.addTool(name, r.session, tool)
+			if err != nil {
+				log.Warn("tool skipped", "upstream", name, "tool", namespaced, "err", err)
+				continue
+			}
+			added++
 		}
-		tools += len(s.tools)
+		log.Info("upstream ready", "upstream", name, "tools", added,
+			"protocol", r.session.InitializeResult().ProtocolVersion)
+		tools += added
 	}
 	log.Info("gateway started", "ready", len(g.sessions), "failed", attempts-len(g.sessions), "tools", tools)
 	return g
 }
 
-// started is an Upstream that is connected and has listed its tools.
-type started struct {
+// ready is an Upstream that is connected and has listed its tools.
+type ready struct {
 	session *mcp.ClientSession
 	tools   []*mcp.Tool
 }
 
-func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, timeout time.Duration) (*started, error) {
+func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, timeout time.Duration) (*ready, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -108,34 +113,34 @@ func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u confi
 	// grace to exit. Startup gives up at the deadline instead; Close waits
 	// for the stopping to finish.
 	type result struct {
-		s   *started
+		r   *ready
 		err error
 	}
 	done := make(chan result) // unbuffered: a result is either taken or left
 	g.starting.Go(func() {
-		s, err := g.connectUpstream(ctx, client, u, env)
+		r, err := g.connectUpstream(ctx, client, u, env)
 		select {
-		case done <- result{s, err}:
+		case done <- result{r, err}:
 		case <-ctx.Done(): // given up on
-			if s != nil {
-				_ = s.session.Close()
+			if r != nil {
+				_ = r.session.Close()
 			}
 		}
 	})
 
-	var r result
+	var res result
 	select {
-	case r = <-done:
+	case res = <-done:
 	case <-ctx.Done():
-		r.err = ctx.Err()
+		res.err = ctx.Err()
 	}
-	if r.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		r.err = fmt.Errorf("startup timed out after %s", timeout)
+	if res.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		res.err = fmt.Errorf("startup timed out after %s", timeout)
 	}
-	return r.s, r.err
+	return res.r, res.err
 }
 
-func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) (*started, error) {
+func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) (*ready, error) {
 	cmd := exec.Command(u.Command, u.Args...)
 	// Config env is layered on top of the inherited environment: exec uses
 	// the last value of a duplicated key.
@@ -148,28 +153,33 @@ func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u con
 		return nil, err
 	}
 
-	s := &started{session: session}
+	r := &ready{session: session}
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			_ = session.Close()
 			return nil, fmt.Errorf("listing tools: %w", err)
 		}
-		if name := namespace(u.Name, tool.Name); !validToolName.MatchString(name) {
-			g.log.Warn("tool name not accepted by agents; tool skipped", "upstream", u.Name,
-				"tool", name, "want", validToolName)
-			continue
-		}
-		s.tools = append(s.tools, tool)
+		r.tools = append(r.tools, tool)
 	}
-	g.log.Info("upstream ready", "upstream", u.Name, "tools", len(s.tools),
-		"protocol", session.InitializeResult().ProtocolVersion)
-	return s, nil
+	return r, nil
 }
 
-func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp.Tool) {
+// addTool serves tool as a Namespaced tool and returns its name. A tool that
+// Agents or the SDK would reject is not added, and the error says why.
+func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp.Tool) (name string, err error) {
 	original := tool.Name
 	namespaced := *tool
-	namespaced.Name = namespace(upstream, original)
+	namespaced.Name = upstream + separator + original
+	if !validToolName.MatchString(namespaced.Name) {
+		return namespaced.Name, fmt.Errorf("name must match %s", validToolName)
+	}
+	// AddTool panics on a tool it finds invalid, such as one without an
+	// object input schema, before adding anything.
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%v", p)
+		}
+	}()
 	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
 		if res != nil {
@@ -180,6 +190,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		return res, err
 	})
 	g.log.Debug("tool", "name", namespaced.Name)
+	return namespaced.Name, nil
 }
 
 // Serve serves MCP to one Agent over stdin/stdout until the Agent

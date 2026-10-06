@@ -449,3 +449,37 @@ func TestServeRoutesEachNamespacedToolToItsOwnUpstream(t *testing.T) {
 		}
 	}
 }
+
+func TestServeSkipsToolWithoutAnObjectInputSchema(t *testing.T) {
+	t.Parallel()
+	entry := fakeUpstreamEntry(t)
+	entry["env"] = map[string]string{envFakeBadSchemaTool: "bad"}
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
+
+	if got, want := toolNames(t, g), []string{"fake__echo", "fake__fail"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	if !hasLogLine(g, "WARN", "upstream=fake", "fake__bad") {
+		t.Errorf("no WARN line naming skipped tool fake__bad; stderr:\n%s", g.stderr)
+	}
+}
+
+func TestServeRejectsNonPositiveStartupTimeoutAsUsageError(t *testing.T) {
+	t.Parallel()
+	config := writeConfig(t, map[string]any{})
+	for _, timeout := range []string{"0s", "-1s"} {
+		t.Run(timeout, func(t *testing.T) {
+			t.Parallel()
+			code, stdout, stderr := runSprut(t, nil, "serve", "-c", config, "--startup-timeout", timeout)
+			if code != 2 {
+				t.Errorf("exit code = %d, want 2", code)
+			}
+			if !strings.Contains(stderr, "startup-timeout") {
+				t.Errorf("stderr does not name the flag:\n%s", stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+		})
+	}
+}

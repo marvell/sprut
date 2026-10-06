@@ -24,6 +24,12 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			&ucli.DurationFlag{Name: "startup-timeout", Value: 30 * time.Second, Usage: "how long each Upstream may take to start"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
+			// Checked here rather than by a flag Validator, which urfave/cli
+			// reports with help on stdout and exit code 1.
+			startupTimeout := cmd.Duration("startup-timeout")
+			if startupTimeout <= 0 {
+				return ucli.Exit(fmt.Sprintf("--startup-timeout must be positive, got %s", startupTimeout), 2)
+			}
 			log := slog.New(slog.NewTextHandler(stderr, nil))
 
 			lookupEnv := lookupIn(env)
@@ -43,7 +49,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 				log.Warn(w.Message, "upstream", w.Upstream)
 			}
 
-			gw := gateway.Start(ctx, upstreams, env, cmd.Duration("startup-timeout"), version(), log)
+			gw := gateway.Start(ctx, upstreams, env, startupTimeout, version(), log)
 			defer gw.Close()
 
 			// The Agent going away (EOF on stdin) or ctx being cancelled by a

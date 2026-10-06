@@ -40,7 +40,12 @@ const (
 	// further tools the fake Upstream offers, each taking no arguments and
 	// answering with the value of envFakeID.
 	envFakeExtraTools = "SPRUT_TEST_FAKE_EXTRA_TOOLS"
-	envFakeID         = "SPRUT_TEST_FAKE_ID"
+	// envFakeID is what the extra tools answer with, so a test can tell
+	// which Upstream answered.
+	envFakeID = "SPRUT_TEST_FAKE_ID"
+	// envFakeBadSchemaTool, if set, is the name of one more tool, whose input
+	// schema is not an object schema.
+	envFakeBadSchemaTool = "SPRUT_TEST_FAKE_BAD_SCHEMA_TOOL"
 )
 
 func TestMain(m *testing.M) {
@@ -137,6 +142,14 @@ func runFakeUpstream() int {
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: os.Getenv(envFakeID)}}}, nil
 			})
+	}
+	if name := os.Getenv(envFakeBadSchemaTool); name != "" {
+		schema := map[string]any{"type": "object"}
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: schema},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) { return nil, nil })
+		// AddTool insists on an object schema but keeps the map, so changing
+		// it afterwards is the only way to serve a bad one.
+		schema["type"] = "string"
 	}
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "fake upstream:", err)
