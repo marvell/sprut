@@ -1,3 +1,7 @@
+## Checks
+
+Before every commit, `make check` must pass: it runs exactly what CI runs.
+
 ## Agent skills
 
 ### Issue tracker
