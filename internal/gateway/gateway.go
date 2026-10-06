@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os/exec"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -37,6 +39,10 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, versi
 	}
 	client := mcp.NewClient(impl, nil)
 	for _, u := range upstreams {
+		if u.Transport != config.Stdio {
+			log.Warn("HTTP transport is not supported yet; upstream skipped", "upstream", u.Name)
+			continue
+		}
 		if err := g.startUpstream(ctx, client, u, env); err != nil {
 			g.Close()
 			return nil, fmt.Errorf("upstream %s: %w", u.Name, err)
@@ -47,7 +53,12 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, versi
 
 func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) error {
 	cmd := exec.Command(u.Command, u.Args...)
-	cmd.Env = env
+	// Config env is layered on top of the inherited environment: exec uses
+	// the last value of a duplicated key.
+	cmd.Env = slices.Clone(env)
+	for _, k := range slices.Sorted(maps.Keys(u.Env)) {
+		cmd.Env = append(cmd.Env, k+"="+u.Env[k])
+	}
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return err

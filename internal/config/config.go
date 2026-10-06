@@ -2,35 +2,250 @@
 package config
 
 import (
-	"cmp"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
+)
+
+// Transport is how the Gateway talks to an Upstream.
+type Transport string
+
+const (
+	Stdio Transport = "stdio"
+	HTTP  Transport = "http"
 )
 
 // Upstream is one resolved Upstream definition from the Config.
 type Upstream struct {
-	Name    string
+	Name      string
+	Transport Transport
+
+	// stdio
 	Command string
 	Args    []string
+	Env     map[string]string // layered on top of the inherited environment
+
+	// HTTP
+	URL     string
+	Headers map[string]string
 }
 
-type file struct {
-	MCPServers map[string]struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
-	} `json:"mcpServers"`
+// Warning is a problem in the Config that does not stop the Gateway.
+type Warning struct {
+	Upstream string
+	Message  string
 }
 
-// Parse parses Config bytes into Upstreams, ordered by name.
-func Parse(data []byte) ([]Upstream, error) {
-	var f file
+// LookupEnv looks up an environment variable, like os.LookupEnv.
+type LookupEnv func(string) (string, bool)
+
+// Path resolves which Config file to read: flag (from -c/--config), then
+// $SPRUT_CONFIG, then $XDG_CONFIG_HOME/sprut/config.json, then
+// ~/.config/sprut/config.json.
+func Path(flag string, lookupEnv LookupEnv) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	if p, _ := lookupEnv("SPRUT_CONFIG"); p != "" {
+		return p, nil
+	}
+	// The XDG spec says relative paths are invalid and must be ignored.
+	if dir, _ := lookupEnv("XDG_CONFIG_HOME"); filepath.IsAbs(dir) {
+		return filepath.Join(dir, "sprut", "config.json"), nil
+	}
+	if home, _ := lookupEnv("HOME"); home != "" {
+		return filepath.Join(home, ".config", "sprut", "config.json"), nil
+	}
+	return "", errors.New("cannot locate the config: HOME is not set; use -c PATH or SPRUT_CONFIG")
+}
+
+// validName keeps Namespaced tool names unambiguous: an Upstream name never
+// contains the "__" separator.
+var validName = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// Parse parses Config bytes into the Upstreams to start, ordered by name,
+// plus warnings about the Config. lookupEnv resolves ${VAR} references.
+func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
+	var f struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, err
+		return nil, nil, jsonError(data, err)
 	}
-	upstreams := make([]Upstream, 0, len(f.MCPServers))
-	for name, s := range f.MCPServers {
-		upstreams = append(upstreams, Upstream{Name: name, Command: s.Command, Args: s.Args})
+
+	var (
+		upstreams []Upstream
+		warnings  []Warning
+		errs      []error
+	)
+	for _, name := range slices.Sorted(maps.Keys(f.MCPServers)) {
+		u, msgs, err := parseUpstream(name, f.MCPServers[name], lookupEnv)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("upstream %q: %w", name, err))
+			continue
+		}
+		for _, msg := range msgs {
+			warnings = append(warnings, Warning{Upstream: name, Message: msg})
+		}
+		if u != nil {
+			upstreams = append(upstreams, *u)
+		}
 	}
-	slices.SortFunc(upstreams, func(a, b Upstream) int { return cmp.Compare(a.Name, b.Name) })
-	return upstreams, nil
+	if err := errors.Join(errs...); err != nil {
+		return nil, nil, err
+	}
+	return upstreams, warnings, nil
+}
+
+// parseUpstream parses one Config entry. It returns a nil Upstream, and
+// warnings saying why, when the entry is valid but must not be started.
+func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upstream, []string, error) {
+	if !validName.MatchString(name) {
+		return nil, nil, fmt.Errorf("invalid name, must match %s", validName)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, nil, errors.New("must be a JSON object")
+	}
+
+	u := Upstream{Name: name}
+	var (
+		typ      string
+		disabled bool
+	)
+	for _, f := range []struct {
+		name string
+		dst  any
+		want string
+	}{
+		{"type", &typ, "a string"},
+		{"disabled", &disabled, "a boolean"},
+		{"command", &u.Command, "a string"},
+		{"args", &u.Args, "an array of strings"},
+		{"env", &u.Env, "an object of strings"},
+		{"url", &u.URL, "a string"},
+		{"headers", &u.Headers, "an object of strings"},
+	} {
+		if v, ok := fields[f.name]; ok {
+			if err := json.Unmarshal(v, f.dst); err != nil {
+				return nil, nil, fmt.Errorf("%q must be %s", f.name, f.want)
+			}
+		}
+	}
+	// A disabled entry is not checked further, so that disabling is a way to
+	// set aside an entry that is broken or whose variables are unset.
+	if disabled {
+		return nil, nil, nil
+	}
+
+	switch typ {
+	case "":
+		switch {
+		case u.Command != "" && u.URL != "":
+			return nil, nil, errors.New(`has both "command" and "url"; set only one`)
+		case u.Command != "":
+			u.Transport = Stdio
+		case u.URL != "":
+			u.Transport = HTTP
+		default:
+			return nil, nil, errors.New(`needs "command" (stdio) or "url" (http)`)
+		}
+	case string(Stdio):
+		if u.Command == "" || u.URL != "" {
+			return nil, nil, errors.New(`type "stdio" needs "command" and no "url"`)
+		}
+		u.Transport = Stdio
+	case string(HTTP):
+		if u.URL == "" || u.Command != "" {
+			return nil, nil, errors.New(`type "http" needs "url" and no "command"`)
+		}
+		u.Transport = HTTP
+	case "sse":
+		return nil, []string{"SSE transport is not supported; upstream skipped"}, nil
+	default:
+		return nil, nil, fmt.Errorf(`unknown type %q, want "stdio", "http" or "sse"`, typ)
+	}
+
+	var warnings []string
+	for _, field := range slices.Sorted(maps.Keys(fields)) {
+		switch field {
+		case "type", "disabled", "command", "url":
+		case "args", "env":
+			if u.Transport == HTTP {
+				warnings = append(warnings, fmt.Sprintf("field %q does not apply to an http upstream; ignored", field))
+			}
+		case "headers":
+			if u.Transport == Stdio {
+				warnings = append(warnings, fmt.Sprintf("field %q does not apply to a stdio upstream; ignored", field))
+			}
+		default:
+			warnings = append(warnings, fmt.Sprintf("unknown field %q ignored", field))
+		}
+	}
+	if u.Transport == Stdio {
+		u.Headers = nil
+	} else {
+		u.Args, u.Env = nil, nil
+	}
+
+	if missing := interpolate(&u, lookupEnv); len(missing) > 0 {
+		noun := "variable"
+		if len(missing) > 1 {
+			noun = "variables"
+		}
+		warnings = append(warnings, fmt.Sprintf("unset %s %s; upstream skipped", noun, strings.Join(missing, ", ")))
+		return nil, warnings, nil
+	}
+	return &u, warnings, nil
+}
+
+// varRef is a ${VAR} reference.
+var varRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// interpolate replaces ${VAR} references in the fields that allow them (in
+// env and headers, only the values) and returns the names of unset variables, sorted.
+func interpolate(u *Upstream, lookupEnv LookupEnv) []string {
+	missing := map[string]bool{}
+	expand := func(s string) string {
+		return varRef.ReplaceAllStringFunc(s, func(ref string) string {
+			name := varRef.FindStringSubmatch(ref)[1]
+			v, ok := lookupEnv(name)
+			if !ok {
+				missing[name] = true
+			}
+			return v
+		})
+	}
+	for i, a := range u.Args {
+		u.Args[i] = expand(a)
+	}
+	for k, v := range u.Env {
+		u.Env[k] = expand(v)
+	}
+	u.URL = expand(u.URL)
+	for k, v := range u.Headers {
+		u.Headers[k] = expand(v)
+	}
+	return slices.Sorted(maps.Keys(missing))
+}
+
+// jsonError adds the line and column of a syntax error, which encoding/json
+// reports only as a byte offset.
+func jsonError(data []byte, err error) error {
+	var syntax *json.SyntaxError
+	// Past the end there is no offending byte to point at.
+	if !errors.As(err, &syntax) || syntax.Offset >= int64(len(data)) {
+		return err
+	}
+	// Offset counts the offending byte too, so before ends with it.
+	before := data[:syntax.Offset]
+	line := bytes.Count(before, []byte("\n")) + 1
+	col := len(before) - bytes.LastIndexByte(before, '\n') - 1
+	return fmt.Errorf("line %d, column %d: %w", line, col, err)
 }

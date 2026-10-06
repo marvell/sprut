@@ -159,3 +159,120 @@ func TestServeLogsLogfmtToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
 		t.Errorf("no INFO line reporting Upstream fake ready with tools=2 and protocol; stderr:\n%s", g.stderr)
 	}
 }
+
+func TestServeInterpolatesVariablesIntoUpstreamEnvironmentOverInheritedOne(t *testing.T) {
+	t.Parallel()
+	envFile := filepath.Join(t.TempDir(), "upstream.env")
+	entry := fakeUpstreamEntry(t)
+	entry["env"] = map[string]string{
+		"SPRUT_TEST_SECRET":   "token-${SECRET}",
+		"SPRUT_TEST_OVERRIDE": "from-config",
+	}
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), []string{
+		envFakeEnvFile + "=" + envFile,
+		"SECRET=abc",
+		"SPRUT_TEST_OVERRIDE=from-sprut",
+		"SPRUT_TEST_INHERITED=yes",
+	})
+	g.closeAgent(t)
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("fake Upstream did not record its environment: %v", err)
+	}
+	got := map[string][]string{}
+	for line := range strings.Lines(string(data)) {
+		k, v, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
+		got[k] = append(got[k], v)
+	}
+	for k, want := range map[string]string{
+		"SPRUT_TEST_SECRET":    "token-abc",
+		"SPRUT_TEST_OVERRIDE":  "from-config",
+		"SPRUT_TEST_INHERITED": "yes",
+	} {
+		if !reflect.DeepEqual(got[k], []string{want}) {
+			t.Errorf("Upstream environment %s = %q, want [%q]", k, got[k], want)
+		}
+	}
+}
+
+func TestServeSkipsUpstreamWithUnsetVariableAndServesTheOthers(t *testing.T) {
+	t.Parallel()
+	broken := fakeUpstreamEntry(t)
+	broken["env"] = map[string]string{"TOKEN": "${SPRUT_TEST_UNSET}"}
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "broken": broken}), nil)
+
+	res, err := g.Agent.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var names []string
+	for _, tool := range res.Tools {
+		names = append(names, tool.Name)
+	}
+	if want := []string{"fake__echo", "fake__fail"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("tools = %v, want %v", names, want)
+	}
+
+	warned := false
+	for _, line := range g.stderr.Lines() {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "upstream=broken") &&
+			strings.Contains(line, "SPRUT_TEST_UNSET") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no WARN line naming Upstream broken and SPRUT_TEST_UNSET; stderr:\n%s", g.stderr)
+	}
+}
+
+func TestServeConfigErrorsExit1(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	missing := filepath.Join(dir, "missing.json")
+	malformed := write("malformed.json", `{"mcpServers": {`)
+	badName := write("bad-name.json", `{"mcpServers": {"My_Server": {"command": "x"}}}`)
+
+	tests := []struct {
+		name string
+		env  []string
+		args []string
+		// wantStderr is what stderr must contain to point the user at the mistake.
+		wantStderr []string
+	}{
+		{name: "missing file from -c", args: []string{"serve", "-c", missing}, wantStderr: []string{missing}},
+		{name: "missing file from SPRUT_CONFIG", env: []string{"SPRUT_CONFIG=" + missing}, args: []string{"serve"}, wantStderr: []string{missing}},
+		{
+			name:       "missing default file",
+			env:        []string{"HOME=" + dir},
+			args:       []string{"serve"},
+			wantStderr: []string{filepath.Join(dir, ".config", "sprut", "config.json")},
+		},
+		{name: "malformed JSON", args: []string{"serve", "-c", malformed}, wantStderr: []string{malformed, "unexpected end of JSON input"}},
+		{name: "invalid Upstream name", args: []string{"serve", "-c", badName}, wantStderr: []string{"My_Server"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			code, stdout, stderr := runSprut(t, tt.env, tt.args...)
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			for _, want := range tt.wantStderr {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr does not contain %q:\n%s", want, stderr)
+				}
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+		})
+	}
+}

@@ -26,6 +26,9 @@ const (
 	envFakeUpstream = "SPRUT_TEST_FAKE_UPSTREAM"
 	// envFakePIDFile, if set, is a path the fake Upstream writes its PID to.
 	envFakePIDFile = "SPRUT_TEST_FAKE_PIDFILE"
+	// envFakeEnvFile, if set, is a path the fake Upstream writes its
+	// environment to, one VAR=value per line.
+	envFakeEnvFile = "SPRUT_TEST_FAKE_ENVFILE"
 )
 
 func TestMain(m *testing.M) {
@@ -68,6 +71,13 @@ var (
 func runFakeUpstream() int {
 	if path := os.Getenv(envFakePIDFile); path != "" {
 		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "fake upstream:", err)
+			return 1
+		}
+	}
+
+	if path := os.Getenv(envFakeEnvFile); path != "" {
+		if err := os.WriteFile(path, []byte(strings.Join(os.Environ(), "\n")), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
 			return 1
 		}
@@ -165,6 +175,17 @@ func startGateway(t *testing.T, configPath string, env []string) *gateway {
 	g.Agent = session
 	t.Cleanup(func() { session.Close() })
 	return g
+}
+
+// runSprut runs sprut to completion with args (without the program name)
+// and env, and returns its exit code, stdout and stderr.
+func runSprut(t *testing.T, env []string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var out, errOut bytes.Buffer
+	code = cli.Run(ctx, append([]string{"sprut"}, args...), env, strings.NewReader(""), &out, &errOut)
+	return code, out.String(), errOut.String()
 }
 
 // closeAgent closes the Agent's side (EOF on the Gateway's stdin) and returns

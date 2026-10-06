@@ -2,11 +2,11 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 
 	ucli "github.com/urfave/cli/v3"
 
@@ -24,17 +24,21 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			log := slog.New(slog.NewTextHandler(stderr, nil))
 
-			path := cmd.String("config")
-			if path == "" {
-				return errors.New("no Config given, use -c PATH")
+			lookupEnv := lookupIn(env)
+			path, err := config.Path(cmd.String("config"), lookupEnv)
+			if err != nil {
+				return err
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return fmt.Errorf("reading config: %w", err)
 			}
-			upstreams, err := config.Parse(data)
+			upstreams, warnings, err := config.Parse(data, lookupEnv)
 			if err != nil {
 				return fmt.Errorf("config %s: %w", path, err)
+			}
+			for _, w := range warnings {
+				log.Warn(w.Message, "upstream", w.Upstream)
 			}
 
 			gw, err := gateway.Start(ctx, upstreams, env, version(), log)
@@ -50,5 +54,20 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			}
 			return nil
 		},
+	}
+}
+
+// lookupIn returns a lookup over env, which is in os.Environ form. As with
+// a real environment, the last entry for a key wins.
+func lookupIn(env []string) config.LookupEnv {
+	vars := make(map[string]string, len(env))
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vars[k] = v
+		}
+	}
+	return func(key string) (string, bool) {
+		v, ok := vars[key]
+		return v, ok
 	}
 }
