@@ -4,20 +4,22 @@ Before every commit, `make check` must pass: it runs exactly what CI runs.
 
 Only `main` touches `os.Args`, env, std streams and `os.Exit`; tests live only in `internal/cli` and `internal/config`. `make lint` enforces both (`.golangci.yml`).
 
+## Implementing a ticket
+
+1. Commit before `/code-review` and review from the pre-work SHA: it diffs commits, so uncommitted and untracked files escape it. Review fixes go in a follow-up commit.
+2. Post the decisions the ticket left open as a comment on the issue, so the reviewer and later tickets see them.
+3. Finish by moving the issue to Done with a closing comment (`docs/agents/issue-tracker.md`).
+
+## Review
+
+Judgement-call standards: `docs/CODING_STANDARDS.md`.
+
 ## Library gotchas
 
 go-sdk or urfave/cli: read `docs/agents/library-gotchas.md` before working with either.
 
 ## Agent skills
 
-### Issue tracker
-
-Linear: team Personal (key `P`), current project (see the doc). See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+- **Issues, specs and tickets** (Linear): `docs/agents/issue-tracker.md`.
+- **Triage labels**: the Linear label strings are the canonical role names (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`).
+- **Domain concepts and ADRs**: `docs/agents/domain.md`.

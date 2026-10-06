@@ -21,7 +21,7 @@ Each Linear project holds exactly one spec, and that spec is the **project descr
 - **Apply / remove labels**: `save_issue` with `addLabels` / `removeLabels` (never `labels`, which replaces the whole set). If a label doesn't exist yet, create it with `create_issue_label` scoped to team Personal.
 - **Close**: `save_issue` with `state: "Done"` (or `"Canceled"` for wontfix), with a closing comment.
 
-Statuses in Personal: Backlog, Todo, In Progress, Waiting, Done, Canceled, Duplicate. Triage state is tracked with labels (see `triage-labels.md`), not statuses.
+Statuses in Personal: Backlog, Todo, In Progress, Waiting, Done, Canceled, Duplicate. Triage state is tracked with labels (named in `CLAUDE.md`), not statuses.
 
 ## When a skill says "publish to the issue tracker"
 
