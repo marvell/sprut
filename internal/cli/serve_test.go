@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -315,11 +317,8 @@ func TestServeRoutesEachNamespacedToolToItsOwnUpstream(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tools/call %s: %v", tool, err)
 		}
-		if len(res.Content) != 1 {
-			t.Fatalf("tools/call %s: content = %v, want one text", tool, res.Content)
-		}
-		if text, ok := res.Content[0].(*mcp.TextContent); !ok || text.Text != want {
-			t.Errorf("tools/call %s answered by %v, want %q", tool, res.Content[0], want)
+		if got := resultText(t, res); got != want {
+			t.Errorf("tools/call %s answered by %q, want %q", tool, got, want)
 		}
 	}
 }
@@ -513,5 +512,118 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 			wantGone(t, pidFile)
 			wantGone(t, grandchildPIDFile)
 		})
+	}
+}
+
+func TestServeRejectsCallsToUnknownTools(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t)
+
+	for _, tool := range []string{"fake__nope", "nobody__echo", "echo"} {
+		res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}})
+		if err == nil || !strings.Contains(err.Error(), "unknown tool") || !strings.Contains(err.Error(), tool) {
+			t.Errorf("tools/call %s = %v, %v; want an unknown tool error naming it", tool, res, err)
+		}
+	}
+}
+
+func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"doomed": fakeUpstreamEntry(t, envFakeCrashTool+"=1"), "fake": fakeUpstreamEntry(t)}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+	ctx := context.Background()
+
+	// The call that crashes the Upstream, then calls to the dead Upstream:
+	// it is not restarted.
+	for _, tool := range []string{"doomed__crash", "doomed__echo", "doomed__echo"} {
+		res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}})
+		if err != nil {
+			t.Fatalf("tools/call %s: %v, want an isError result", tool, err)
+		}
+		if text := resultText(t, res); !res.IsError || !strings.Contains(text, `"doomed"`) {
+			t.Errorf("tools/call %s = %q (isError %v), want an isError result naming the Upstream", tool, text, res.IsError)
+		}
+	}
+
+	res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "x"}})
+	if err != nil || res.IsError {
+		t.Errorf("tools/call fake__echo after another Upstream crashed = %v, %v; want a result", res, err)
+	}
+	g.closeAgent(t)
+}
+
+func TestServePassesUpstreamProtocolErrorsThrough(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t)
+
+	// The fake's echo answers arguments it can't decode with a protocol
+	// error, not an isError result.
+	res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": 5}})
+	if err == nil || !strings.Contains(err.Error(), "unmarshal") {
+		t.Errorf("tools/call = %v, %v; want the Upstream's protocol error", res, err)
+	}
+}
+
+func TestServeCancelsCallOnUpstreamWhenAgentCancelsIt(t *testing.T) {
+	t.Parallel()
+	progress := filepath.Join(t.TempDir(), "block")
+	g := startFakeGateway(t, envFakeBlockTool+"="+progress)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	called := g.startBlockingCall(t, ctx, progress)
+	cancel() // the Agent sends notifications/cancelled
+
+	if err := <-called; err == nil {
+		t.Error("cancelled tools/call returned no error")
+	}
+	waitForFile(t, progress, "cancelled")
+	g.closeAgent(t)
+}
+
+func TestServeForwardsConcurrentCallsIncludingSeveralToOneUpstream(t *testing.T) {
+	t.Parallel()
+	// Each Upstream answers only once three calls are in flight to it, so
+	// calls forwarded one at a time would never be answered.
+	const perUpstream = 3
+	gather := envFakeGatherTool + "=" + strconv.Itoa(perUpstream)
+	upstreams := map[string]any{"one": fakeUpstreamEntry(t, gather), "two": fakeUpstreamEntry(t, gather)}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, upstream := range []string{"one", "two"} {
+		for range perUpstream {
+			tool := upstream + "__gather"
+			wg.Go(func() {
+				res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: tool})
+				if err != nil || res.IsError {
+					t.Errorf("tools/call %s = %v, %v", tool, res, err)
+				}
+			})
+		}
+	}
+	wg.Wait()
+}
+
+func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
+	t.Parallel()
+	progress := filepath.Join(t.TempDir(), "block")
+	entry := fakeUpstreamEntry(t, envFakeBlockTool+"="+progress)
+	// The startup timeout is the Gateway's only timeout; it must not apply
+	// to calls.
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "100ms")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	called := g.startBlockingCall(t, ctx, progress)
+
+	select {
+	case err := <-called:
+		t.Fatalf("tools/call ended on its own: %v", err)
+	case <-time.After(500 * time.Millisecond): // five startup timeouts
+	}
+	if data, err := os.ReadFile(progress); err != nil || string(data) != "started" {
+		t.Errorf("Upstream's call: %s holds %q (err %v), want it still started", progress, data, err)
 	}
 }

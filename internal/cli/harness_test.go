@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -61,6 +62,16 @@ const (
 	// of a grandchild to: a process it starts that shares its stderr and
 	// sleeps until killed.
 	envFakeGrandchild = "SPRUT_TEST_FAKE_GRANDCHILD"
+	// envFakeCrashTool, if set, adds a tool "crash" that makes the fake
+	// Upstream exit mid-call, without answering.
+	envFakeCrashTool = "SPRUT_TEST_FAKE_CRASH_TOOL"
+	// envFakeBlockTool, if set, is a path, and adds a tool "block" that
+	// writes "started" to it, blocks until the call is cancelled, then
+	// writes "cancelled" to it.
+	envFakeBlockTool = "SPRUT_TEST_FAKE_BLOCK_TOOL"
+	// envFakeGatherTool, if set to N, adds a tool "gather" that answers
+	// only once N calls to it are in flight together.
+	envFakeGatherTool = "SPRUT_TEST_FAKE_GATHER_TOOL"
 )
 
 // fakeLifetime bounds how long a fake Upstream or grandchild that only
@@ -79,6 +90,8 @@ func TestMain(m *testing.M) {
 // The fake Upstream's tools, as raw JSON so that tests can assert that the
 // Gateway passes them through unchanged.
 var (
+	// objectSchema is the input schema of a tool that takes no arguments.
+	objectSchema    = map[string]any{"type": "object"}
 	echoInputSchema = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -102,7 +115,7 @@ var (
 	failTool = &mcp.Tool{
 		Name:        "fail",
 		Description: "Always returns an isError result.",
-		InputSchema: map[string]any{"type": "object"},
+		InputSchema: objectSchema,
 	}
 )
 
@@ -175,15 +188,40 @@ func runFakeUpstream() int {
 		if name == "" {
 			continue
 		}
-		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: objectSchema},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: os.Getenv(envFakeID)}}}, nil
 			})
 	}
+	if os.Getenv(envFakeCrashTool) != "" {
+		server.AddTool(&mcp.Tool{Name: "crash", InputSchema: objectSchema},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				os.Exit(1)
+				return nil, nil
+			})
+	}
+	if path := os.Getenv(envFakeBlockTool); path != "" {
+		server.AddTool(&mcp.Tool{Name: "block", InputSchema: objectSchema},
+			func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if err := os.WriteFile(path, []byte("started"), 0o644); err != nil {
+					return nil, err
+				}
+				<-ctx.Done()
+				return nil, os.WriteFile(path, []byte("cancelled"), 0o644)
+			})
+	}
+	if v := os.Getenv(envFakeGatherTool); v != "" {
+		want, err := strconv.Atoi(v)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake upstream:", err)
+			return 1
+		}
+		server.AddTool(&mcp.Tool{Name: "gather", InputSchema: objectSchema}, gather(want))
+	}
 	if name := os.Getenv(envFakeBadSchemaTool); name != "" {
 		// AddTool insists on an object schema, so the bad one is put into
 		// the tools/list result on its way out.
-		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: objectSchema},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) { return nil, nil })
 		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -206,6 +244,23 @@ func runFakeUpstream() int {
 		return 1
 	}
 	return 0
+}
+
+// gather implements envFakeGatherTool.
+func gather(want int) mcp.ToolHandler {
+	var arrived atomic.Int32
+	all := make(chan struct{})
+	return func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if int(arrived.Add(1)) == want {
+			close(all)
+		}
+		select {
+		case <-all:
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "gathered"}}}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }
 
 // startGrandchild implements envFakeGrandchild.
@@ -375,6 +430,49 @@ func wantGone(t *testing.T, pidFile string) {
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Errorf("process %d (%s) still exists after Gateway exit (kill -0: %v)", pid, pidFile, err)
 	}
+}
+
+// waitForFile waits for the file at path to hold want.
+func waitForFile(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && string(data) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s holds %q (err %v), want %q", path, data, err, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// startBlockingCall calls fake__block (see envFakeBlockTool, with progress
+// as its path) under ctx, and returns once the Upstream is blocked in it. The
+// call's error arrives on the returned channel when it ends.
+func (g *gateway) startBlockingCall(t *testing.T, ctx context.Context, progress string) <-chan error {
+	t.Helper()
+	called := make(chan error, 1)
+	go func() {
+		_, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "fake__block"})
+		called <- err
+	}()
+	waitForFile(t, progress, "started")
+	return called
+}
+
+// resultText returns the one text a tool result holds.
+func resultText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if len(res.Content) != 1 {
+		t.Fatalf("content = %v, want one text", res.Content)
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content = %v, want text", res.Content[0])
+	}
+	return text.Text
 }
 
 // wantTools checks that the Agent's tools are exactly want, by name.

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/marvell/sprut/internal/config"
@@ -217,14 +218,16 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		}
 	}()
 	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
-	g.server.AddTool(&namespaced, forward(session, original, log))
+	g.server.AddTool(&namespaced, forward(upstream, session, original, log))
 	log.Debug("tool added")
 	return nil
 }
 
 // forward handles calls to a Namespaced tool by calling the Upstream's tool
-// original over session, and logs each call.
-func forward(session *mcp.ClientSession, original string, log *slog.Logger) mcp.ToolHandler {
+// original over session, and logs each call. A call the Upstream doesn't
+// answer, such as one to an Upstream that is gone, ends in an isError result
+// naming it.
+func forward(upstream string, session *mcp.ClientSession, original string, log *slog.Logger) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
@@ -238,8 +241,21 @@ func forward(session *mcp.ClientSession, original string, log *slog.Logger) mcp.
 			// Upstream's so the Gateway's own is reported to the Agent.
 			delete(res.Meta, mcp.MetaKeyServerInfo)
 		}
+		if err != nil && ctx.Err() == nil && !answered(err) {
+			res = &mcp.CallToolResult{}
+			res.SetError(fmt.Errorf("call to upstream %q failed: %w", upstream, err))
+			err = nil
+		}
 		return res, err
 	}
+}
+
+// answered reports whether err is the Upstream's own JSON-RPC error, as
+// opposed to the call failing on the way, such as the connection to it
+// breaking.
+func answered(err error) bool {
+	var wire *jsonrpc.Error
+	return errors.As(err, &wire)
 }
 
 // Serve serves MCP to one Agent over stdin/stdout until the Agent
