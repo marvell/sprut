@@ -1,9 +1,9 @@
 # sprut
 
-sprut is an MCP gateway. You list your MCP servers once, in one Config file, and give each AI Agent (Claude Code, Codex, Cursor, …) a single MCP server entry: `sprut serve`. Every Agent then sees all of your MCP servers' tools.
+sprut is an MCP Gateway. You list your MCP servers once, in one Config file, and give each AI Agent (Claude Code, Codex, Cursor, …) a single MCP server entry: `sprut serve`. Every Agent then sees all of your MCP servers' tools.
 
 - One Config in the `mcpServers` JSON shape that MCP READMEs already show, so you can paste their snippets unchanged.
-- Tools are exposed as `<upstream>__<tool>`, so tools from different servers never collide.
+- Tools are exposed as `<upstream>__<tool>`, so tools from different Upstreams never collide.
 - An Upstream that fails to start is skipped with a log line; the rest keep working.
 - stdio and Streamable HTTP Upstreams. Legacy and modern (`2026-07-28`) MCP Agents and Upstreams work in any combination.
 - One static binary. Each Agent runs its own `sprut serve` over stdio, with no daemon.

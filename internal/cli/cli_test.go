@@ -6,19 +6,26 @@ import (
 	"testing"
 )
 
+// --version wins over a subcommand, so a version query never starts the
+// server.
 func TestVersionFlagPrintsVersionToStdout(t *testing.T) {
 	t.Parallel()
+	for _, args := range [][]string{{"--version"}, {"--version", "serve"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
 
-	code, stdout, stderr := runSprut(t, nil, "--version")
+			code, stdout, stderr := runSprut(t, nil, args...)
 
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0; stderr:\n%s", code, stderr)
-	}
-	if !regexp.MustCompile(`^sprut version \S+\n$`).MatchString(stdout) {
-		t.Errorf("stdout = %q, want \"sprut version <version>\\n\"", stdout)
-	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, want empty", stderr)
+			if code != 0 {
+				t.Errorf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+			}
+			if !regexp.MustCompile(`^sprut version \S+\n$`).MatchString(stdout) {
+				t.Errorf("stdout = %q, want \"sprut version <version>\\n\"", stdout)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q, want empty", stderr)
+			}
+		})
 	}
 }
 
@@ -64,8 +71,11 @@ func TestUsageErrorPrintsUsageToStderrAndExits2(t *testing.T) {
 		{nil, "sprut [global options]", ""},
 		{[]string{"--bogus"}, "sprut [global options]", "bogus"},
 		{[]string{"bogus"}, "sprut [global options]", `unknown command "bogus"`},
+		{[]string{"help", "bogus"}, "sprut [global options]", `unknown command "bogus"`},
+		{[]string{"-h", "bogus"}, "sprut [global options]", `unknown command "bogus"`},
 		{[]string{"serve", "--bogus"}, "sprut serve [options]", "bogus"},
 		{[]string{"serve", "bogus"}, "sprut serve [options]", `unexpected argument "bogus"`},
+		{[]string{"serve", "--help", "bogus"}, "sprut serve [options]", `unexpected argument "bogus"`},
 		{[]string{"serve", "--startup-timeout", "soon"}, "sprut serve [options]", "soon"},
 		{[]string{"serve", "--startup-timeout", "0s"}, "sprut serve [options]", "startup-timeout"},
 		{[]string{"serve", "--startup-timeout", "-1s"}, "sprut serve [options]", "startup-timeout"},

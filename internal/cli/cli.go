@@ -29,21 +29,31 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 		Flags: []ucli.Flag{
 			&ucli.BoolFlag{Name: "version", Usage: "print the version", Local: true},
 		},
-		Action: func(_ context.Context, cmd *ucli.Command) error {
+		// Before, not Action, so that --version wins over a subcommand too.
+		Before: func(ctx context.Context, cmd *ucli.Command) (context.Context, error) {
 			if cmd.Bool("version") {
 				_, _ = fmt.Fprintf(stdout, "sprut version %s\n", version())
-				return nil
+				return ctx, ucli.Exit("", 0)
 			}
+			return ctx, nil
+		},
+		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			// Bare sprut must never start the server.
-			return usageError(cmd, nil)
+			return usageError(ctx, cmd, nil)
 		},
 		Commands: []*ucli.Command{
 			serveCommand(env, stdin, stdout, stderr),
 		},
 	}
-	strictUsage(root)
+	// An unknown help topic (sprut help bogus) can only be reported from a
+	// callback that returns nothing, so its usage error is kept here.
+	var helpErr error
+	strictUsage(root, &helpErr)
 
 	err := root.Run(ctx, args)
+	if err == nil {
+		err = helpErr
+	}
 	if err == nil {
 		return 0
 	}
@@ -58,36 +68,39 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 	return 1
 }
 
-// strictUsage makes every usage error in the tree under cmd a usageError:
-// a bad flag or flag value, and any positional argument, which no command
-// takes.
-func strictUsage(cmd *ucli.Command) {
-	cmd.OnUsageError = func(_ context.Context, cmd *ucli.Command, err error, _ bool) error {
-		return usageError(cmd, err)
+// strictUsage makes every usage error in the tree under c a usageError: a
+// bad flag or flag value, and any positional argument, which no command
+// takes. An unknown help topic's usage error goes to *helpErr instead.
+func strictUsage(c *ucli.Command, helpErr *error) {
+	c.OnUsageError = func(ctx context.Context, cmd *ucli.Command, err error, _ bool) error {
+		return usageError(ctx, cmd, err)
 	}
 	// Decided now: by the time an Action runs, urfave/cli has given every
 	// command a help subcommand.
 	unexpected := "unexpected argument"
-	if len(cmd.Commands) > 0 {
+	if len(c.Commands) > 0 {
 		unexpected = "unknown command"
 	}
-	if action := cmd.Action; action != nil {
-		cmd.Action = func(ctx context.Context, cmd *ucli.Command) error {
+	c.CommandNotFound = func(ctx context.Context, cmd *ucli.Command, name string) {
+		*helpErr = usageError(ctx, cmd, fmt.Errorf("%s %q", unexpected, name))
+	}
+	if action := c.Action; action != nil {
+		c.Action = func(ctx context.Context, cmd *ucli.Command) error {
 			if cmd.Args().Present() {
-				return usageError(cmd, fmt.Errorf("%s %q", unexpected, cmd.Args().First()))
+				return usageError(ctx, cmd, fmt.Errorf("%s %q", unexpected, cmd.Args().First()))
 			}
 			return action(ctx, cmd)
 		}
 	}
-	for _, sub := range cmd.Commands {
-		strictUsage(sub)
+	for _, sub := range c.Commands {
+		strictUsage(sub, helpErr)
 	}
 }
 
 // usageError prints err, if any, and the help of cmd to stderr, and returns
 // the error that makes sprut exit 2. Help on stdout would corrupt the MCP
 // channel of serve, and urfave/cli prints all help to the root's Writer.
-func usageError(cmd *ucli.Command, err error) error {
+func usageError(ctx context.Context, cmd *ucli.Command, err error) error {
 	root := cmd.Root()
 	if err != nil {
 		_, _ = fmt.Fprintf(root.ErrWriter, "sprut: %s\n\n", err)
@@ -96,7 +109,8 @@ func usageError(cmd *ucli.Command, err error) error {
 	if cmd == root {
 		_ = ucli.ShowRootCommandHelp(cmd)
 	} else {
-		_ = ucli.ShowCommandHelp(context.Background(), cmd.Lineage()[1], cmd.Name)
+		parent := cmd.Lineage()[1]
+		_ = ucli.ShowCommandHelp(ctx, parent, cmd.Name)
 	}
 	return ucli.Exit("", 2)
 }
