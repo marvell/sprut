@@ -204,6 +204,28 @@ func TestParse(t *testing.T) {
 			name:   "null in a disabled Upstream's args is not checked",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": [null], "disabled": true}}}`,
 		},
+		{
+			name:   "repeated mcpServers with the same names: the last one wins",
+			config: `{"mcpServers": {"a": {"command": "x"}}, "mcpServers": {"a": {"command": "y"}}}`,
+			want:   []config.Upstream{{Name: "a", Transport: config.Stdio, Command: "y"}},
+		},
+		{
+			name: "repeated mcpServers with different names: the last one wins",
+			config: `{"mcpServers": {"a": {"command": "x"}, "b": {"command": "x"}},
+				"mcpServers": {"c": {"command": "y"}, "a": {"command": "y"}}}`,
+			want: []config.Upstream{
+				{Name: "c", Transport: config.Stdio, Command: "y"},
+				{Name: "a", Transport: config.Stdio, Command: "y"},
+			},
+		},
+		{
+			name:   "repeated mcpServers, the last one empty",
+			config: `{"mcpServers": {"a": {"command": "x"}}, "mcpServers": {}}`,
+		},
+		{
+			name:   "repeated mcpServers, the last one null",
+			config: `{"mcpServers": {"a": {"command": "x"}}, "mcpServers": null}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
