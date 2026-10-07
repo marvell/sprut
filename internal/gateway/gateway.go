@@ -34,6 +34,7 @@ type Gateway struct {
 	sessions []*mcp.ClientSession // one per started Upstream
 	starting sync.WaitGroup       // Upstream starts, including abandoned ones
 	failed   int                  // Upstreams that failed or timed out at startup
+	tools    map[string]bool      // Namespaced tools served; fixed once Start returns
 	log      *slog.Logger
 }
 
@@ -48,8 +49,10 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 			// Advertise only tools; the tool list is fixed for the session.
 			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		}),
-		log: log,
+		tools: map[string]bool{},
+		log:   log,
 	}
+	g.server.AddReceivingMiddleware(g.answerUnknownTools)
 	st := &starter{
 		client:   mcp.NewClient(impl, nil),
 		env:      env,
@@ -219,8 +222,20 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 	}()
 	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
 	g.server.AddTool(&namespaced, forward(upstream, session, original, log))
+	g.tools[namespaced.Name] = true
 	log.Debug("tool added")
 	return nil
+}
+
+// answerUnknownTools answers a call to a tool the Gateway doesn't serve with
+// an isError result, where the SDK would answer with a protocol error.
+func (g *Gateway) answerUnknownTools(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if call, ok := req.(*mcp.CallToolRequest); ok && !g.tools[call.Params.Name] {
+			return errorResult(fmt.Errorf("unknown tool %q", call.Params.Name)), nil
+		}
+		return next(ctx, method, req)
+	}
 }
 
 // forward handles calls to a Namespaced tool by calling the Upstream's tool
@@ -231,23 +246,28 @@ func forward(upstream string, session *mcp.ClientSession, original string, log *
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
-		attrs := []any{"duration", time.Since(begin), "isError", res != nil && res.IsError}
+		attrs := []any{"duration", time.Since(begin)}
 		if err != nil {
 			attrs = append(attrs, "err", err)
 		}
-		log.Debug("tool called", attrs...)
 		if res != nil {
 			// serverInfo identifies the responder of each hop; drop the
 			// Upstream's so the Gateway's own is reported to the Agent.
 			delete(res.Meta, mcp.MetaKeyServerInfo)
 		}
 		if err != nil && ctx.Err() == nil && !answered(err) {
-			res = &mcp.CallToolResult{}
-			res.SetError(fmt.Errorf("call to upstream %q failed: %w", upstream, err))
-			err = nil
+			res, err = errorResult(fmt.Errorf("call to upstream %q failed: %w", upstream, err)), nil
 		}
+		log.Debug("tool called", append(attrs, "isError", res != nil && res.IsError)...)
 		return res, err
 	}
+}
+
+// errorResult is an isError result saying err.
+func errorResult(err error) *mcp.CallToolResult {
+	res := &mcp.CallToolResult{}
+	res.SetError(err)
+	return res
 }
 
 // answered reports whether err is the Upstream's own JSON-RPC error, as

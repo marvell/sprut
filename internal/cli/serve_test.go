@@ -515,14 +515,17 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 	}
 }
 
-func TestServeRejectsCallsToUnknownTools(t *testing.T) {
+func TestServeAnswersCallsToUnknownToolsWithAnErrorResult(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
 
 	for _, tool := range []string{"fake__nope", "nobody__echo", "echo"} {
 		res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}})
-		if err == nil || !strings.Contains(err.Error(), "unknown tool") || !strings.Contains(err.Error(), tool) {
-			t.Errorf("tools/call %s = %v, %v; want an unknown tool error naming it", tool, res, err)
+		if err != nil {
+			t.Fatalf("tools/call %s: %v, want an isError result", tool, err)
+		}
+		if text := resultText(t, res); !res.IsError || !strings.Contains(text, "unknown tool") || !strings.Contains(text, tool) {
+			t.Errorf("tools/call %s = %q (isError %v), want an isError result naming the unknown tool", tool, text, res.IsError)
 		}
 	}
 }
@@ -530,7 +533,7 @@ func TestServeRejectsCallsToUnknownTools(t *testing.T) {
 func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *testing.T) {
 	t.Parallel()
 	upstreams := map[string]any{"doomed": fakeUpstreamEntry(t, envFakeCrashTool+"=1"), "fake": fakeUpstreamEntry(t)}
-	g := startGateway(t, writeConfig(t, upstreams), nil)
+	g := startGateway(t, writeConfig(t, upstreams), nil, "-v")
 	ctx := context.Background()
 
 	// The call that crashes the Upstream, then calls to the dead Upstream:
@@ -544,6 +547,8 @@ func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *
 			t.Errorf("tools/call %s = %q (isError %v), want an isError result naming the Upstream", tool, text, res.IsError)
 		}
 	}
+
+	g.wantLogLine(t, "DEBUG", "tool=doomed__crash", "isError=true")
 
 	res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "x"}})
 	if err != nil || res.IsError {
@@ -570,7 +575,7 @@ func TestServeCancelsCallOnUpstreamWhenAgentCancelsIt(t *testing.T) {
 	g := startFakeGateway(t, envFakeBlockTool+"="+progress)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	called := g.startBlockingCall(t, ctx, progress)
+	called := g.startBlockingCall(ctx, t, progress)
 	cancel() // the Agent sends notifications/cancelled
 
 	if err := <-called; err == nil {
@@ -616,7 +621,7 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	called := g.startBlockingCall(t, ctx, progress)
+	called := g.startBlockingCall(ctx, t, progress)
 
 	select {
 	case err := <-called:

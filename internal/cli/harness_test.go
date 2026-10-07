@@ -451,7 +451,7 @@ func waitForFile(t *testing.T, path, want string) {
 // startBlockingCall calls fake__block (see envFakeBlockTool, with progress
 // as its path) under ctx, and returns once the Upstream is blocked in it. The
 // call's error arrives on the returned channel when it ends.
-func (g *gateway) startBlockingCall(t *testing.T, ctx context.Context, progress string) <-chan error {
+func (g *gateway) startBlockingCall(ctx context.Context, t *testing.T, progress string) <-chan error {
 	t.Helper()
 	called := make(chan error, 1)
 	go func() {
