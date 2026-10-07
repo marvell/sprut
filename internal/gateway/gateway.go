@@ -82,14 +82,7 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		}
 		name := upstreams[i].Name
 		g.sessions = append(g.sessions, r.session)
-		added := 0
-		for _, tool := range r.tools {
-			if err := g.addTool(name, r.session, tool); err != nil {
-				log.Warn("tool skipped", "upstream", name, "tool", name+separator+tool.Name, "err", err)
-				continue
-			}
-			added++
-		}
+		added := g.addTools(name, r)
 		log.Info("upstream ready", "upstream", name, "tools", added,
 			"protocol", r.session.InitializeResult().ProtocolVersion)
 		tools += added
@@ -101,6 +94,20 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 
 // Failed reports how many Upstreams failed or timed out at startup.
 func (g *Gateway) Failed() int { return g.failed }
+
+// addTools serves r's tools as Namespaced tools under name, skipping the
+// ones addTool rejects, and returns how many it added.
+func (g *Gateway) addTools(name string, r *ready) int {
+	added := 0
+	for _, tool := range r.tools {
+		if err := g.addTool(name, r.session, tool); err != nil {
+			g.log.Warn("tool skipped", "upstream", name, "tool", name+separator+tool.Name, "err", err)
+			continue
+		}
+		added++
+	}
+	return added
+}
 
 // ready is an Upstream that is connected and has listed its tools.
 type ready struct {
@@ -146,12 +153,7 @@ func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u confi
 
 func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) (*ready, error) {
 	cmd := exec.Command(u.Command, u.Args...)
-	// Config env is layered on top of the inherited environment: exec uses
-	// the last value of a duplicated key.
-	cmd.Env = slices.Clone(env)
-	for _, k := range slices.Sorted(maps.Keys(u.Env)) {
-		cmd.Env = append(cmd.Env, k+"="+u.Env[k])
-	}
+	cmd.Env = upstreamEnv(env, u.Env)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return nil, err
@@ -166,6 +168,17 @@ func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u con
 		r.tools = append(r.tools, tool)
 	}
 	return r, nil
+}
+
+// upstreamEnv is the environment of an Upstream process: its Config env
+// layered on top of the inherited env. exec uses the last value of a
+// duplicated key.
+func upstreamEnv(env []string, extra map[string]string) []string {
+	out := slices.Clone(env)
+	for _, k := range slices.Sorted(maps.Keys(extra)) {
+		out = append(out, k+"="+extra[k])
+	}
+	return out
 }
 
 // addTool serves tool as a Namespaced tool. A tool that Agents or the SDK
@@ -185,7 +198,15 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		}
 	}()
 	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
-	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	g.server.AddTool(&namespaced, forward(session, original, log))
+	log.Debug("tool added")
+	return nil
+}
+
+// forward handles calls to a Namespaced tool by calling the Upstream's tool
+// original over session, and logs each call.
+func forward(session *mcp.ClientSession, original string, log *slog.Logger) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
 		attrs := []any{"duration", time.Since(begin), "isError", res != nil && res.IsError}
@@ -199,9 +220,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 			delete(res.Meta, mcp.MetaKeyServerInfo)
 		}
 		return res, err
-	})
-	log.Debug("tool added")
-	return nil
+	}
 }
 
 // Serve serves MCP to one Agent over stdin/stdout until the Agent
