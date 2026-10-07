@@ -200,6 +200,10 @@ func TestParse(t *testing.T) {
 			name:   "unset variable in a disabled upstream is not reported",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": ["${NOPE}"], "disabled": true}}}`,
 		},
+		{
+			name:   "null in a disabled upstream's args is not checked",
+			config: `{"mcpServers": {"fs": {"command": "npx", "args": [null], "disabled": true}}}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -291,6 +295,46 @@ func TestParseRejectsInvalidConfig(t *testing.T) {
 			name:    "field of the wrong JSON type",
 			config:  `{"mcpServers": {"fs": {"command": "npx", "args": "-y"}}}`,
 			wantErr: []string{`"fs"`, "args"},
+		},
+		{
+			name:    "null disabled",
+			config:  `{"mcpServers": {"fs": {"command": "npx", "disabled": null}}}`,
+			wantErr: []string{`"fs"`, `"disabled" must be a boolean`},
+		},
+		{
+			name:    "null type",
+			config:  `{"mcpServers": {"fs": {"type": null, "command": "npx"}}}`,
+			wantErr: []string{`"fs"`, `"type" must be a string`},
+		},
+		{
+			name:    "null command",
+			config:  `{"mcpServers": {"fs": {"command": null, "url": "https://example.com/mcp"}}}`,
+			wantErr: []string{`"fs"`, `"command" must be a string`},
+		},
+		{
+			name:    "null url",
+			config:  `{"mcpServers": {"fs": {"command": "npx", "url": null}}}`,
+			wantErr: []string{`"fs"`, `"url" must be a string`},
+		},
+		{
+			name:    "null args element",
+			config:  `{"mcpServers": {"fs": {"command": "npx", "args": ["-y", null]}}}`,
+			wantErr: []string{`"fs"`, `"args" must be an array of strings`},
+		},
+		{
+			name:    "null env value",
+			config:  `{"mcpServers": {"fs": {"command": "npx", "env": {"TOKEN": null}}}}`,
+			wantErr: []string{`"fs"`, `"env" must be an object of strings`},
+		},
+		{
+			name:    "null headers value",
+			config:  `{"mcpServers": {"remote": {"url": "https://example.com/mcp", "headers": {"Authorization": null}}}}`,
+			wantErr: []string{`"remote"`, `"headers" must be an object of strings`},
+		},
+		{
+			name:    "null env",
+			config:  `{"mcpServers": {"fs": {"command": "npx", "env": null}}}`,
+			wantErr: []string{`"fs"`, `"env" must be an object of strings`},
 		},
 		{
 			name:    "every invalid entry is reported",

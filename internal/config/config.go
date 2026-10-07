@@ -188,7 +188,7 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 	}
 	decode := func(name string) error {
 		f := known[name]
-		if v, ok := fields[name]; ok && json.Unmarshal(v, f.dst) != nil {
+		if v, ok := fields[name]; ok && (hasNull(v) || json.Unmarshal(v, f.dst) != nil) {
 			return fmt.Errorf("%q must be %s", name, f.want)
 		}
 		return nil
@@ -249,6 +249,29 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		return nil, append(warnings, `"url" is empty after interpolation; upstream skipped`), nil
 	}
 	return &u, warnings, nil
+}
+
+// hasNull reports whether v is null or holds a null as an array element or
+// object value. json.Unmarshal takes null as the zero value, so a null would
+// silently turn into a different Config.
+func hasNull(v json.RawMessage) bool {
+	var x any
+	if json.Unmarshal(v, &x) != nil {
+		return false
+	}
+	switch x := x.(type) {
+	case nil:
+		return true
+	case []any:
+		return slices.Contains(x, nil)
+	case map[string]any:
+		for _, e := range x {
+			if e == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // inferTransport picks the transport of an entry without "type" from
