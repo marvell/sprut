@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,9 +29,14 @@ const (
 // line to log. Closing the connection stops the whole process group, so that
 // the Upstream's own children go with it.
 type stdioTransport struct {
-	cmd *exec.Cmd
-	log *slog.Logger
+	cmd  *exec.Cmd
+	log  *slog.Logger
+	proc *process // once connected
 }
+
+// started marks the Upstream as started: from now on, its exiting without
+// being stopped is logged as a warning.
+func (t *stdioTransport) started() { t.proc.started.Store(true) }
 
 func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -64,9 +70,17 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		stdout: stdout,
 		exited: make(chan struct{}),
 	}
+	t.proc = p
 	go func() {
-		_ = t.cmd.Wait()
+		err := t.cmd.Wait()
 		stderr.flush()
+		// Logged before exited is closed, so that it is out once Close returns.
+		if p.started.Load() && !p.stopping.Load() {
+			if err == nil {
+				err = errors.New("exit status 0")
+			}
+			t.log.Warn("upstream exited", "err", err)
+		}
 		close(p.exited)
 	}()
 	// The connection is closed by closing stdin (p), not stdout.
@@ -80,6 +94,9 @@ type process struct {
 	stdin  io.WriteCloser
 	stdout *os.File      // read end
 	exited chan struct{} // closed once the process is reaped and stderr drained
+
+	started  atomic.Bool // see stdioTransport.started
+	stopping atomic.Bool // set by Close, so that the exit it causes isn't reported
 }
 
 func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
@@ -87,6 +104,7 @@ func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 // Close closes stdin and sends SIGTERM to the process group, then SIGKILL if
 // any of it is still running after stopGrace.
 func (p *process) Close() error {
+	p.stopping.Store(true)
 	_ = p.stdin.Close()
 	_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
 	if !p.waitGone(stopGrace) {

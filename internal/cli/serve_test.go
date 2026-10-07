@@ -512,6 +512,9 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 
 			tt.stop(g)
 			g.wantCleanExit(t, tt.name)
+			if strings.Contains(g.stderr.String(), "upstream exited") {
+				t.Errorf("an Upstream the Gateway stopped was logged as exiting:\n%s", g.stderr)
+			}
 			wantGone(t, pidFile)
 			wantGone(t, grandchildPIDFile)
 		})
@@ -558,6 +561,7 @@ func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *
 		t.Errorf("tools/call fake__echo after another Upstream crashed = %v, %v; want a result", res, err)
 	}
 	g.closeAgent(t)
+	g.wantLogLine(t, "WARN", `msg="upstream exited"`, "upstream=doomed", `err="exit status 1"`)
 }
 
 func TestServePassesUpstreamProtocolErrorsThrough(t *testing.T) {

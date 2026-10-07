@@ -193,6 +193,7 @@ func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error
 		}
 		r.tools = append(r.tools, tool)
 	}
+	transport.started()
 	return r, nil
 }
 
