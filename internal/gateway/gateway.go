@@ -129,6 +129,7 @@ type starter struct {
 	starting *sync.WaitGroup // the Gateway's, so that Close waits for abandoned starts
 }
 
+// start starts u, giving up on it once the timeout runs out.
 func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
@@ -165,6 +166,7 @@ func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) 
 	return res.r, res.err
 }
 
+// connect launches u's process, connects to it and lists its tools.
 func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error) {
 	cmd := exec.Command(u.Command, u.Args...)
 	cmd.Env = upstreamEnv(s.env, u.Env)

@@ -163,13 +163,13 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		}
 		u.Transport = t
 	case Stdio, HTTP:
+		if err := checkTarget(u); err != nil {
+			return nil, nil, err
+		}
 	case "sse":
 		return nil, []string{"SSE transport is not supported; upstream skipped"}, nil
 	default:
 		return nil, nil, fmt.Errorf(`unknown type %q, want "stdio", "http" or "sse"`, typ)
-	}
-	if err := checkTarget(u); err != nil {
-		return nil, nil, err
 	}
 
 	var warnings []string
@@ -209,7 +209,7 @@ func inferTransport(command, url string) (Transport, error) {
 	}
 }
 
-// checkTarget checks that u sets the target its transport needs ("command"
+// checkTarget checks that u, whose "type" is set, sets the target its transport needs ("command"
 // for stdio, "url" for HTTP) and not the other one.
 func checkTarget(u Upstream) error {
 	set := map[string]bool{"command": u.Command != "", "url": u.URL != ""}
