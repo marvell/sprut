@@ -112,7 +112,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.proc = p
 	go func() {
 		err := t.cmd.Wait()
-		// Decided once: from here on, the state no longer changes.
+		// Both decisions below are taken from this one state.
 		end := p.on(upstreamEnded)
 		if end != stopping {
 			// What the Upstream left running in its group; Close, which
@@ -208,8 +208,8 @@ func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 // reaped exitGrace later, such as one that can't be signalled or is stuck in
 // the kernel, and logs it; the Upstream is still reaped if it ever exits.
 func (p *process) Close() error {
-	// The SDK closes the connection itself once stdout ends, which an
-	// Upstream exiting on its own causes; that exit is still reported.
+	// No move if the Upstream ended the session first, as the SDK closes the
+	// connection itself once stdout ends.
 	p.on(gatewayClosed)
 	_ = p.stdin.Close()
 	sigErr := p.signal(syscall.SIGTERM)
