@@ -38,7 +38,7 @@ A ticket's context has three parts. Fetch all of them:
 
 1. **The ticket**: read the issue (see Conventions).
 2. **The spec**: fetch the spec (above) of the issue's `project`.
-3. **Out-of-scope work**: the issues in the ticket's `blocks` relations. These are later tickets built on this one, so what they cover is deferred work, out of scope here. Their titles usually suffice; `get_issue` one whose title leaves its scope unclear.
+3. **Out-of-scope work**: the project's other open issues, via `list_issues` with `project` and `fields: [id, title, status]`, skipping Done and Canceled. They are later tickets, so what they cover is deferred work, out of scope here, even when no `blocks` relation links them to this one. Their titles usually suffice; `get_issue` one whose title leaves its scope unclear.
 
 When a skill dispatches a subagent that needs ticket context (e.g. `/code-review`'s Spec sub-agent), the identifier is the whole hand-off: pass it with a pointer to this section, and the subagent fetches all three parts itself.
 
