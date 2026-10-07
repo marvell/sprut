@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -35,6 +36,7 @@ type Gateway struct {
 	starting sync.WaitGroup       // Upstream starts, including abandoned ones
 	failed   int                  // Upstreams that failed or timed out at startup
 	tools    map[string]bool      // Namespaced tools served; fixed once Start returns
+	agent    atomic.Bool          // whether "agent connected" is logged
 	log      *slog.Logger
 }
 
@@ -52,9 +54,11 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		tools: map[string]bool{},
 		log:   log,
 	}
-	g.server.AddReceivingMiddleware(g.answerUnknownTools)
+	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.logAgentConnected)
 	st := &starter{
-		client:   mcp.NewClient(impl, nil),
+		// The Gateway proxies no interactive input, so a modern Upstream's
+		// request for it comes back to forward rather than being retried.
+		client:   mcp.NewClient(impl, &mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}}),
 		env:      env,
 		timeout:  startupTimeout,
 		starting: &g.starting,
@@ -242,10 +246,34 @@ func (g *Gateway) answerUnknownTools(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
+// logAgentConnected logs, once, the protocol version the Agent speaks, as
+// soon as the SDK has settled it: by the initialize handshake for a legacy
+// Agent, or from the first request of a modern one.
+func (g *Gateway) logAgentConnected(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		res, err := next(ctx, method, req)
+		if g.agent.Load() || err != nil {
+			return res, err
+		}
+		var protocol string
+		if init, ok := res.(*mcp.InitializeResult); ok {
+			protocol = init.ProtocolVersion // negotiated, unlike the one asked for
+		} else if ss, ok := req.GetSession().(*mcp.ServerSession); ok {
+			if p := ss.InitializeParams(); p != nil {
+				protocol = p.ProtocolVersion
+			}
+		}
+		if protocol != "" && g.agent.CompareAndSwap(false, true) {
+			g.log.Info("agent connected", "protocol", protocol)
+		}
+		return res, err
+	}
+}
+
 // forward handles calls to a Namespaced tool by calling the Upstream's tool
 // original over session, and logs each call. A call the Upstream doesn't
 // answer, such as one to an Upstream that is gone, ends in an isError result
-// naming it.
+// naming it, and so does one where it asks for interactive input.
 func forward(upstream string, session *mcp.ClientSession, original string, log *slog.Logger) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
@@ -254,7 +282,11 @@ func forward(upstream string, session *mcp.ClientSession, original string, log *
 		if err != nil {
 			attrs = append(attrs, "err", err)
 		}
-		if res != nil {
+		switch {
+		case res == nil:
+		case res.NeedsInput():
+			res = errorResult(fmt.Errorf("upstream %q asked for input mid-call, but interactive input is not supported by the Gateway", upstream))
+		default:
 			// serverInfo identifies the responder of each hop; drop the
 			// Upstream's so the Gateway's own is reported to the Agent.
 			delete(res.Meta, mcp.MetaKeyServerInfo)

@@ -72,6 +72,18 @@ const (
 	// envFakeGatherTool, if set to N, adds a tool "gather" that answers
 	// only once N calls to it are in flight together.
 	envFakeGatherTool = "SPRUT_TEST_FAKE_GATHER_TOOL"
+	// envFakeProtocol, if set, is the one protocol version the fake Upstream
+	// supports, which sets its era: legacy before 2026-07-28, modern from it.
+	envFakeProtocol = "SPRUT_TEST_FAKE_PROTOCOL"
+	// envFakeAskTool, if set, adds a tool "ask" that asks for interactive
+	// input mid-call (multi-round-trip), and answers once it has some.
+	envFakeAskTool = "SPRUT_TEST_FAKE_ASK_TOOL"
+)
+
+// Protocol versions of the two eras, as the era matrix tests them.
+const (
+	legacyProtocol = "2025-06-18"
+	modernProtocol = "2026-07-28"
 )
 
 // fakeLifetime bounds how long a fake Upstream or grandchild that only
@@ -166,7 +178,11 @@ func runFakeUpstream() int {
 		return 1
 	}
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "fake-upstream", Version: "0.0.1"}, nil)
+	var opts mcp.ServerOptions
+	if v := os.Getenv(envFakeProtocol); v != "" {
+		opts.SupportedProtocolVersions = []string{v}
+	}
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake-upstream", Version: "0.0.1"}, &opts)
 	server.AddTool(echoTool, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args struct{ Text string }
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -218,6 +234,17 @@ func runFakeUpstream() int {
 		}
 		server.AddTool(&mcp.Tool{Name: "gather", InputSchema: objectSchema}, gather(want))
 	}
+	if os.Getenv(envFakeAskTool) != "" {
+		server.AddTool(&mcp.Tool{Name: "ask", InputSchema: objectSchema},
+			func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if len(req.Params.InputResponses) == 0 {
+					return &mcp.CallToolResult{
+						InputRequests: mcp.InputRequestMap{"confirm": &mcp.ElicitParams{Message: "Sure?"}},
+					}, nil
+				}
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "answered"}}}, nil
+			})
+	}
 	if name := os.Getenv(envFakeBadSchemaTool); name != "" {
 		// AddTool insists on an object schema, so the bad one is put into
 		// the tools/list result on its way out.
@@ -244,6 +271,15 @@ func runFakeUpstream() int {
 		return 1
 	}
 	return 0
+}
+
+// echoResult is the fake Upstream's answer to echo with text, as JSON.
+func echoResult(text string) map[string]any {
+	return map[string]any{
+		"content":           []any{map[string]any{"type": "text", "text": "echo: " + text}},
+		"structuredContent": map[string]any{"echoed": text},
+		"_meta":             map[string]any{"fake/trace": "abc"},
+	}
 }
 
 // gather implements envFakeGatherTool.
@@ -356,6 +392,13 @@ type gateway struct {
 // connects an Agent to it.
 func startGateway(t *testing.T, configPath string, env []string, args ...string) *gateway {
 	t.Helper()
+	return startGatewayAs(t, "", configPath, env, args...)
+}
+
+// startGatewayAs is startGateway with an Agent that asks for protocol, which
+// sets its era. An empty protocol is the SDK's latest.
+func startGatewayAs(t *testing.T, protocol, configPath string, env []string, args ...string) *gateway {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	// main delivers signals by cancelling cli.Run's ctx.
@@ -374,7 +417,8 @@ func startGateway(t *testing.T, configPath string, env []string, args ...string)
 	}()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-agent", Version: "0.0.1"}, nil)
-	session, err := client.Connect(ctx, &mcp.IOTransport{Reader: gatewayStdout, Writer: gatewayStdin}, nil)
+	session, err := client.Connect(ctx, &mcp.IOTransport{Reader: gatewayStdout, Writer: gatewayStdin},
+		&mcp.ClientSessionOptions{ProtocolVersion: protocol})
 	if err != nil {
 		t.Fatalf("Agent failed to connect: %v\nstderr:\n%s", err, g.stderr)
 	}

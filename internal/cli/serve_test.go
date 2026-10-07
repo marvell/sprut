@@ -62,11 +62,7 @@ func TestServeRoutesToolCallsToUpstreamAndReturnsResultUnchanged(t *testing.T) {
 		{
 			tool: "fake__echo",
 			args: map[string]any{"text": "hello"},
-			want: map[string]any{
-				"content":           []any{map[string]any{"type": "text", "text": "echo: hello"}},
-				"structuredContent": map[string]any{"echoed": "hello"},
-				"_meta":             map[string]any{"fake/trace": "abc"},
-			},
+			want: echoResult("hello"),
 		},
 		{
 			tool: "fake__fail",
@@ -638,4 +634,52 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	if data, err := os.ReadFile(progress); err != nil || string(data) != "started" {
 		t.Errorf("Upstream's call: %s holds %q (err %v), want it still started", progress, data, err)
 	}
+}
+
+func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
+	t.Parallel()
+	eras := []string{legacyProtocol, modernProtocol}
+	for _, agent := range eras {
+		for _, upstream := range eras {
+			t.Run("agent "+agent+" upstream "+upstream, func(t *testing.T) {
+				t.Parallel()
+				path := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t, envFakeProtocol+"="+upstream)})
+				g := startGatewayAs(t, agent, path, nil)
+
+				if got := g.Agent.InitializeResult().ProtocolVersion; got != agent {
+					t.Errorf("Agent negotiated %s, want %s", got, agent)
+				}
+				g.wantLogLine(t, "INFO", `msg="upstream ready"`, "upstream=fake", "protocol="+upstream)
+				g.wantTools(t, "fake__echo", "fake__fail")
+				g.wantLogLine(t, "INFO", `msg="agent connected"`, "protocol="+agent)
+				res, err := g.Agent.CallTool(context.Background(),
+					&mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "hi"}})
+				if err != nil {
+					t.Fatalf("tools/call: %v", err)
+				}
+				if got, want := callResult(t, res), toJSON(t, echoResult("hi")); !reflect.DeepEqual(got, want) {
+					t.Errorf("result:\n got %v\nwant %v", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestServeEndsCallWithAnErrorResultWhenModernUpstreamAsksForInteractiveInput(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, map[string]any{
+		"fake": fakeUpstreamEntry(t, envFakeProtocol+"="+modernProtocol, envFakeAskTool+"=1"),
+	})
+	g := startGateway(t, path, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "fake__ask"})
+	if err != nil {
+		t.Fatalf("tools/call: %v\nstderr:\n%s", err, g.stderr)
+	}
+	if text := resultText(t, res); !res.IsError || !strings.Contains(text, "interactive input is not supported by the Gateway") {
+		t.Errorf("result = %q (isError %v), want an isError result saying interactive input is not supported by the Gateway", text, res.IsError)
+	}
+	g.wantTools(t, "fake__ask", "fake__echo", "fake__fail") // still serving
 }
