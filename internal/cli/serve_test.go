@@ -106,7 +106,7 @@ func TestServeShutsDownGatewayAndUpstreamOnStdinEOF(t *testing.T) {
 	g := startFakeGateway(t, envFakePIDFile+"="+pidFile)
 
 	g.closeAgent(t)
-	wantUpstreamGone(t, pidFile)
+	wantGone(t, pidFile)
 }
 
 func TestServeLogsLogfmtAtInfoToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
@@ -380,7 +380,7 @@ func TestServeDryRunWithHealthyUpstreamsExits0AndStopsThem(t *testing.T) {
 		t.Errorf("no startup summary for two ready Upstreams; stderr:\n%s", stderr)
 	}
 	for _, name := range []string{"one", "two"} {
-		wantUpstreamGone(t, filepath.Join(dir, name+".pid"))
+		wantGone(t, filepath.Join(dir, name+".pid"))
 	}
 }
 
@@ -468,4 +468,59 @@ func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
 	}
 	g.wantLogLine(t, "DEBUG", "upstream=two", "tool=two__echo", "duration=", "isError=false")
 	g.wantLogLine(t, "DEBUG", "upstream=two", "tool=two__fail", "duration=", "isError=true")
+}
+
+func TestServeLogsUpstreamStderrLineByLine(t *testing.T) {
+	t.Parallel()
+	entry := fakeUpstreamEntry(t, envFakeStderr+"=first line\nsecond line\n")
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
+	g.closeAgent(t)
+
+	g.wantLogLine(t, "INFO", `msg="upstream stderr"`, "upstream=fake", `line="first line"`)
+	g.wantLogLine(t, "INFO", `msg="upstream stderr"`, "upstream=fake", `line="second line"`)
+}
+
+func TestServeKillsUpstreamsThatIgnoreSIGTERMAfterOneGrace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	upstreams := map[string]any{}
+	for _, name := range []string{"one", "two"} {
+		upstreams[name] = fakeUpstreamEntry(t, envFakeIgnoreSIGTERM+"=1", envFakePIDFile+"="+filepath.Join(dir, name+".pid"))
+	}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+
+	begin := time.Now()
+	g.closeAgent(t)
+	// About 5s of grace after SIGTERM, then SIGKILL, for all Upstreams at once.
+	if took := time.Since(begin); took < 4*time.Second || took > 8*time.Second {
+		t.Errorf("shutdown took %s, want about 5s", took)
+	}
+	for _, name := range []string{"one", "two"} {
+		wantGone(t, filepath.Join(dir, name+".pid"))
+	}
+}
+
+func TestServeLeavesNoGrandchildOfUpstreamBehind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pidFile, grandchildPIDFile := filepath.Join(dir, "upstream.pid"), filepath.Join(dir, "grandchild.pid")
+	entry := fakeUpstreamEntry(t, envFakePIDFile+"="+pidFile, envFakeGrandchild+"="+grandchildPIDFile)
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
+
+	g.closeAgent(t)
+	wantGone(t, pidFile)
+	wantGone(t, grandchildPIDFile)
+}
+
+func TestServeShutsDownGatewayAndUpstreamsOnSignal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pidFile, grandchildPIDFile := filepath.Join(dir, "upstream.pid"), filepath.Join(dir, "grandchild.pid")
+	entry := fakeUpstreamEntry(t, envFakePIDFile+"="+pidFile, envFakeGrandchild+"="+grandchildPIDFile)
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
+
+	g.signal()
+	g.wantCleanExit(t, "a signal")
+	wantGone(t, pidFile)
+	wantGone(t, grandchildPIDFile)
 }

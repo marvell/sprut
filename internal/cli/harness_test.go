@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -49,9 +51,25 @@ const (
 	// envFakeBadSchemaTool, if set, is the name of one more tool, whose input
 	// schema is not an object schema.
 	envFakeBadSchemaTool = "SPRUT_TEST_FAKE_BAD_SCHEMA_TOOL"
+	// envFakeStderr, if set, is written to the fake Upstream's stderr at
+	// startup.
+	envFakeStderr = "SPRUT_TEST_FAKE_STDERR"
+	// envFakeIgnoreSIGTERM, if set, makes the fake Upstream ignore SIGTERM
+	// and its stdin closing, so only SIGKILL stops it.
+	envFakeIgnoreSIGTERM = "SPRUT_TEST_FAKE_IGNORE_SIGTERM"
+	// envFakeGrandchild, if set, is a path the fake Upstream writes the PID
+	// of a grandchild to: a process it starts that shares its stderr and
+	// sleeps until killed.
+	envFakeGrandchild = "SPRUT_TEST_FAKE_GRANDCHILD"
+	// envFakeSleeper makes the test binary a grandchild (see envFakeGrandchild).
+	envFakeSleeper = "SPRUT_TEST_FAKE_SLEEPER"
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(envFakeSleeper) != "" {
+		time.Sleep(time.Hour)
+		os.Exit(1)
+	}
 	if os.Getenv(envFakeUpstream) != "" {
 		os.Exit(runFakeUpstream())
 	}
@@ -89,6 +107,11 @@ var (
 )
 
 func runFakeUpstream() int {
+	if os.Getenv(envFakeIgnoreSIGTERM) != "" {
+		signal.Ignore(syscall.SIGTERM)
+		defer time.Sleep(time.Hour)
+	}
+
 	if path := os.Getenv(envFakePIDFile); path != "" {
 		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
@@ -101,6 +124,17 @@ func runFakeUpstream() int {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
 			return 1
 		}
+	}
+
+	if path := os.Getenv(envFakeGrandchild); path != "" {
+		if err := startGrandchild(path); err != nil {
+			fmt.Fprintln(os.Stderr, "fake upstream:", err)
+			return 1
+		}
+	}
+
+	if v := os.Getenv(envFakeStderr); v != "" {
+		fmt.Fprint(os.Stderr, v)
 	}
 
 	if v := os.Getenv(envFakeRendezvous); v != "" {
@@ -174,6 +208,21 @@ func runFakeUpstream() int {
 	return 0
 }
 
+// startGrandchild implements envFakeGrandchild.
+func startGrandchild(pidFile string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(), envFakeSleeper+"=1")
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+}
+
 // rendezvous implements envFakeRendezvous.
 func rendezvous(v string) error {
 	n, dir, _ := strings.Cut(v, ":")
@@ -244,6 +293,7 @@ type gateway struct {
 	stdout *syncBuffer // everything the Gateway wrote to stdout
 	stderr *syncBuffer
 	exit   chan int
+	signal context.CancelFunc // stands in for SIGINT or SIGTERM reaching sprut
 }
 
 // startGateway runs `sprut serve -c configPath` plus args with env and
@@ -252,14 +302,16 @@ func startGateway(t *testing.T, configPath string, env []string, args ...string)
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
+	// main delivers signals by cancelling cli.Run's ctx.
+	runCtx, sendSignal := context.WithCancel(ctx)
 
 	agentToGateway, gatewayStdin := io.Pipe()
 	gatewayStdout, gatewayToAgent := io.Pipe()
-	g := &gateway{stdout: &syncBuffer{}, stderr: &syncBuffer{}, exit: make(chan int, 1)}
+	g := &gateway{stdout: &syncBuffer{}, stderr: &syncBuffer{}, exit: make(chan int, 1), signal: sendSignal}
 
 	env = append([]string{envFakeUpstream + "=1"}, env...)
 	go func() {
-		code := cli.Run(ctx, append([]string{"sprut", "serve", "-c", configPath}, args...), env,
+		code := cli.Run(runCtx, append([]string{"sprut", "serve", "-c", configPath}, args...), env,
 			agentToGateway, io.MultiWriter(gatewayToAgent, g.stdout), g.stderr)
 		_ = gatewayToAgent.Close()
 		g.exit <- code
@@ -291,30 +343,36 @@ func runSprut(t *testing.T, env []string, args ...string) (code int, stdout, std
 func (g *gateway) closeAgent(t *testing.T) {
 	t.Helper()
 	_ = g.Agent.Close()
+	g.wantCleanExit(t, "EOF on stdin")
+}
+
+// wantCleanExit checks that the Gateway exits with code 0 after cause.
+func (g *gateway) wantCleanExit(t *testing.T, cause string) {
+	t.Helper()
 	select {
 	case code := <-g.exit:
 		if code != 0 {
 			t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, g.stderr)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatalf("Gateway did not exit after EOF on stdin\nstderr:\n%s", g.stderr)
+		t.Fatalf("Gateway did not exit after %s\nstderr:\n%s", cause, g.stderr)
 	}
 }
 
-// wantUpstreamGone checks that the fake Upstream that wrote pidFile (see
-// envFakePIDFile) no longer exists as a process.
-func wantUpstreamGone(t *testing.T, pidFile string) {
+// wantGone checks that the process whose PID is in pidFile (see
+// envFakePIDFile and envFakeGrandchild) no longer exists.
+func wantGone(t *testing.T, pidFile string) {
 	t.Helper()
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
-		t.Fatalf("fake Upstream did not record its PID: %v", err)
+		t.Fatalf("PID not recorded: %v", err)
 	}
 	pid, err := strconv.Atoi(string(data))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Errorf("Upstream process %d (%s) still exists after Gateway exit (kill -0: %v)", pid, pidFile, err)
+		t.Errorf("process %d (%s) still exists after Gateway exit (kill -0: %v)", pid, pidFile, err)
 	}
 }
 

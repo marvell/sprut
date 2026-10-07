@@ -54,6 +54,7 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		env:      env,
 		timeout:  startupTimeout,
 		starting: &g.starting,
+		log:      log,
 	}
 
 	results := make([]*ready, len(upstreams))
@@ -127,6 +128,7 @@ type starter struct {
 	env      []string
 	timeout  time.Duration
 	starting *sync.WaitGroup // the Gateway's, so that Close waits for abandoned starts
+	log      *slog.Logger
 }
 
 // start starts u, giving up on it once the timeout runs out.
@@ -135,8 +137,8 @@ func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) 
 	defer cancel()
 
 	// Connecting runs on its own, because a failed connect stops the
-	// Upstream before returning, and the SDK gives a hung Upstream seconds of
-	// grace to exit. Startup gives up at the deadline instead; Close waits
+	// Upstream before returning, and a hung Upstream gets seconds of grace
+	// to exit. Startup gives up at the deadline instead; Close waits
 	// for the stopping to finish.
 	type result struct {
 		r   *ready
@@ -170,7 +172,8 @@ func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) 
 func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error) {
 	cmd := exec.Command(u.Command, u.Args...)
 	cmd.Env = upstreamEnv(s.env, u.Env)
-	session, err := s.client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	transport := &stdioTransport{cmd: cmd, log: s.log.With("upstream", u.Name)}
+	session, err := s.client.Connect(ctx, transport, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -245,13 +248,14 @@ func (g *Gateway) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) 
 	return g.server.Run(ctx, &mcp.IOTransport{Reader: io.NopCloser(stdin), Writer: nopWriteCloser{stdout}})
 }
 
-// Close shuts every Upstream down, including those still being stopped after
-// failing to start.
+// Close shuts every Upstream down at once, and waits for those still being
+// stopped after failing to start.
 func (g *Gateway) Close() {
+	var wg sync.WaitGroup
 	for _, s := range g.sessions {
-		// An Upstream stopped by a signal reports an error; shutdown goes on.
-		_ = s.Close()
+		wg.Go(func() { _ = s.Close() })
 	}
+	wg.Wait()
 	g.starting.Wait()
 }
 
