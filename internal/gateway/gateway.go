@@ -29,11 +29,10 @@ var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // Gateway is a started set of Upstreams and the MCP server exposing their tools.
 type Gateway struct {
 	server      *mcp.Server
-	sessions    []*mcp.ClientSession // one per started Upstream
-	starting    sync.WaitGroup       // Upstream starts, including abandoned ones
-	failed      int                  // Upstreams that failed or timed out at startup
-	tools       map[string]bool      // Namespaced tools served; fixed once Start returns
-	agentLogged atomic.Bool          // whether "agent connected" is logged
+	upstreams   *upstreams
+	failed      int             // Upstreams that failed or timed out at startup
+	tools       map[string]bool // Namespaced tools served; fixed once Start returns
+	agentLogged atomic.Bool     // whether "agent connected" is logged
 	log         *slog.Logger
 }
 
@@ -41,72 +40,49 @@ type Gateway struct {
 // returns a Gateway ready to serve them. env is the environment Upstream
 // processes inherit. Each Upstream gets startupTimeout to connect and list
 // its tools; one that fails or runs out of time is logged and left out.
-func Start(ctx context.Context, upstreams []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
+func Start(ctx context.Context, configured []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
 	impl := &mcp.Implementation{Name: "sprut", Version: version}
 	g := &Gateway{
 		server: mcp.NewServer(impl, &mcp.ServerOptions{
 			// Advertise only tools; the tool list is fixed for the session.
 			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		}),
+		upstreams: &upstreams{
+			// The Gateway proxies no interactive input, so a modern Upstream's
+			// request for it comes back to forward rather than being retried.
+			client:  mcp.NewClient(impl, &mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}}),
+			env:     env,
+			timeout: startupTimeout,
+			log:     log,
+		},
 		tools: map[string]bool{},
 		log:   log,
 	}
 	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.logAgentConnected)
-	st := &starter{
-		// The Gateway proxies no interactive input, so a modern Upstream's
-		// request for it comes back to forward rather than being retried.
-		client:   mcp.NewClient(impl, &mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}}),
-		env:      env,
-		timeout:  startupTimeout,
-		starting: &g.starting,
-		log:      log,
-	}
 
-	results := make([]*ready, len(upstreams))
-	var wg sync.WaitGroup
-	for i, u := range upstreams {
-		wg.Go(func() {
-			begin := time.Now()
-			r, err := st.start(ctx, u)
-			if err != nil {
-				log.Warn("upstream failed; skipped", "upstream", u.Name, "err", err)
-				return
-			}
-			r.took = time.Since(begin)
-			results[i] = r
-		})
-	}
-	wg.Wait()
-
-	// Upstreams are logged in Config order, so the log doesn't depend on
-	// which Upstream was quickest. (The SDK lists tools by name anyway.)
+	started := g.upstreams.start(ctx, configured)
 	tools := 0
-	for i, r := range results {
-		if r == nil {
-			continue
-		}
-		name := upstreams[i].Name
-		g.sessions = append(g.sessions, r.session)
-		added := g.addTools(name, r)
-		log.Info("upstream ready", "upstream", name, "tools", added,
+	for _, r := range started {
+		added := g.addTools(r)
+		log.Info("upstream ready", "upstream", r.name, "tools", added,
 			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
 	}
-	g.failed = len(upstreams) - len(g.sessions)
-	log.Info("gateway started", "ready", len(g.sessions), "failed", g.failed, "tools", tools)
+	g.failed = len(configured) - len(started)
+	log.Info("gateway started", "ready", len(started), "failed", g.failed, "tools", tools)
 	return g
 }
 
 // Failed reports how many Upstreams failed or timed out at startup.
 func (g *Gateway) Failed() int { return g.failed }
 
-// addTools serves r's tools as Namespaced tools under name, skipping the
-// ones addTool rejects, and returns how many it added.
-func (g *Gateway) addTools(name string, r *ready) int {
+// addTools serves r's tools as Namespaced tools, skipping the ones addTool
+// rejects, and returns how many it added.
+func (g *Gateway) addTools(r *ready) int {
 	added := 0
 	for _, tool := range r.tools {
-		if err := g.addTool(name, r.session, tool); err != nil {
-			g.log.Warn("tool skipped", "upstream", name, "tool", name+separator+tool.Name, "err", err)
+		if err := g.addTool(r.name, r.session, tool); err != nil {
+			g.log.Warn("tool skipped", "upstream", r.name, "tool", r.name+separator+tool.Name, "err", err)
 			continue
 		}
 		added++
@@ -116,30 +92,66 @@ func (g *Gateway) addTools(name string, r *ready) int {
 
 // ready is an Upstream that is connected and has listed its tools.
 type ready struct {
+	name    string
 	session *mcp.ClientSession
 	tools   []*mcp.Tool
 	took    time.Duration // to start, which "upstream ready" reports, as it is logged once all are done
 }
 
-// starter starts Upstreams, giving each timeout to connect and list its
-// tools. env is the environment sprut was given: a stdio Upstream's process
-// inherits it, and an HTTP Upstream's proxy comes from it.
-type starter struct {
-	client   *mcp.Client
-	env      []string
-	timeout  time.Duration
-	starting *sync.WaitGroup // the Gateway's, so that Close waits for abandoned starts
-	log      *slog.Logger
+// upstreams starts the Upstreams and stops them again. Each gets timeout
+// to connect and list its tools. env is the environment sprut was given: a
+// stdio Upstream's process inherits it, and an HTTP Upstream's proxy comes
+// from it.
+type upstreams struct {
+	client  *mcp.Client
+	env     []string
+	timeout time.Duration
+	log     *slog.Logger
+
+	sessions []*mcp.ClientSession // one per started Upstream
+	starting sync.WaitGroup       // Upstream starts, including abandoned ones
 }
 
-// start starts u, giving up on it once the timeout runs out.
-func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) {
+// start starts every Upstream in configured concurrently, and returns those
+// that started, in Config order. One that fails or runs out of time is
+// logged and left out.
+func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []*ready {
+	results := make([]*ready, len(configured))
+	var wg sync.WaitGroup
+	for i, u := range configured {
+		wg.Go(func() {
+			begin := time.Now()
+			r, err := s.startOne(ctx, u)
+			if err != nil {
+				s.log.Warn("upstream failed; skipped", "upstream", u.Name, "err", err)
+				return
+			}
+			r.name, r.took = u.Name, time.Since(begin)
+			results[i] = r
+		})
+	}
+	wg.Wait()
+
+	// In Config order, so the log doesn't depend on which Upstream was
+	// quickest. (The SDK lists tools by name anyway.)
+	var started []*ready
+	for _, r := range results {
+		if r != nil {
+			started = append(started, r)
+			s.sessions = append(s.sessions, r.session)
+		}
+	}
+	return started
+}
+
+// startOne starts u, giving up on it once the timeout runs out.
+func (s *upstreams) startOne(ctx context.Context, u config.Upstream) (*ready, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
 	// Connecting runs on its own, because a failed connect stops the
 	// Upstream before returning, and a hung Upstream gets seconds of grace
-	// to exit. Startup gives up at the deadline instead; Close waits
+	// to exit. Startup gives up at the deadline instead; close waits
 	// for the stopping to finish.
 	type result struct {
 		r   *ready
@@ -169,8 +181,19 @@ func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) 
 	return res.r, res.err
 }
 
+// close stops every started Upstream at once, and waits for those still
+// being stopped after failing to start.
+func (s *upstreams) close() {
+	var wg sync.WaitGroup
+	for _, session := range s.sessions {
+		wg.Go(func() { _ = session.Close() })
+	}
+	wg.Wait()
+	s.starting.Wait()
+}
+
 // connect connects to u over its Transport and lists its tools.
-func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error) {
+func (s *upstreams) connect(ctx context.Context, u config.Upstream) (*ready, error) {
 	switch u.Transport {
 	case config.Stdio:
 		return connectStdio(ctx, s.client, u, s.env, s.log)
@@ -304,14 +327,7 @@ func (g *Gateway) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) 
 
 // Close shuts every Upstream down at once, and waits for those still being
 // stopped after failing to start.
-func (g *Gateway) Close() {
-	var wg sync.WaitGroup
-	for _, s := range g.sessions {
-		wg.Go(func() { _ = s.Close() })
-	}
-	wg.Wait()
-	g.starting.Wait()
-}
+func (g *Gateway) Close() { g.upstreams.close() }
 
 type nopWriteCloser struct{ io.Writer }
 
