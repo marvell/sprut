@@ -27,5 +27,5 @@ jobs:
       - name: golangci-lint (seam rules)
         run: make lint
 
-      - name: go test -race
+      - name: go test -race (3 runs, shuffled)
         run: make test

@@ -65,7 +65,9 @@ const (
 	// sleeps until killed.
 	envFakeGrandchild = "SPRUT_TEST_FAKE_GRANDCHILD"
 	// envFakeCrashTool, if set, adds a tool "crash" that makes the fake
-	// Upstream exit mid-call, without answering.
+	// Upstream exit 1 mid-call, without answering. It hangs up its stdout
+	// first and exits only once the Gateway reacts with SIGTERM, so the
+	// Gateway always sees the exit after closing the connection itself.
 	envFakeCrashTool = "SPRUT_TEST_FAKE_CRASH_TOOL"
 	// envFakeBlockTool, if set, is a path, and adds a tool "block" that
 	// writes "started" to it, blocks until the call is cancelled, then
@@ -193,6 +195,13 @@ func runFakeUpstream() int {
 	if os.Getenv(envFakeCrashTool) != "" {
 		server.AddTool(&mcp.Tool{Name: "crash", InputSchema: objectSchema},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				terminated := make(chan os.Signal, 1)
+				signal.Notify(terminated, syscall.SIGTERM)
+				_ = os.Stdout.Close()
+				select {
+				case <-terminated:
+				case <-time.After(fakeLifetime):
+				}
 				os.Exit(1)
 				return nil, nil
 			})

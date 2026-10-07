@@ -22,5 +22,6 @@ vet:
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
 
+# Repeated and shuffled, so a test that depends on timing or order fails here.
 test:
-	go test -race ./...
+	go test -race -count=3 -shuffle=on ./...
