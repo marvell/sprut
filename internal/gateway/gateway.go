@@ -31,13 +31,13 @@ var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // Gateway is a started set of Upstreams and the MCP server exposing their tools.
 type Gateway struct {
-	server   *mcp.Server
-	sessions []*mcp.ClientSession // one per started Upstream
-	starting sync.WaitGroup       // Upstream starts, including abandoned ones
-	failed   int                  // Upstreams that failed or timed out at startup
-	tools    map[string]bool      // Namespaced tools served; fixed once Start returns
-	agent    atomic.Bool          // whether "agent connected" is logged
-	log      *slog.Logger
+	server      *mcp.Server
+	sessions    []*mcp.ClientSession // one per started Upstream
+	starting    sync.WaitGroup       // Upstream starts, including abandoned ones
+	failed      int                  // Upstreams that failed or timed out at startup
+	tools       map[string]bool      // Namespaced tools served; fixed once Start returns
+	agentLogged atomic.Bool          // whether "agent connected" is logged
+	log         *slog.Logger
 }
 
 // Start launches every Upstream concurrently, collects their tools and
@@ -248,11 +248,11 @@ func (g *Gateway) answerUnknownTools(next mcp.MethodHandler) mcp.MethodHandler {
 
 // logAgentConnected logs, once, the protocol version the Agent speaks, as
 // soon as the SDK has settled it: by the initialize handshake for a legacy
-// Agent, or from the first request of a modern one.
+// Agent, or from the first request of a modern one, even one that fails.
 func (g *Gateway) logAgentConnected(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 		res, err := next(ctx, method, req)
-		if g.agent.Load() || err != nil {
+		if g.agentLogged.Load() {
 			return res, err
 		}
 		var protocol string
@@ -263,7 +263,7 @@ func (g *Gateway) logAgentConnected(next mcp.MethodHandler) mcp.MethodHandler {
 				protocol = p.ProtocolVersion
 			}
 		}
-		if protocol != "" && g.agent.CompareAndSwap(false, true) {
+		if protocol != "" && g.agentLogged.CompareAndSwap(false, true) {
 			g.log.Info("agent connected", "protocol", protocol)
 		}
 		return res, err
@@ -285,7 +285,7 @@ func forward(upstream string, session *mcp.ClientSession, original string, log *
 		switch {
 		case res == nil:
 		case res.NeedsInput():
-			res = errorResult(fmt.Errorf("upstream %q asked for input mid-call, but interactive input is not supported by the Gateway", upstream))
+			res = errorResult(fmt.Errorf("upstream %q asked for input mid-call, but interactive input is not supported by the gateway", upstream))
 		default:
 			// serverInfo identifies the responder of each hop; drop the
 			// Upstream's so the Gateway's own is reported to the Agent.

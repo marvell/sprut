@@ -641,7 +641,7 @@ func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
 	eras := []string{legacyProtocol, modernProtocol}
 	for _, agent := range eras {
 		for _, upstream := range eras {
-			t.Run("agent "+agent+" upstream "+upstream, func(t *testing.T) {
+			t.Run("Agent "+agent+" Upstream "+upstream, func(t *testing.T) {
 				t.Parallel()
 				path := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t, envFakeProtocol+"="+upstream)})
 				g := startGatewayAs(t, agent, path, nil)
@@ -678,7 +678,7 @@ func TestServeEndsCallWithAnErrorResultWhenModernUpstreamAsksForInteractiveInput
 	if err != nil {
 		t.Fatalf("tools/call: %v\nstderr:\n%s", err, g.stderr)
 	}
-	if text := resultText(t, res); !res.IsError || !strings.Contains(text, "interactive input is not supported by the Gateway") {
+	if text := resultText(t, res); !res.IsError || !strings.Contains(text, "interactive input is not supported by the gateway") {
 		t.Errorf("result = %q (isError %v), want an isError result saying interactive input is not supported by the Gateway", text, res.IsError)
 	}
 	g.wantTools(t, "fake__ask", "fake__echo", "fake__fail") // still serving
