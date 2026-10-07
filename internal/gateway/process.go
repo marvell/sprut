@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,9 +14,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// stopGrace is how long a stopped Upstream gets to exit after SIGTERM before
-// it is killed.
-const stopGrace = 5 * time.Second
+const (
+	// stopGrace is how long a stopped Upstream gets to exit after SIGTERM
+	// before it is killed.
+	stopGrace = 5 * time.Second
+	// maxStderrLine is the longest stderr line logged whole; a longer one is
+	// logged in pieces.
+	maxStderrLine = 64 << 10
+)
 
 // stdioTransport runs a stdio Upstream in its own process group and talks MCP
 // to it over its stdin and stdout. The Upstream's stderr is logged line by
@@ -29,51 +34,40 @@ type stdioTransport struct {
 
 func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stderr := &lineLogger{log: t.log}
+	t.cmd.Stderr = stderr
+	// Once the Upstream has exited, stop reading a stderr still held open by
+	// something that left its process group.
+	t.cmd.WaitDelay = time.Second
 	stdin, err := t.cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
-	// Plain pipes rather than exec's, which Wait would close while they are
+	// A plain pipe rather than exec's, which Wait would close while it is
 	// still being read.
 	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		return nil, err
 	}
-	stderr, stderrW, err := os.Pipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stdoutW.Close()
-		return nil, err
-	}
-	t.cmd.Stdout, t.cmd.Stderr = stdoutW, stderrW
+	t.cmd.Stdout = stdoutW
 	err = t.cmd.Start()
-	// The Upstream holds its own copies of the write ends.
-	_ = stdoutW.Close()
-	_ = stderrW.Close()
+	_ = stdoutW.Close() // the Upstream holds its own copy
 	if err != nil {
 		_ = stdout.Close()
-		_ = stderr.Close()
 		return nil, err
 	}
 
 	p := &process{
-		cmd:        t.cmd,
-		pgid:       t.cmd.Process.Pid, // the leader's, by Setpgid
-		stdin:      stdin,
-		stdout:     stdout,
-		stderr:     stderr,
-		exited:     make(chan struct{}),
-		stderrDone: make(chan struct{}),
+		pgid:   t.cmd.Process.Pid, // the leader's, by Setpgid
+		stdin:  stdin,
+		stdout: stdout,
+		exited: make(chan struct{}),
 	}
 	go func() {
 		_ = t.cmd.Wait()
+		stderr.flush()
 		close(p.exited)
-	}()
-	go func() {
-		logLines(stderr, t.log)
-		close(p.stderrDone)
 	}()
 	// The connection is closed by closing stdin (p), not stdout.
 	return (&mcp.IOTransport{Reader: io.NopCloser(stdout), Writer: p}).Connect(ctx)
@@ -82,12 +76,10 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 // process is a started stdio Upstream. Writing to it writes to its stdin;
 // closing it stops it.
 type process struct {
-	cmd            *exec.Cmd
-	pgid           int
-	stdin          io.WriteCloser
-	stdout, stderr *os.File      // read ends
-	exited         chan struct{} // closed once the process is reaped
-	stderrDone     chan struct{} // closed once stderr is drained
+	pgid   int
+	stdin  io.WriteCloser
+	stdout *os.File      // read end
+	exited chan struct{} // closed once the process is reaped and stderr drained
 }
 
 func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
@@ -102,31 +94,19 @@ func (p *process) Close() error {
 		// SIGKILL can't be ignored; this only covers the reaping.
 		p.waitGone(time.Second)
 	}
-	// stderr ends once nothing holds it open. Something that left the
-	// process group may still, so stop reading it soon after.
-	select {
-	case <-p.stderrDone:
-	case <-time.After(time.Second):
-	}
-	_ = p.stderr.Close()
-	<-p.stderrDone
+	<-p.exited
 	return p.stdout.Close()
 }
 
 // waitGone waits up to timeout for the whole process group to be gone, and
-// reports whether it is.
+// reports whether it is. An unreaped leader still counts as a member.
 func (p *process) waitGone(timeout time.Duration) bool {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		select {
-		case <-p.exited:
-			// The group outlives its reaped leader while any member is left.
-			if err := syscall.Kill(-p.pgid, 0); errors.Is(err, syscall.ESRCH) {
-				return true
-			}
-		default:
+		if err := syscall.Kill(-p.pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return true
 		}
 		select {
 		case <-deadline:
@@ -136,15 +116,35 @@ func (p *process) waitGone(timeout time.Duration) bool {
 	}
 }
 
-// logLines logs each line read from r until EOF.
-func logLines(r io.Reader, log *slog.Logger) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		log.Info("upstream stderr", "line", sc.Text())
+// lineLogger logs each line written to it.
+type lineLogger struct {
+	log *slog.Logger
+	buf []byte // the line so far
+}
+
+func (l *lineLogger) Write(b []byte) (int, error) {
+	l.buf = append(l.buf, b...)
+	for {
+		line, rest, found := bytes.Cut(l.buf, []byte{'\n'})
+		if !found {
+			if len(l.buf) < maxStderrLine {
+				return len(b), nil
+			}
+			line, rest = l.buf[:maxStderrLine], l.buf[maxStderrLine:]
+		}
+		l.logLine(line)
+		l.buf = rest
 	}
-	if err := sc.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
-		log.Warn("upstream stderr no longer logged", "err", err)
-		// Keep draining, or the Upstream blocks on a full pipe.
-		_, _ = io.Copy(io.Discard, r)
+}
+
+// flush logs what is left after the last newline.
+func (l *lineLogger) flush() {
+	if len(l.buf) > 0 {
+		l.logLine(l.buf)
+		l.buf = nil
 	}
+}
+
+func (l *lineLogger) logLine(line []byte) {
+	l.log.Info("upstream stderr", "line", string(bytes.TrimSuffix(line, []byte{'\r'})))
 }

@@ -61,15 +61,9 @@ const (
 	// of a grandchild to: a process it starts that shares its stderr and
 	// sleeps until killed.
 	envFakeGrandchild = "SPRUT_TEST_FAKE_GRANDCHILD"
-	// envFakeSleeper makes the test binary a grandchild (see envFakeGrandchild).
-	envFakeSleeper = "SPRUT_TEST_FAKE_SLEEPER"
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv(envFakeSleeper) != "" {
-		time.Sleep(time.Hour)
-		os.Exit(1)
-	}
 	if os.Getenv(envFakeUpstream) != "" {
 		os.Exit(runFakeUpstream())
 	}
@@ -210,12 +204,8 @@ func runFakeUpstream() int {
 
 // startGrandchild implements envFakeGrandchild.
 func startGrandchild(pidFile string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "-test.run=^$")
-	cmd.Env = append(os.Environ(), envFakeSleeper+"=1")
+	// By absolute path: the fake Upstream's environment has no PATH.
+	cmd := exec.Command("/bin/sleep", "3600")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return err
