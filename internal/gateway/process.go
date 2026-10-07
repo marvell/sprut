@@ -37,10 +37,12 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	// still being read.
 	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, err
 	}
 	stderr, stderrW, err := os.Pipe()
 	if err != nil {
+		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stdoutW.Close()
 		return nil, err
@@ -58,6 +60,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 
 	p := &process{
 		cmd:        t.cmd,
+		pgid:       t.cmd.Process.Pid, // the leader's, by Setpgid
 		stdin:      stdin,
 		stdout:     stdout,
 		stderr:     stderr,
@@ -80,6 +83,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 // closing it stops it.
 type process struct {
 	cmd            *exec.Cmd
+	pgid           int
 	stdin          io.WriteCloser
 	stdout, stderr *os.File      // read ends
 	exited         chan struct{} // closed once the process is reaped
@@ -92,11 +96,11 @@ func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 // any of it is still running after stopGrace.
 func (p *process) Close() error {
 	_ = p.stdin.Close()
-	pgid := p.cmd.Process.Pid
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
 	if !p.waitGone(stopGrace) {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		p.waitGone(stopGrace)
+		_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
+		// SIGKILL can't be ignored; this only covers the reaping.
+		p.waitGone(time.Second)
 	}
 	// stderr ends once nothing holds it open. Something that left the
 	// process group may still, so stop reading it soon after.
@@ -119,7 +123,7 @@ func (p *process) waitGone(timeout time.Duration) bool {
 		select {
 		case <-p.exited:
 			// The group outlives its reaped leader while any member is left.
-			if err := syscall.Kill(-p.cmd.Process.Pid, 0); errors.Is(err, syscall.ESRCH) {
+			if err := syscall.Kill(-p.pgid, 0); errors.Is(err, syscall.ESRCH) {
 				return true
 			}
 		default:

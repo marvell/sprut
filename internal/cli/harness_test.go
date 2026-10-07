@@ -113,7 +113,7 @@ func runFakeUpstream() int {
 	}
 
 	if path := os.Getenv(envFakePIDFile); path != "" {
-		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		if err := writePID(path, os.Getpid()); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
 			return 1
 		}
@@ -220,7 +220,12 @@ func startGrandchild(pidFile string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	return writePID(pidFile, cmd.Process.Pid)
+}
+
+// writePID records pid in path, for wantGone.
+func writePID(path string, pid int) error {
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o644)
 }
 
 // rendezvous implements envFakeRendezvous.
@@ -289,11 +294,11 @@ func writeConfig(t *testing.T, upstreams map[string]any) string {
 // gateway is a running `sprut serve` driven in-process through cli.Run, with
 // an Agent connected to it over in-memory pipes.
 type gateway struct {
-	Agent  *mcp.ClientSession
-	stdout *syncBuffer // everything the Gateway wrote to stdout
-	stderr *syncBuffer
-	exit   chan int
-	signal context.CancelFunc // stands in for SIGINT or SIGTERM reaching sprut
+	Agent      *mcp.ClientSession
+	stdout     *syncBuffer // everything the Gateway wrote to stdout
+	stderr     *syncBuffer
+	exit       chan int
+	sendSignal context.CancelFunc // stands in for SIGINT or SIGTERM reaching sprut
 }
 
 // startGateway runs `sprut serve -c configPath` plus args with env and
@@ -307,7 +312,7 @@ func startGateway(t *testing.T, configPath string, env []string, args ...string)
 
 	agentToGateway, gatewayStdin := io.Pipe()
 	gatewayStdout, gatewayToAgent := io.Pipe()
-	g := &gateway{stdout: &syncBuffer{}, stderr: &syncBuffer{}, exit: make(chan int, 1), signal: sendSignal}
+	g := &gateway{stdout: &syncBuffer{}, stderr: &syncBuffer{}, exit: make(chan int, 1), sendSignal: sendSignal}
 
 	env = append([]string{envFakeUpstream + "=1"}, env...)
 	go func() {
