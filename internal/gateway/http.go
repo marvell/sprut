@@ -13,8 +13,8 @@ import (
 )
 
 // newHTTPTransport returns the transport to u over Streamable HTTP. Its
-// requests to u's host carry u's Config headers, and go through the proxy
-// that env names, if any.
+// requests to u's scheme and host carry u's Config headers, and go through
+// the proxy that env names, if any.
 func newHTTPTransport(u config.Upstream, env []string) (*mcp.StreamableClientTransport, error) {
 	endpoint, err := url.Parse(u.URL)
 	if err != nil {
@@ -27,7 +27,7 @@ func newHTTPTransport(u config.Upstream, env []string) (*mcp.StreamableClientTra
 	base.Proxy = func(req *http.Request) (*url.URL, error) { return proxy(req.URL) }
 	var rt http.RoundTripper = base
 	if len(u.Headers) > 0 {
-		rt = &headerTransport{host: endpoint.Host, headers: u.Headers, next: base}
+		rt = &headerTransport{scheme: endpoint.Scheme, host: endpoint.Host, headers: u.Headers, next: base}
 	}
 	return &mcp.StreamableClientTransport{
 		Endpoint: u.URL,
@@ -77,18 +77,19 @@ func sseOnly(ctx context.Context, t *mcp.StreamableClientTransport) bool {
 	return resp.StatusCode == http.StatusOK && media == "text/event-stream"
 }
 
-// headerTransport adds headers to every request to host that it sends
-// through next, so that a redirect elsewhere doesn't carry them, secrets
-// included. A header the request already has, which the SDK sets for the
-// protocol, is left as it is.
+// headerTransport adds headers to every request to scheme and host that it
+// sends through next, so that a redirect elsewhere, or from HTTPS to plain
+// HTTP on the same host, doesn't carry them, secrets included. A header the
+// request already has, which the SDK sets for the protocol, is left as it is.
 type headerTransport struct {
+	scheme  string
 	host    string
 	headers map[string]string
 	next    http.RoundTripper
 }
 
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Host != t.host {
+	if req.URL.Scheme != t.scheme || req.URL.Host != t.host {
 		return t.next.RoundTrip(req)
 	}
 	// A RoundTripper must not modify the request it is given.
