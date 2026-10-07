@@ -192,14 +192,18 @@ func runFakeUpstream() int {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: os.Getenv(envFakeID)}}}, nil
 			})
 	}
+	// Set by crash, so that the stdin EOF the Gateway's SIGTERM follows
+	// still exits 1.
+	var crashed atomic.Bool
 	if os.Getenv(envFakeCrashTool) != "" {
 		server.AddTool(&mcp.Tool{Name: "crash", InputSchema: objectSchema},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				terminated := make(chan os.Signal, 1)
-				signal.Notify(terminated, syscall.SIGTERM)
+				crashed.Store(true)
+				sigterm := make(chan os.Signal, 1)
+				signal.Notify(sigterm, syscall.SIGTERM)
 				_ = os.Stdout.Close()
 				select {
-				case <-terminated:
+				case <-sigterm:
 				case <-time.After(fakeLifetime):
 				}
 				os.Exit(1)
@@ -258,6 +262,9 @@ func runFakeUpstream() int {
 	}
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "fake upstream:", err)
+		return 1
+	}
+	if crashed.Load() {
 		return 1
 	}
 	return 0
