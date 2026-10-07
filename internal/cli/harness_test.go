@@ -376,6 +376,33 @@ func startSSEOnlyUpstream(t *testing.T) string {
 	return ts.URL
 }
 
+// startGETStreamUpstream starts a fake Streamable HTTP Upstream that fails
+// every POST but, as the transport allows of a server that needs no session
+// id, answers a GET with an event stream, and returns its URL. The stream
+// stays open until the request ends, silent unless flood is set, in which
+// case it is one event whose data never ends.
+func startGETStreamUpstream(t *testing.T, flood bool) string {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "broken", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
+		line := []byte("data: " + strings.Repeat("x", 1000) + "\n")
+		for flood {
+			if _, err := w.Write(line); err != nil {
+				return
+			}
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(ts.Close)
+	return ts.URL
+}
+
 // startHangingHTTPUpstream starts a fake HTTP Upstream that leaves its
 // first request unanswered until the test ends, and returns its URL. Later
 // requests, such as the client cancelling the first, are accepted at once,

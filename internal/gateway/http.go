@@ -2,9 +2,9 @@ package gateway
 
 import (
 	"context"
-	"mime"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/net/http/httpproxy"
@@ -58,23 +58,28 @@ func proxyConfig(lookupEnv config.LookupEnv) *httpproxy.Config {
 	}
 }
 
-// sseOnly reports whether the server at t's endpoint answers a GET with an
-// event stream, as an HTTP+SSE server does to open a session. A Streamable
-// HTTP server never does: without a session it refuses the GET.
+// How long sseOnly waits for the first event of an Upstream's GET stream,
+// and the most of it that it reads. An HTTP+SSE server sends its endpoint
+// event as soon as the stream opens.
+const (
+	probeTimeout = 2 * time.Second
+	probeLimit   = 64 << 10
+)
+
+// sseOnly reports whether the server at t's endpoint answers a GET with the
+// endpoint event that opens an HTTP+SSE session. An event stream alone
+// proves nothing: a Streamable HTTP server that needs no session id may
+// serve one too.
 func sseOnly(ctx context.Context, t *mcp.StreamableClientTransport) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.Endpoint, nil)
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	sse := &mcp.SSEClientTransport{Endpoint: t.Endpoint, HTTPClient: t.HTTPClient, MaxEventSize: probeLimit}
+	conn, err := sse.Connect(ctx)
 	if err != nil {
 		return false
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	resp, err := t.HTTPClient.Do(req)
-	if err != nil {
-		return false
-	}
-	// The stream stays open; its headers are all this needs.
-	_ = resp.Body.Close()
-	media, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	return resp.StatusCode == http.StatusOK && media == "text/event-stream"
+	_ = conn.Close()
+	return true
 }
 
 // headerTransport adds headers to every request to scheme and host that it

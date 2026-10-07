@@ -847,3 +847,41 @@ func TestServeBlamesHTTPSSEOnlyOnAServerThatSpeaksIt(t *testing.T) {
 	}
 	g.closeAgent(t)
 }
+
+func TestServeDoesNotBlameHTTPSSEOnAStreamableHTTPServerWithASessionlessGETStream(t *testing.T) {
+	t.Parallel()
+	begin := time.Now()
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"broken": map[string]any{"url": startGETStreamUpstream(t, false)},
+	}), nil, "--startup-timeout", "20s")
+	// The stream sends nothing and stays open, so only a bound on the probe
+	// ends it before the startup timeout.
+	if took := time.Since(begin); took > 10*time.Second {
+		t.Errorf("startup took %s", took)
+	}
+
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=broken", "Internal Server Error")
+	if strings.Contains(g.stderr.String(), "HTTP+SSE") {
+		t.Errorf("a Streamable HTTP Upstream is blamed on HTTP+SSE; stderr:\n%s", g.stderr)
+	}
+	g.closeAgent(t)
+}
+
+func TestServeStopsReadingAnHTTPUpstreamsGETStreamAfterABoundedAmount(t *testing.T) {
+	t.Parallel()
+	begin := time.Now()
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"flooding": map[string]any{"url": startGETStreamUpstream(t, true)},
+	}), nil, "--startup-timeout", "20s")
+	// Well short of the time the probe would read for, had it no limit on
+	// size.
+	if took := time.Since(begin); took > time.Second {
+		t.Errorf("startup took %s", took)
+	}
+
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=flooding", "Internal Server Error")
+	if strings.Contains(g.stderr.String(), "HTTP+SSE") {
+		t.Errorf("a Streamable HTTP Upstream is blamed on HTTP+SSE; stderr:\n%s", g.stderr)
+	}
+	g.closeAgent(t)
+}
