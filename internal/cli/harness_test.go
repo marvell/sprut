@@ -70,9 +70,9 @@ const (
 	// Gateway always sees the exit after closing the connection itself.
 	envFakeCrashTool = "SPRUT_TEST_FAKE_CRASH_TOOL"
 	// envFakeOrphanTool, if set, is a path, and adds a tool "orphan" that
-	// starts a child sharing its stdout, writes the child's PID to the path,
+	// starts a child sharing its stdout and stderr, writes the child's PID to the path,
 	// then exits 1 mid-call, without answering. The child sleeps until
-	// killed, holding the Upstream's stdout open.
+	// killed, holding the Upstream's stdout and stderr open.
 	envFakeOrphanTool = "SPRUT_TEST_FAKE_ORPHAN_TOOL"
 	// envFakeBlockTool, if set, is a path, and adds a tool "block" that
 	// writes "started" to it, blocks until the call is cancelled, then
@@ -161,7 +161,7 @@ func runFakeUpstream() int {
 	}
 
 	if path := os.Getenv(envFakeGrandchild); path != "" {
-		if err := startGrandchild(path, nil, os.Stderr); err != nil {
+		if err := startSleeper(path, nil, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
 			return 1
 		}
@@ -218,7 +218,7 @@ func runFakeUpstream() int {
 	if path := os.Getenv(envFakeOrphanTool); path != "" {
 		server.AddTool(&mcp.Tool{Name: "orphan", InputSchema: objectSchema},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				if err := startGrandchild(path, os.Stdout, nil); err != nil {
+				if err := startSleeper(path, os.Stdout, os.Stderr); err != nil {
 					return nil, err
 				}
 				os.Exit(1)
@@ -415,10 +415,10 @@ func gather(want int) mcp.ToolHandler {
 	}
 }
 
-// startGrandchild starts a process that sleeps until killed, sharing the
-// given stdout and stderr, and writes its PID to pidFile. It implements
+// startSleeper starts a process that sleeps until killed, sharing the given
+// stdout and stderr, and writes its PID to pidFile. It implements
 // envFakeGrandchild and envFakeOrphanTool.
-func startGrandchild(pidFile string, stdout, stderr io.Writer) error {
+func startSleeper(pidFile string, stdout, stderr io.Writer) error {
 	// By absolute path: the fake Upstream's environment has no PATH.
 	cmd := exec.Command("/bin/sleep", strconv.Itoa(int(fakeLifetime.Seconds())))
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -587,21 +587,14 @@ func wantGone(t *testing.T, pidFile string) {
 	}
 }
 
-// waitGone waits for the process whose PID is in pidFile to no longer
+// waitForExit waits for the process whose PID is in pidFile to no longer
 // exist, while the Gateway keeps running.
-func waitGone(t *testing.T, pidFile string) {
+func waitForExit(t *testing.T, pidFile string) {
 	t.Helper()
 	pid := readPID(t, pidFile)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("process %d (%s) still exists (kill -0: %v)", pid, pidFile, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	var err error
+	if !eventually(func() bool { err = syscall.Kill(pid, 0); return errors.Is(err, syscall.ESRCH) }) {
+		t.Fatalf("process %d (%s) still exists (kill -0: %v)", pid, pidFile, err)
 	}
 }
 
@@ -622,17 +615,24 @@ func readPID(t *testing.T, pidFile string) int {
 // waitForFile waits for the file at path to hold want.
 func waitForFile(t *testing.T, path, want string) {
 	t.Helper()
+	var data []byte
+	var err error
+	if !eventually(func() bool { data, err = os.ReadFile(path); return err == nil && string(data) == want }) {
+		t.Fatalf("%s holds %q (err %v), want %q", path, data, err, want)
+	}
+}
+
+// eventually polls cond until it holds, for up to 10s, and reports whether it
+// did.
+func eventually(cond func() bool) bool {
 	deadline := time.Now().Add(10 * time.Second)
-	for {
-		data, err := os.ReadFile(path)
-		if err == nil && string(data) == want {
-			return
-		}
+	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s holds %q (err %v), want %q", path, data, err, want)
+			return false
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	return true
 }
 
 // startBlockingCall calls fake__block (see envFakeBlockTool, with progress

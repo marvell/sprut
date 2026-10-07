@@ -563,7 +563,7 @@ func TestServeEndsCallsToAnUpstreamThatExitsWhileItsChildHoldsStdoutAndStopsTheC
 	if text := resultText(t, res); !res.IsError || !strings.Contains(text, `"orphaner"`) {
 		t.Errorf("tools/call orphaner__orphan = %q (isError %v), want an isError result naming the Upstream", text, res.IsError)
 	}
-	waitGone(t, childPIDFile)
+	waitForExit(t, childPIDFile)
 
 	g.closeAgent(t)
 	g.wantLogLine(t, "WARN", `msg="upstream exited"`, "upstream=orphaner", `err="exit status 1"`)

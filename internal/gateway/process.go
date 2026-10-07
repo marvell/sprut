@@ -77,6 +77,11 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.proc = p
 	go func() {
 		err := t.cmd.Wait()
+		if !p.stopping.Load() {
+			// What the Upstream left running in its group; Close, which
+			// ending stdout leads to, kills whatever ignores this.
+			_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+		}
 		// A descendant that inherited stdout would keep it from ending, and
 		// so the connection from closing; the reader takes the deadline as
 		// the end.
