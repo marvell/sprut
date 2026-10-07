@@ -510,9 +510,7 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 
 			tt.stop(g)
 			g.wantCleanExit(t, tt.name)
-			if strings.Contains(g.stderr.String(), "upstream exited") {
-				t.Errorf("an Upstream the Gateway stopped was logged as exiting:\n%s", g.stderr)
-			}
+			g.wantNoLogLine(t, "WARN", `msg="upstream exited"`)
 			wantGone(t, pidFile)
 			wantGone(t, grandchildPIDFile)
 		})
@@ -526,9 +524,7 @@ func TestServeDoesNotReportTheExitOfAnUpstreamThatFailsAtStartup(t *testing.T) {
 
 	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=failing")
 	g.closeAgent(t)
-	if strings.Contains(g.stderr.String(), "upstream exited") {
-		t.Errorf("an Upstream that failed at startup was logged as exiting:\n%s", g.stderr)
-	}
+	g.wantNoLogLine(t, "WARN", `msg="upstream exited"`)
 }
 
 func TestServeReportsTheExitOfAnUpstreamThatHangsUpRightAfterListingItsTools(t *testing.T) {
@@ -539,9 +535,11 @@ func TestServeReportsTheExitOfAnUpstreamThatHangsUpRightAfterListingItsTools(t *
 	g.wantTools(t, "quitter__echo", "quitter__fail")
 	// Closing the Agent before the Gateway notices the Upstream is gone
 	// would have the Gateway end the session first, which is not reported.
-	eventually(func() bool { return strings.Contains(g.stderr.String(), "upstream exited") })
+	exit := []string{`msg="upstream exited"`, "upstream=quitter", `err="exit status 1"`}
+	if !eventually(func() bool { return g.logged("WARN", exit...) }) {
+		t.Fatalf("no WARN line containing all of %q; stderr:\n%s", exit, g.stderr)
+	}
 	g.closeAgent(t)
-	g.wantLogLine(t, "WARN", `msg="upstream exited"`, "upstream=quitter", `err="exit status 1"`)
 }
 
 func TestServeAnswersCallsToUnknownToolsWithAnErrorResult(t *testing.T) {
@@ -867,9 +865,7 @@ func TestServeBlamesHTTPSSEOnlyOnAServerThatSpeaksIt(t *testing.T) {
 	g := startGateway(t, writeConfig(t, map[string]any{"gone": map[string]any{"url": gone.URL}}), nil)
 
 	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=gone", "connection refused")
-	if strings.Contains(g.stderr.String(), "HTTP+SSE") {
-		t.Errorf("an Upstream that refuses connections is blamed on HTTP+SSE; stderr:\n%s", g.stderr)
-	}
+	g.wantNoLogLine(t, "WARN", "HTTP+SSE")
 	g.closeAgent(t)
 }
 
@@ -898,9 +894,7 @@ func TestServeDoesNotBlameHTTPSSEOnAStreamableHTTPServerWithASessionlessGETStrea
 			}
 
 			g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=broken", "Internal Server Error")
-			if strings.Contains(g.stderr.String(), "HTTP+SSE") {
-				t.Errorf("a Streamable HTTP Upstream is blamed on HTTP+SSE; stderr:\n%s", g.stderr)
-			}
+			g.wantNoLogLine(t, "WARN", "HTTP+SSE")
 			g.closeAgent(t)
 		})
 	}

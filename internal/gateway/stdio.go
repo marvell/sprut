@@ -80,11 +80,9 @@ type stdioUpstream struct {
 	stdout *os.File      // read end
 	exited chan struct{} // closed once the process is reaped and stderr drained
 
-	mu       sync.Mutex
-	state    state
-	reaped   bool  // whether reap has run
-	waitErr  error // from reaping it
-	reported bool  // whether its exit is logged
+	mu      sync.Mutex
+	state   state
+	waitErr error // why it exited; nil until it is reaped
 }
 
 // newStdioUpstream returns the Transport to u, whose process is launched on
@@ -161,7 +159,7 @@ const (
 	serving                 // its tools listed
 	stopping                // the Gateway ended the session, so its exit is expected
 	quit                    // it ended the session before its tools were listed
-	exited                  // it ended the session after they were listed: reported
+	exited                  // it ended the session after they were listed: reported once reaped
 )
 
 // event is something that moves a stdio Upstream to another state.
@@ -197,8 +195,10 @@ func next(s state, e event) state {
 func (s *stdioUpstream) on(e event) state {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = next(s.state, e)
-	s.report()
+	if n := next(s.state, e); n != s.state {
+		s.state = n
+		s.report()
+	}
 	return s.state
 }
 
@@ -207,23 +207,20 @@ func (s *stdioUpstream) on(e event) state {
 func (s *stdioUpstream) reap(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.reaped, s.waitErr = true, err
-	s.report()
-}
-
-// report logs, once, that the Upstream exited, as soon as it is both
-// exited and reaped: whichever comes second, its exit or its tools turning
-// out to be listed, reports it.
-func (s *stdioUpstream) report() {
-	if s.state != exited || !s.reaped || s.reported {
-		return
-	}
-	s.reported = true
-	err := s.waitErr
 	if err == nil {
 		err = errors.New("exit status 0")
 	}
-	s.log.Warn("upstream exited", "err", err)
+	s.waitErr = err
+	s.report()
+}
+
+// report logs that the Upstream exited if it is both exited and reaped. It
+// is called as each of the two comes true, so whichever comes second, its
+// exit or its tools turning out to be listed, reports it, and only once.
+func (s *stdioUpstream) report() {
+	if s.state == exited && s.waitErr != nil {
+		s.log.Warn("upstream exited", "err", s.waitErr)
+	}
 }
 
 func (s *stdioUpstream) Write(b []byte) (int, error) { return s.stdin.Write(b) }

@@ -760,13 +760,27 @@ func (g *gateway) wantTools(t *testing.T, want ...string) {
 // of parts.
 func (g *gateway) wantLogLine(t *testing.T, level string, parts ...string) {
 	t.Helper()
-	for _, line := range g.stderr.Lines() {
-		if strings.Contains(line, "level="+level+" ") &&
-			!slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) }) {
-			return
-		}
+	if !g.logged(level, parts...) {
+		t.Errorf("no %s line containing all of %q; stderr:\n%s", level, parts, g.stderr)
 	}
-	t.Errorf("no %s line containing all of %q; stderr:\n%s", level, parts, g.stderr)
+}
+
+// wantNoLogLine checks that the Gateway has logged no line at level
+// containing all of parts.
+func (g *gateway) wantNoLogLine(t *testing.T, level string, parts ...string) {
+	t.Helper()
+	if g.logged(level, parts...) {
+		t.Errorf("a %s line contains all of %q; stderr:\n%s", level, parts, g.stderr)
+	}
+}
+
+// logged reports whether the Gateway has logged a line at level containing
+// all of parts.
+func (g *gateway) logged(level string, parts ...string) bool {
+	return slices.ContainsFunc(g.stderr.Lines(), func(line string) bool {
+		return strings.Contains(line, "level="+level+" ") &&
+			!slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) })
+	})
 }
 
 // syncBuffer is a bytes.Buffer safe for concurrent use.
