@@ -51,7 +51,7 @@ func connectStdio(ctx context.Context, client *mcp.Client, u config.Upstream, en
 	if err != nil {
 		return nil, err
 	}
-	t.started()
+	t.proc.on(toolsListed)
 	return r, nil
 }
 
@@ -75,10 +75,6 @@ type stdioTransport struct {
 	log  *slog.Logger
 	proc *process // once connected
 }
-
-// started marks the Upstream as started: from now on, its exiting without
-// being stopped is logged as a warning.
-func (t *stdioTransport) started() { t.proc.started.Store(true) }
 
 func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -116,7 +112,9 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.proc = p
 	go func() {
 		err := t.cmd.Wait()
-		if !p.stopping.Load() {
+		// Decided once: from here on, the state no longer changes.
+		end := p.on(upstreamEnded)
+		if end != stopping {
 			// What the Upstream left running in its group; Close, which
 			// ending stdout leads to, kills whatever ignores this.
 			_ = p.signal(syscall.SIGTERM)
@@ -127,7 +125,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		_ = stdout.SetReadDeadline(time.Now().Add(drainGrace))
 		stderr.flush()
 		// Logged before exited is closed, so that it is out once Close returns.
-		if p.started.Load() && !p.stopping.Load() {
+		if end == exited {
 			if err == nil {
 				err = errors.New("exit status 0")
 			}
@@ -136,7 +134,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		close(p.exited)
 	}()
 	// The connection is closed by closing stdin (p), not stdout.
-	return (&mcp.IOTransport{Reader: io.NopCloser(&eofReader{r: stdout, eof: &p.hungUp}), Writer: p}).Connect(ctx)
+	return (&mcp.IOTransport{Reader: io.NopCloser(&eofReader{r: stdout, p: p}), Writer: p}).Connect(ctx)
 }
 
 // process is a started stdio Upstream. Writing to it writes to its stdin;
@@ -148,9 +146,59 @@ type process struct {
 	stdout *os.File      // read end
 	exited chan struct{} // closed once the process is reaped and stderr drained
 
-	started  atomic.Bool // see stdioTransport.started
-	stopping atomic.Bool // set by Close, so that the exit it causes isn't reported
-	hungUp   atomic.Bool // whether stdout reached EOF, as when the process exits
+	state atomic.Int32 // a state; see next
+}
+
+// state is where a stdio Upstream is in its life, which decides whether its
+// exit is reported and whether what it left in its group is stopped.
+type state int32
+
+const (
+	connecting state = iota // launched; its tools not listed yet
+	serving                 // its tools listed
+	stopping                // the Gateway ended the session, so its exit is expected
+	quit                    // it ended the session before its tools were listed
+	exited                  // it ended the session after they were listed: reported
+)
+
+// event is something that moves a stdio Upstream to another state.
+type event int
+
+const (
+	toolsListed   event = iota // connectStdio listed its tools
+	upstreamEnded              // its stdout ended, or it was reaped
+	gatewayClosed              // the connection to it is being closed
+)
+
+// next is the state a stdio Upstream in state s moves to on e. Whoever ends
+// the session first, the Gateway or the Upstream, settles the state. The
+// only move after that is a quit Upstream turning out to have listed its
+// tools after all, as when it answered tools/list and then hung up.
+func next(s state, e event) state {
+	switch {
+	case e == toolsListed && s == connecting:
+		return serving
+	case e == toolsListed && s == quit:
+		return exited
+	case e == upstreamEnded && s == connecting:
+		return quit
+	case e == upstreamEnded && s == serving:
+		return exited
+	case e == gatewayClosed && (s == connecting || s == serving):
+		return stopping
+	}
+	return s
+}
+
+// on moves p on e and returns the state p is in afterwards.
+func (p *process) on(e event) state {
+	for {
+		s := state(p.state.Load())
+		n := next(s, e)
+		if n == s || p.state.CompareAndSwap(int32(s), int32(n)) {
+			return n
+		}
+	}
 }
 
 func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
@@ -162,9 +210,7 @@ func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 func (p *process) Close() error {
 	// The SDK closes the connection itself once stdout ends, which an
 	// Upstream exiting on its own causes; that exit is still reported.
-	if !p.hungUp.Load() {
-		p.stopping.Store(true)
-	}
+	p.on(gatewayClosed)
 	_ = p.stdin.Close()
 	sigErr := p.signal(syscall.SIGTERM)
 	if !p.waitGone(stopGrace) {
@@ -214,11 +260,11 @@ func (p *process) waitGone(timeout time.Duration) bool {
 	}
 }
 
-// eofReader reads from r and records in eof that r reached its end. Its read
-// deadline passing counts as the end too.
+// eofReader reads from r, p's stdout, and moves p on upstreamEnded once r
+// reaches its end. Its read deadline passing counts as the end too.
 type eofReader struct {
-	r   io.Reader
-	eof *atomic.Bool
+	r io.Reader
+	p *process
 }
 
 func (e *eofReader) Read(b []byte) (int, error) {
@@ -227,7 +273,7 @@ func (e *eofReader) Read(b []byte) (int, error) {
 		err = io.EOF
 	}
 	if err == io.EOF {
-		e.eof.Store(true)
+		e.p.on(upstreamEnded)
 	}
 	return n, err
 }
