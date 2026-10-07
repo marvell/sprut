@@ -7,8 +7,14 @@ linters:
   enable:
     - depguard
     - forbidigo
+    - revive
 
   settings:
+    revive:
+      # Only the rules listed here run.
+      rules:
+        - name: context-as-argument
+
     forbidigo:
       # Match by package path, so an aliased import of os is still caught.
       analyze-types: true
