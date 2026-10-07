@@ -8,10 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
-	"os/exec"
 	"regexp"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,31 +169,20 @@ func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) 
 	return res.r, res.err
 }
 
-// connect connects to u, launching its process if it is a stdio Upstream,
-// and lists its tools.
+// connect connects to u over its Transport and lists its tools.
 func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error) {
-	var transport mcp.Transport
 	switch u.Transport {
 	case config.Stdio:
-		cmd := exec.Command(u.Command, u.Args...)
-		cmd.Env = upstreamEnv(s.env, u.Env)
-		transport = &stdioTransport{cmd: cmd, log: s.log.With("upstream", u.Name)}
+		return connectStdio(ctx, s.client, u, s.env, s.log)
 	case config.HTTP:
-		var err error
-		if transport, err = newHTTPTransport(u, s.env); err != nil {
-			return nil, err
-		}
+		return connectHTTP(ctx, s.client, u, s.env)
 	}
-	session, err := s.client.Connect(ctx, transport, nil)
-	if err != nil {
-		// The SDK never falls back to the deprecated HTTP+SSE transport, and
-		// an SSE-only server fails here with a bare HTTP status, so say why.
-		if t, ok := transport.(*mcp.StreamableClientTransport); ok && sseOnly(ctx, t) {
-			err = fmt.Errorf("server speaks only the deprecated HTTP+SSE transport, which is not supported: %w", err)
-		}
-		return nil, err
-	}
+	return nil, fmt.Errorf("unknown transport %q", u.Transport)
+}
 
+// list lists the tools of the Upstream at the other end of session, and
+// closes session if it can't.
+func list(ctx context.Context, session *mcp.ClientSession) (*ready, error) {
 	r := &ready{session: session}
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
@@ -205,21 +191,7 @@ func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error
 		}
 		r.tools = append(r.tools, tool)
 	}
-	if stdio, ok := transport.(*stdioTransport); ok {
-		stdio.started()
-	}
 	return r, nil
-}
-
-// upstreamEnv is the environment of an Upstream process: its Config env
-// layered on top of the inherited env. exec uses the last value of a
-// duplicated key.
-func upstreamEnv(env []string, extra map[string]string) []string {
-	out := slices.Clone(env)
-	for _, k := range slices.Sorted(maps.Keys(extra)) {
-		out = append(out, k+"="+extra[k])
-	}
-	return out
 }
 
 // addTool serves tool as a Namespaced tool. A tool that Agents or the SDK

@@ -12,6 +12,10 @@ _Avoid_: proxy, aggregator, hub
 One of the user's MCP servers that sits behind the Gateway, declared in the Config under a unique name.
 _Avoid_: backend, child server, MCP server (ambiguous)
 
+**Transport**:
+How the Gateway talks to an Upstream: stdio, where the Gateway launches the Upstream as its own process, or HTTP, where it connects to an Upstream that is already running over Streamable HTTP.
+_Avoid_: connection type, protocol
+
 **Agent**:
 An AI client (Claude Code, Codex, Cursor, …) that connects to the Gateway.
 _Avoid_: client, host

@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/marvell/sprut/internal/config"
 )
 
 const (
@@ -32,6 +36,35 @@ const (
 	// logged in pieces.
 	maxStderrLine = 64 << 10
 )
+
+// connectStdio launches u's process, connects to it over its stdin and
+// stdout, and lists its tools. env is the environment the process inherits.
+func connectStdio(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*ready, error) {
+	cmd := exec.Command(u.Command, u.Args...)
+	cmd.Env = upstreamEnv(env, u.Env)
+	t := &stdioTransport{cmd: cmd, log: log.With("upstream", u.Name)}
+	session, err := client.Connect(ctx, t, nil)
+	if err != nil {
+		return nil, err
+	}
+	r, err := list(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	t.started()
+	return r, nil
+}
+
+// upstreamEnv is the environment of an Upstream process: its Config env
+// layered on top of the inherited env. exec uses the last value of a
+// duplicated key.
+func upstreamEnv(env []string, extra map[string]string) []string {
+	out := slices.Clone(env)
+	for _, k := range slices.Sorted(maps.Keys(extra)) {
+		out = append(out, k+"="+extra[k])
+	}
+	return out
+}
 
 // stdioTransport runs a stdio Upstream in its own process group and talks MCP
 // to it over its stdin and stdout. The Upstream's stderr is logged line by

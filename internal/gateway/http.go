@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -12,6 +13,25 @@ import (
 
 	"github.com/marvell/sprut/internal/config"
 )
+
+// connectHTTP connects to u over Streamable HTTP and lists its tools. env
+// is where the proxy comes from.
+func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) (*ready, error) {
+	t, err := newHTTPTransport(u, env)
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.Connect(ctx, t, nil)
+	if err != nil {
+		// The SDK never falls back to the deprecated HTTP+SSE transport, and
+		// an SSE-only server fails here with a bare HTTP status, so say why.
+		if sseOnly(ctx, t) {
+			err = fmt.Errorf("server speaks only the deprecated HTTP+SSE transport, which is not supported: %w", err)
+		}
+		return nil, err
+	}
+	return list(ctx, session)
+}
 
 // newHTTPTransport returns the transport to u over Streamable HTTP. Its
 // requests to u's scheme and host carry u's Config headers, and go through
