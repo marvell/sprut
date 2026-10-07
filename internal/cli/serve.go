@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	ucli "github.com/urfave/cli/v3"
@@ -33,7 +32,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 				return ucli.Exit(fmt.Sprintf("--startup-timeout must be positive, got %s", startupTimeout), 2)
 			}
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			upstreams, err := loadConfig(cmd.String("config"), lookupIn(env), log)
+			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
 			if err != nil {
 				return err
 			}
@@ -86,19 +85,4 @@ func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]co
 		log.Warn(w.Message, "upstream", w.Upstream)
 	}
 	return upstreams, nil
-}
-
-// lookupIn returns a lookup over env, which is in os.Environ form. As with
-// a real environment, the last entry for a key wins.
-func lookupIn(env []string) config.LookupEnv {
-	vars := make(map[string]string, len(env))
-	for _, kv := range env {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			vars[k] = v
-		}
-	}
-	return func(key string) (string, bool) {
-		v, ok := vars[key]
-		return v, ok
-	}
 }

@@ -125,7 +125,8 @@ type ready struct {
 }
 
 // starter starts Upstreams, giving each timeout to connect and list its
-// tools. A stdio Upstream's process gets env as its inherited environment.
+// tools. env is the environment sprut was given: a stdio Upstream's process
+// inherits it, and an HTTP Upstream's proxy comes from it.
 type starter struct {
 	client   *mcp.Client
 	env      []string
@@ -181,18 +182,17 @@ func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error
 		cmd.Env = upstreamEnv(s.env, u.Env)
 		transport = &stdioTransport{cmd: cmd, log: s.log.With("upstream", u.Name)}
 	case config.HTTP:
-		streamable, err := httpTransport(u)
-		if err != nil {
+		var err error
+		if transport, err = newHTTPTransport(u, s.env); err != nil {
 			return nil, err
 		}
-		transport = streamable
 	}
 	session, err := s.client.Connect(ctx, transport, nil)
 	if err != nil {
-		if u.Transport == config.HTTP {
-			// The SDK never falls back to the deprecated HTTP+SSE transport,
-			// and an SSE-only server fails here with a bare HTTP status.
-			err = fmt.Errorf("connecting over Streamable HTTP (HTTP+SSE is not supported): %w", err)
+		// The SDK never falls back to the deprecated HTTP+SSE transport, and
+		// an SSE-only server fails here with a bare HTTP status, so say why.
+		if t, ok := transport.(*mcp.StreamableClientTransport); ok && sseOnly(ctx, t) {
+			err = fmt.Errorf("server speaks only the deprecated HTTP+SSE transport, which is not supported: %w", err)
 		}
 		return nil, err
 	}

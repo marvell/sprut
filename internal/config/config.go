@@ -45,6 +45,21 @@ type Warning struct {
 // LookupEnv looks up an environment variable, like os.LookupEnv.
 type LookupEnv func(string) (string, bool)
 
+// LookupIn returns a lookup over env, which is in os.Environ form. As with
+// a real environment, the last entry for a key wins.
+func LookupIn(env []string) LookupEnv {
+	vars := make(map[string]string, len(env))
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vars[k] = v
+		}
+	}
+	return func(key string) (string, bool) {
+		v, ok := vars[key]
+		return v, ok
+	}
+}
+
 // Path resolves which Config file to read: flag (from -c/--config), then
 // $SPRUT_CONFIG, then $XDG_CONFIG_HOME/sprut/config.json, then
 // ~/.config/sprut/config.json.

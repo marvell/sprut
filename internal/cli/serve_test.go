@@ -749,7 +749,7 @@ func TestServeFailsSSEOnlyHTTPUpstreamWithoutFallbackAndServesTheOthers(t *testi
 	}), nil)
 
 	g.wantTools(t, "fake__echo", "fake__fail")
-	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=legacy-sse", "Streamable HTTP", "HTTP+SSE is not supported")
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=legacy-sse", "speaks only the deprecated HTTP+SSE transport, which is not supported")
 	g.wantLogLine(t, "INFO", "ready=1", "failed=1")
 	g.closeAgent(t)
 }
@@ -793,4 +793,30 @@ func TestServeSendsConfiguredHeadersOnlyToTheConfiguredHost(t *testing.T) {
 			t.Errorf("request %d to the redirect target: Authorization = %q, want none", i, got)
 		}
 	}
+}
+
+func TestServeReachesHTTPUpstreamThroughTheProxyInItsEnvironment(t *testing.T) {
+	t.Parallel()
+	// The proxy serves the Upstream itself, so the request reaches it only
+	// through the proxy: remote.invalid resolves nowhere.
+	proxy := startHTTPUpstream(t, "")
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"remote": map[string]any{"url": "http://remote.invalid/mcp"},
+	}), []string{"HTTP_PROXY=" + proxy.URL})
+
+	g.wantTools(t, "remote__echo", "remote__fail")
+	g.closeAgent(t)
+}
+
+func TestServeBlamesHTTPSSEOnlyOnAServerThatSpeaksIt(t *testing.T) {
+	t.Parallel()
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close() // nothing listens at its URL any more
+	g := startGateway(t, writeConfig(t, map[string]any{"gone": map[string]any{"url": gone.URL}}), nil)
+
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=gone", "connection refused")
+	if strings.Contains(g.stderr.String(), "HTTP+SSE") {
+		t.Errorf("an Upstream that refuses connections is blamed on HTTP+SSE; stderr:\n%s", g.stderr)
+	}
+	g.closeAgent(t)
 }

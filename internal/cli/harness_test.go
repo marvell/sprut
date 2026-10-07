@@ -297,9 +297,13 @@ type httpUpstream struct {
 func startHTTPUpstream(t *testing.T, protocol string) *httpUpstream {
 	t.Helper()
 	server := newFakeServer(protocol)
-	// Only a stateless handler serves the modern protocol; a legacy one
-	// stays stateful, like most servers of that era.
-	opts := &mcp.StreamableHTTPOptions{Stateless: protocol >= modernProtocol}
+	opts := &mcp.StreamableHTTPOptions{
+		// Only a stateless handler serves the modern protocol; a legacy one
+		// stays stateful, like most servers of that era.
+		Stateless: protocol >= modernProtocol,
+		// Reached through a proxy, it gets requests for another host.
+		DisableLocalhostProtection: true,
+	}
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, opts)
 	u := &httpUpstream{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
