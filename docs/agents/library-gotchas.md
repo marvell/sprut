@@ -1,6 +1,6 @@
 # Library gotchas
 
-Behaviour of go-sdk and urfave/cli that no signature reveals. For the API itself, prefer `go doc` to reading source. Each item names the version it was verified against. When `go.mod` moves past that version, re-verify the item before relying on it, and then update or delete it.
+Behaviour of go-sdk, urfave/cli and os/exec that no signature reveals. For the API itself, prefer `go doc` to reading source. Each item names the version it was verified against. When `go.mod` moves past that version, re-verify the item before relying on it, and then update or delete it.
 
 When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. The module cache on this machine is not under `~/go`.
 
@@ -19,3 +19,10 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 - **Exits and stderr go to globals** (v3.14.0). Unless the root command sets `ExitErrHandler`, an error carrying an exit code goes to the package-global `OsExiter` (`os.Exit`) and the package-global `ErrWriter`. Setting the root command's own `ErrWriter` does not reroute this path; only `ExitErrHandler` does.
 - **Root help always goes to the root command's `Writer`** (v3.14.0).
 - **Usage errors print help to stdout** (v3.14.0), not to stderr, and exit 1. This covers flag parse errors and errors from a flag's `Validator`. Setting `OnUsageError` on a command replaces both the help dump and the "Incorrect Usage" line for that command's flags; return `ucli.Exit(err.Error(), 2)` from it.
+
+## os/exec and process groups
+
+- **`Wait` closes the pipes from `StdinPipe`/`StdoutPipe`/`StderrPipe`** (go1.27.1), even while they are still being read. To reap a child in the background while reading its output, give it an `os.Pipe` write end instead, as `gateway.stdioTransport` does for stdout.
+- **`Wait` waits for exec's copy goroutines** (go1.27.1) when `Stdout`/`Stderr` is a writer that is not an `*os.File`. `WaitDelay` bounds that wait after the child exits, then closes the pipes, and `Wait` still waits for the goroutines to finish. So once `Wait` has returned, nothing writes to that writer any more.
+- **An unreaped leader still counts as a member of its process group** (darwin and linux). `kill(-pgid, 0)` returns ESRCH only once the leader is reaped and every other member is gone.
+- **A stdio Upstream's environment is only what `cli.Run` received** (go1.27.1). It has no `PATH` unless the caller passed one, so a fake Upstream in a test starts helper programs by absolute path (`/bin/sleep`).

@@ -63,6 +63,12 @@ const (
 	envFakeGrandchild = "SPRUT_TEST_FAKE_GRANDCHILD"
 )
 
+// fakeLifetime bounds how long a fake Upstream or grandchild that only
+// waits to be stopped stays alive: longer than any test, so a test that
+// stops it proves something, but short enough that one the Gateway failed to
+// stop does not linger on the machine.
+const fakeLifetime = time.Minute
+
 func TestMain(m *testing.M) {
 	if os.Getenv(envFakeUpstream) != "" {
 		os.Exit(runFakeUpstream())
@@ -103,7 +109,7 @@ var (
 func runFakeUpstream() int {
 	if os.Getenv(envFakeIgnoreSIGTERM) != "" {
 		signal.Ignore(syscall.SIGTERM)
-		defer time.Sleep(time.Hour)
+		defer time.Sleep(fakeLifetime)
 	}
 
 	if path := os.Getenv(envFakePIDFile); path != "" {
@@ -143,7 +149,7 @@ func runFakeUpstream() int {
 		fmt.Fprintln(os.Stderr, "fake upstream: failing at startup")
 		return 1
 	case "hang":
-		time.Sleep(time.Hour)
+		time.Sleep(fakeLifetime)
 		return 1
 	}
 
@@ -205,7 +211,7 @@ func runFakeUpstream() int {
 // startGrandchild implements envFakeGrandchild.
 func startGrandchild(pidFile string) error {
 	// By absolute path: the fake Upstream's environment has no PATH.
-	cmd := exec.Command("/bin/sleep", "3600")
+	cmd := exec.Command("/bin/sleep", strconv.Itoa(int(fakeLifetime.Seconds())))
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return err
