@@ -210,7 +210,7 @@ func TestParse(t *testing.T) {
 			want:   []config.Upstream{{Name: "a", Transport: config.Stdio, Command: "y"}},
 		},
 		{
-			name: "repeated mcpServers with different names: the last one wins",
+			name: "repeated mcpServers with different names: the earlier ones are dropped",
 			config: `{"mcpServers": {"a": {"command": "x"}, "b": {"command": "x"}},
 				"mcpServers": {"c": {"command": "y"}, "a": {"command": "y"}}}`,
 			want: []config.Upstream{

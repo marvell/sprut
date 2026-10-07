@@ -120,8 +120,8 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 
 // servers are the entries of mcpServers, keeping the order of their names.
 // As when decoding into a map, a name given twice keeps its last entry; it
-// keeps its first place. A repeated mcpServers key replaces the servers
-// given before it.
+// keeps its first place. Unlike decoding into a map, which merges, a repeated
+// mcpServers key replaces the servers given before it.
 type servers struct {
 	names   []string
 	entries map[string]json.RawMessage
