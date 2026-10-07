@@ -483,7 +483,8 @@ func TestServeGivesUpOnAnUpstreamThatNeverExits(t *testing.T) {
 
 	begin := time.Now()
 	g.closeAgent(t)
-	// Its group is gone at once, so only the wait for it to be reaped.
+	// Its group is gone at once, so shutdown only waits for it to be reaped:
+	// about 2s, the gateway package's exitGrace.
 	if took := time.Since(begin); took > 5*time.Second {
 		t.Errorf("shutdown took %s, want about 2s", took)
 	}

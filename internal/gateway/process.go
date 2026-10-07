@@ -139,11 +139,10 @@ func (p *process) Close() error {
 		// SIGKILL can't be ignored; this only covers the reaping.
 		p.waitGone(time.Second)
 	}
+	// A signal error only says why the Upstream didn't stop, as one that did
+	// can get EPERM too (see signal).
 	select {
 	case <-p.exited:
-		if sigErr != nil {
-			p.log.Warn("signalling upstream failed", "err", sigErr)
-		}
 	case <-time.After(exitGrace):
 		attrs := []any{"pid", p.pgid}
 		if sigErr != nil {
@@ -154,7 +153,8 @@ func (p *process) Close() error {
 	return p.stdout.Close()
 }
 
-// signal sends sig to the process group. A group already gone is no error.
+// signal sends sig to the process group. A group already gone is no error,
+// but on darwin one whose only member is its unreaped leader gives EPERM.
 func (p *process) signal(sig syscall.Signal) error {
 	err := syscall.Kill(-p.pgid, sig)
 	if err == nil || errors.Is(err, syscall.ESRCH) {
