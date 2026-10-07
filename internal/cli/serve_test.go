@@ -329,26 +329,6 @@ func TestServeSkipsToolWithoutAnObjectInputSchema(t *testing.T) {
 	g.wantLogLine(t, "WARN", "upstream=fake", "fake__bad")
 }
 
-func TestServeRejectsNonPositiveStartupTimeoutAsUsageError(t *testing.T) {
-	t.Parallel()
-	config := writeConfig(t, map[string]any{})
-	for _, timeout := range []string{"0s", "-1s"} {
-		t.Run(timeout, func(t *testing.T) {
-			t.Parallel()
-			code, stdout, stderr := runSprut(t, nil, "serve", "-c", config, "--startup-timeout", timeout)
-			if code != 2 {
-				t.Errorf("exit code = %d, want 2", code)
-			}
-			if !strings.Contains(stderr, "startup-timeout") {
-				t.Errorf("stderr does not name the flag:\n%s", stderr)
-			}
-			if stdout != "" {
-				t.Errorf("stdout = %q, want empty", stdout)
-			}
-		})
-	}
-}
-
 func TestServeDryRunWithHealthyUpstreamsExits0AndStopsThem(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

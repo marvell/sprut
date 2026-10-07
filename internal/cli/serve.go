@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,17 +21,22 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Usage: "run the Gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
 			&ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the Config file"},
-			&ucli.DurationFlag{Name: "startup-timeout", Value: 30 * time.Second, Usage: "how long each Upstream may take to start"},
+			&ucli.DurationFlag{
+				Name:  "startup-timeout",
+				Value: 30 * time.Second,
+				Usage: "how long each Upstream may take to start",
+				Validator: func(d time.Duration) error {
+					if d <= 0 {
+						return errors.New("must be positive")
+					}
+					return nil
+				},
+			},
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every Namespaced tool and tool call"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every Upstream as usual, then shut down; exit 1 if any failed"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
-			// Checked here rather than by a flag Validator, which urfave/cli
-			// reports with help on stdout and exit code 1.
 			startupTimeout := cmd.Duration("startup-timeout")
-			if startupTimeout <= 0 {
-				return ucli.Exit(fmt.Sprintf("--startup-timeout must be positive, got %s", startupTimeout), 2)
-			}
 			log := newLogger(stderr, cmd.Bool("verbose"))
 			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
 			if err != nil {

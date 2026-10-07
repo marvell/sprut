@@ -1,0 +1,22 @@
+# Release builds: pushing a tag `vX.Y.Z` runs the release job of
+# .github/workflows/ci.yml, which runs goreleaser with this config once the
+# checks pass.
+version: 2
+
+builds:
+  - main: .
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    # Same "v"-prefixed form that `go install ...@vX.Y.Z` reports.
+    ldflags:
+      - -s -w -X github.com/marvell/sprut/internal/cli.Version=v{{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    files: [README.md]
+
+checksum:
+  name_template: checksums.txt

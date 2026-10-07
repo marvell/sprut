@@ -25,7 +25,8 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 
 - **Exits and stderr go to globals** (v3.14.0). Unless the root command sets `ExitErrHandler`, an error carrying an exit code goes to the package-global `OsExiter` (`os.Exit`) and the package-global `ErrWriter`. Setting the root command's own `ErrWriter` does not reroute this path; only `ExitErrHandler` does.
 - **Root help always goes to the root command's `Writer`** (v3.14.0).
-- **Usage errors print help to stdout** (v3.14.0), not to stderr, and exit 1. This covers flag parse errors and errors from a flag's `Validator`. Setting `OnUsageError` on a command replaces both the help dump and the "Incorrect Usage" line for that command's flags; return `ucli.Exit(err.Error(), 2)` from it.
+- **Usage errors print help to stdout** (v3.14.0), not to stderr, and exit 1. This covers flag parse errors and errors from a flag's `Validator`. Setting `OnUsageError` on a command replaces both the help dump and the "Incorrect Usage" line for that command's flags; return an `ucli.Exit(..., 2)` from it. `cli.strictUsage` sets it on every command.
+- **Unexpected positional args are not an error** (v3.14.0): a command with no `Arguments` still runs its `Action`, with them in `cmd.Args()`, and an unknown subcommand name reaches the parent's `Action` this way. Every command also gets a `help` subcommand at run time, so `cmd.Commands` is never empty inside an `Action`.
 
 ## os/exec and process groups
 
