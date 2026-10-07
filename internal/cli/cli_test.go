@@ -70,6 +70,7 @@ func TestUsageErrorPrintsUsageToStderrAndExits2(t *testing.T) {
 	}{
 		{nil, "sprut [global options]", ""},
 		{[]string{"--bogus"}, "sprut [global options]", "bogus"},
+		{[]string{"--bogus", "serve"}, "sprut [global options]", "bogus"},
 		{[]string{"bogus"}, "sprut [global options]", `unknown command "bogus"`},
 		{[]string{"help", "bogus"}, "sprut [global options]", `unknown command "bogus"`},
 		{[]string{"-h", "bogus"}, "sprut [global options]", `unknown command "bogus"`},
