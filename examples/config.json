@@ -7,6 +7,10 @@
     "memory": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "hello": {
+      "command": "go",
+      "args": ["run", "github.com/modelcontextprotocol/go-sdk/examples/server/hello@v1.8.0"]
     }
   }
 }
