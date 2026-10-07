@@ -3,6 +3,8 @@ package cli_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -682,4 +684,113 @@ func TestServeEndsCallWithAnErrorResultWhenModernUpstreamAsksForInteractiveInput
 		t.Errorf("result = %q (isError %v), want an isError result saying interactive input is not supported by the Gateway", text, res.IsError)
 	}
 	g.wantTools(t, "fake__ask", "fake__echo", "fake__fail") // still serving
+}
+
+func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{legacyProtocol, modernProtocol} {
+		t.Run("Upstream "+protocol, func(t *testing.T) {
+			t.Parallel()
+			remote := startHTTPUpstream(t, protocol)
+			g := startGateway(t, writeConfig(t, map[string]any{
+				"fake":   fakeUpstreamEntry(t),
+				"remote": map[string]any{"url": remote.URL},
+			}), nil)
+
+			g.wantLogLine(t, "INFO", `msg="upstream ready"`, "upstream=remote", "tools=2", "protocol="+protocol)
+			g.wantTools(t, "fake__echo", "fake__fail", "remote__echo", "remote__fail")
+			res, err := g.Agent.CallTool(context.Background(),
+				&mcp.CallToolParams{Name: "remote__echo", Arguments: map[string]any{"text": "hi"}})
+			if err != nil {
+				t.Fatalf("tools/call: %v", err)
+			}
+			if got, want := callResult(t, res), toJSON(t, echoResult("hi")); !reflect.DeepEqual(got, want) {
+				t.Errorf("result:\n got %v\nwant %v", got, want)
+			}
+			g.closeAgent(t)
+		})
+	}
+}
+
+func TestServeSendsConfiguredHeadersOnEveryHTTPRequest(t *testing.T) {
+	t.Parallel()
+	remote := startHTTPUpstream(t, "")
+	g := startGateway(t, writeConfig(t, map[string]any{"remote": map[string]any{
+		"url":     remote.URL,
+		"headers": map[string]string{"Authorization": "Bearer ${TOKEN}", "X-Static": "yes"},
+	}}), []string{"TOKEN=secret"})
+
+	if _, err := g.Agent.CallTool(context.Background(),
+		&mcp.CallToolParams{Name: "remote__echo", Arguments: map[string]any{"text": "hi"}}); err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	g.closeAgent(t)
+
+	requests := remote.Headers()
+	// At least discover or initialize, tools/list and tools/call.
+	if len(requests) < 3 {
+		t.Fatalf("Upstream got %d requests, want at least 3", len(requests))
+	}
+	for i, h := range requests {
+		if got := h.Get("Authorization"); got != "Bearer secret" {
+			t.Errorf("request %d: Authorization = %q, want %q", i, got, "Bearer secret")
+		}
+		if got := h.Get("X-Static"); got != "yes" {
+			t.Errorf("request %d: X-Static = %q, want %q", i, got, "yes")
+		}
+	}
+}
+
+func TestServeFailsSSEOnlyHTTPUpstreamWithoutFallbackAndServesTheOthers(t *testing.T) {
+	t.Parallel()
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"fake":       fakeUpstreamEntry(t),
+		"legacy-sse": map[string]any{"url": startSSEOnlyUpstream(t)},
+	}), nil)
+
+	g.wantTools(t, "fake__echo", "fake__fail")
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=legacy-sse", "Streamable HTTP", "HTTP+SSE is not supported")
+	g.wantLogLine(t, "INFO", "ready=1", "failed=1")
+	g.closeAgent(t)
+}
+
+func TestServeExcludesHTTPUpstreamThatHangsPastStartupTimeout(t *testing.T) {
+	t.Parallel()
+	begin := time.Now()
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"fake":    fakeUpstreamEntry(t),
+		"hanging": map[string]any{"url": startHangingHTTPUpstream(t)},
+	}), nil, "--startup-timeout", "300ms")
+	if took := time.Since(begin); took > 3*time.Second {
+		t.Errorf("startup took %s with a 300ms startup timeout", took)
+	}
+
+	g.wantTools(t, "fake__echo", "fake__fail")
+	g.wantLogLine(t, "WARN", "upstream=hanging", "startup timed out after 300ms")
+	g.closeAgent(t)
+}
+
+func TestServeSendsConfiguredHeadersOnlyToTheConfiguredHost(t *testing.T) {
+	t.Parallel()
+	elsewhere := startHTTPUpstream(t, "")
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirector.Close)
+	g := startGateway(t, writeConfig(t, map[string]any{"remote": map[string]any{
+		"url":     redirector.URL,
+		"headers": map[string]string{"Authorization": "Bearer secret"},
+	}}), nil)
+
+	g.wantTools(t, "remote__echo", "remote__fail")
+	g.closeAgent(t)
+	requests := elsewhere.Headers()
+	if len(requests) == 0 {
+		t.Fatal("redirect target got no requests")
+	}
+	for i, h := range requests {
+		if got := h.Get("Authorization"); got != "" {
+			t.Errorf("request %d to the redirect target: Authorization = %q, want none", i, got)
+		}
+	}
 }

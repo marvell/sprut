@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -178,28 +180,7 @@ func runFakeUpstream() int {
 		return 1
 	}
 
-	var opts mcp.ServerOptions
-	if v := os.Getenv(envFakeProtocol); v != "" {
-		opts.SupportedProtocolVersions = []string{v}
-	}
-	server := mcp.NewServer(&mcp.Implementation{Name: "fake-upstream", Version: "0.0.1"}, &opts)
-	server.AddTool(echoTool, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var args struct{ Text string }
-		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-			return nil, err
-		}
-		return &mcp.CallToolResult{
-			Content:           []mcp.Content{&mcp.TextContent{Text: "echo: " + args.Text}},
-			StructuredContent: map[string]any{"echoed": args.Text},
-			Meta:              mcp.Meta{"fake/trace": "abc"},
-		}, nil
-	})
-	server.AddTool(failTool, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "it failed"}},
-			IsError: true,
-		}, nil
-	})
+	server := newFakeServer(os.Getenv(envFakeProtocol))
 	for name := range strings.SplitSeq(os.Getenv(envFakeExtraTools), ",") {
 		if name == "" {
 			continue
@@ -271,6 +252,106 @@ func runFakeUpstream() int {
 		return 1
 	}
 	return 0
+}
+
+// newFakeServer is the MCP server of a fake Upstream, stdio or HTTP,
+// offering echo and fail. A non-empty protocol is the one protocol version it
+// supports, which sets its era.
+func newFakeServer(protocol string) *mcp.Server {
+	var opts mcp.ServerOptions
+	if protocol != "" {
+		opts.SupportedProtocolVersions = []string{protocol}
+	}
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake-upstream", Version: "0.0.1"}, &opts)
+	server.AddTool(echoTool, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct{ Text string }
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return nil, err
+		}
+		return &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: "echo: " + args.Text}},
+			StructuredContent: map[string]any{"echoed": args.Text},
+			Meta:              mcp.Meta{"fake/trace": "abc"},
+		}, nil
+	})
+	server.AddTool(failTool, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "it failed"}},
+			IsError: true,
+		}, nil
+	})
+	return server
+}
+
+// httpUpstream is a fake HTTP Upstream: go-sdk's Streamable HTTP handler
+// serving newFakeServer from an httptest server, which records the headers
+// of every request it gets.
+type httpUpstream struct {
+	URL     string
+	mu      sync.Mutex
+	headers []http.Header
+}
+
+// startHTTPUpstream starts a fake HTTP Upstream supporting only protocol, or
+// the SDK's versions if it is empty.
+func startHTTPUpstream(t *testing.T, protocol string) *httpUpstream {
+	t.Helper()
+	server := newFakeServer(protocol)
+	// Only a stateless handler serves the modern protocol; a legacy one
+	// stays stateful, like most servers of that era.
+	opts := &mcp.StreamableHTTPOptions{Stateless: protocol >= modernProtocol}
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, opts)
+	u := &httpUpstream{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u.mu.Lock()
+		u.headers = append(u.headers, r.Header.Clone())
+		u.mu.Unlock()
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	u.URL = ts.URL
+	return u
+}
+
+// startSSEOnlyUpstream starts a fake HTTP Upstream that speaks only the
+// deprecated HTTP+SSE transport, and returns its URL.
+func startSSEOnlyUpstream(t *testing.T) string {
+	t.Helper()
+	server := newFakeServer("")
+	ts := httptest.NewServer(mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(ts.Close)
+	return ts.URL
+}
+
+// startHangingHTTPUpstream starts a fake HTTP Upstream that leaves its
+// first request unanswered until the test ends, and returns its URL. Later
+// requests, such as the client cancelling the first, are accepted at once,
+// so that stopping the Upstream does not wait out the SDK's timeout.
+func startHangingHTTPUpstream(t *testing.T) string {
+	t.Helper()
+	release := make(chan struct{})
+	var first sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hang := false
+		first.Do(func() { hang = true })
+		if hang {
+			<-release
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(ts.Close)
+	// The SDK leaves an abandoned request waiting for its answer, so Close
+	// would wait for it forever.
+	t.Cleanup(func() { close(release) })
+	return ts.URL
+}
+
+// Headers returns the headers of each request the Upstream got so far.
+func (u *httpUpstream) Headers() []http.Header {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.headers)
 }
 
 // echoResult is the fake Upstream's answer to echo with text, as JSON.

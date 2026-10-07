@@ -66,16 +66,8 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 	}
 
 	results := make([]*ready, len(upstreams))
-	var (
-		wg       sync.WaitGroup
-		attempts int
-	)
+	var wg sync.WaitGroup
 	for i, u := range upstreams {
-		if u.Transport != config.Stdio {
-			log.Warn("HTTP transport is not supported yet; upstream skipped", "upstream", u.Name)
-			continue
-		}
-		attempts++
 		wg.Go(func() {
 			begin := time.Now()
 			r, err := st.start(ctx, u)
@@ -103,7 +95,7 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
 	}
-	g.failed = attempts - len(g.sessions)
+	g.failed = len(upstreams) - len(g.sessions)
 	log.Info("gateway started", "ready", len(g.sessions), "failed", g.failed, "tools", tools)
 	return g
 }
@@ -132,8 +124,8 @@ type ready struct {
 	took    time.Duration // to start, which "upstream ready" reports, as it is logged once all are done
 }
 
-// starter starts Upstreams: each as a process with env as its inherited
-// environment, given timeout to connect and list its tools.
+// starter starts Upstreams, giving each timeout to connect and list its
+// tools. A stdio Upstream's process gets env as its inherited environment.
 type starter struct {
 	client   *mcp.Client
 	env      []string
@@ -179,13 +171,29 @@ func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) 
 	return res.r, res.err
 }
 
-// connect launches u's process, connects to it and lists its tools.
+// connect connects to u, launching its process if it is a stdio Upstream,
+// and lists its tools.
 func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error) {
-	cmd := exec.Command(u.Command, u.Args...)
-	cmd.Env = upstreamEnv(s.env, u.Env)
-	transport := &stdioTransport{cmd: cmd, log: s.log.With("upstream", u.Name)}
+	var transport mcp.Transport
+	switch u.Transport {
+	case config.Stdio:
+		cmd := exec.Command(u.Command, u.Args...)
+		cmd.Env = upstreamEnv(s.env, u.Env)
+		transport = &stdioTransport{cmd: cmd, log: s.log.With("upstream", u.Name)}
+	case config.HTTP:
+		streamable, err := httpTransport(u)
+		if err != nil {
+			return nil, err
+		}
+		transport = streamable
+	}
 	session, err := s.client.Connect(ctx, transport, nil)
 	if err != nil {
+		if u.Transport == config.HTTP {
+			// The SDK never falls back to the deprecated HTTP+SSE transport,
+			// and an SSE-only server fails here with a bare HTTP status.
+			err = fmt.Errorf("connecting over Streamable HTTP (HTTP+SSE is not supported): %w", err)
+		}
 		return nil, err
 	}
 
@@ -197,7 +205,9 @@ func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error
 		}
 		r.tools = append(r.tools, tool)
 	}
-	transport.started()
+	if stdio, ok := transport.(*stdioTransport); ok {
+		stdio.started()
+	}
 	return r, nil
 }
 
