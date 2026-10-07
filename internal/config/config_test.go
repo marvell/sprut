@@ -187,6 +187,16 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			name: "url empty after interpolation skips only that upstream",
+			config: `{"mcpServers": {
+				"remote": {"url": "${ENDPOINT}"},
+				"local": {"command": "uvx"}
+			}}`,
+			env:      map[string]string{"ENDPOINT": ""},
+			want:     []config.Upstream{{Name: "local", Transport: config.Stdio, Command: "uvx"}},
+			warnings: []config.Warning{{Upstream: "remote", Message: `"url" is empty after interpolation; upstream skipped`}},
+		},
+		{
 			name:   "unset variable in a disabled upstream is not reported",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": ["${NOPE}"], "disabled": true}}}`,
 		},

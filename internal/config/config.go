@@ -243,6 +243,11 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 	if missing := interpolate(&u, lookupEnv); len(missing) > 0 {
 		return nil, append(warnings, unsetWarning(missing)), nil
 	}
+	// The target was checked before interpolation, but a variable set to empty
+	// can still empty it. "command" is not interpolated, so only "url" can.
+	if u.Transport == HTTP && u.URL == "" {
+		return nil, append(warnings, `"url" is empty after interpolation; upstream skipped`), nil
+	}
 	return &u, warnings, nil
 }
 
