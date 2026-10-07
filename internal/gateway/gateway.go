@@ -32,6 +32,7 @@ type Gateway struct {
 	server   *mcp.Server
 	sessions []*mcp.ClientSession // one per started Upstream
 	starting sync.WaitGroup       // Upstream starts, including abandoned ones
+	failed   int                  // Upstreams that failed or timed out at startup
 	log      *slog.Logger
 }
 
@@ -93,9 +94,13 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 			"protocol", r.session.InitializeResult().ProtocolVersion)
 		tools += added
 	}
-	log.Info("gateway started", "ready", len(g.sessions), "failed", attempts-len(g.sessions), "tools", tools)
+	g.failed = attempts - len(g.sessions)
+	log.Info("gateway started", "ready", len(g.sessions), "failed", g.failed, "tools", tools)
 	return g
 }
+
+// Failed reports how many Upstreams failed or timed out at startup.
+func (g *Gateway) Failed() int { return g.failed }
 
 // ready is an Upstream that is connected and has listed its tools.
 type ready struct {
@@ -180,7 +185,14 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		}
 	}()
 	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		begin := time.Now()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
+		attrs := []any{"upstream", upstream, "tool", namespaced.Name, "duration", time.Since(begin),
+			"isError", res != nil && res.IsError}
+		if err != nil {
+			attrs = append(attrs, "err", err)
+		}
+		g.log.Debug("tool called", attrs...)
 		if res != nil {
 			// serverInfo identifies the responder of each hop; drop the
 			// Upstream's so the Gateway's own is reported to the Agent.
@@ -188,7 +200,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		}
 		return res, err
 	})
-	g.log.Debug("tool", "name", namespaced.Name)
+	g.log.Debug("tool added", "upstream", upstream, "tool", namespaced.Name)
 	return nil
 }
 

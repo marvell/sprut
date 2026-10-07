@@ -22,6 +22,8 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Flags: []ucli.Flag{
 			&ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the Config file"},
 			&ucli.DurationFlag{Name: "startup-timeout", Value: 30 * time.Second, Usage: "how long each Upstream may take to start"},
+			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every Namespaced tool and tool call"},
+			&ucli.BoolFlag{Name: "dry-run", Usage: "start every Upstream as usual, then shut down; exit 1 if any failed"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			// Checked here rather than by a flag Validator, which urfave/cli
@@ -30,7 +32,11 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			if startupTimeout <= 0 {
 				return ucli.Exit(fmt.Sprintf("--startup-timeout must be positive, got %s", startupTimeout), 2)
 			}
-			log := slog.New(slog.NewTextHandler(stderr, nil))
+			level := slog.LevelInfo
+			if cmd.Bool("verbose") {
+				level = slog.LevelDebug
+			}
+			log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
 			lookupEnv := lookupIn(env)
 			path, err := config.Path(cmd.String("config"), lookupEnv)
@@ -51,6 +57,13 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 
 			gw := gateway.Start(ctx, upstreams, env, startupTimeout, version(), log)
 			defer gw.Close()
+
+			if cmd.Bool("dry-run") {
+				if gw.Failed() > 0 {
+					return ucli.Exit("", 1)
+				}
+				return nil
+			}
 
 			// The Agent going away (EOF on stdin) or ctx being cancelled by a
 			// signal are both normal ends of a session.

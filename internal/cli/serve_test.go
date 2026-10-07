@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -370,5 +371,140 @@ func TestServeRejectsNonPositiveStartupTimeoutAsUsageError(t *testing.T) {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
 		})
+	}
+}
+
+func TestServeDryRunWithHealthyUpstreamsExits0AndStopsThem(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	upstreams := map[string]any{}
+	for _, name := range []string{"one", "two"} {
+		upstreams[name] = fakeUpstreamEntry(t, envFakePIDFile+"="+filepath.Join(dir, name+".pid"))
+	}
+
+	code, stdout, stderr := runSprut(t, []string{envFakeUpstream + "=1"}, "serve", "--dry-run", "-c", writeConfig(t, upstreams))
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "ready=2 failed=0 tools=4") {
+		t.Errorf("no startup summary for two ready Upstreams; stderr:\n%s", stderr)
+	}
+	for _, name := range []string{"one", "two"} {
+		data, err := os.ReadFile(filepath.Join(dir, name+".pid"))
+		if err != nil {
+			t.Fatalf("Upstream %s did not record its PID: %v", name, err)
+		}
+		pid, err := strconv.Atoi(string(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("Upstream %s (process %d) still exists after the dry run (kill -0: %v)", name, pid, err)
+		}
+	}
+}
+
+func TestServeDryRunExits1WhenAnyUpstreamFailsOrTimesOut(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		startup string
+	}{
+		{name: "fails", startup: "fail"},
+		{name: "times out", startup: "hang"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := writeConfig(t, map[string]any{
+				"fake":   fakeUpstreamEntry(t),
+				"broken": fakeUpstreamEntry(t, envFakeStartup+"="+tt.startup),
+			})
+
+			code, stdout, stderr := runSprut(t, []string{envFakeUpstream + "=1"},
+				"serve", "--dry-run", "--startup-timeout", "300ms", "-c", config)
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "ready=1 failed=1") {
+				t.Errorf("no startup summary with the failed Upstream; stderr:\n%s", stderr)
+			}
+		})
+	}
+}
+
+func TestServeDryRunLogsExactlyWhatANormalStartupLogs(t *testing.T) {
+	t.Parallel()
+	config := writeConfig(t, map[string]any{
+		"fake":     fakeUpstreamEntry(t, envFakeExtraTools+"=has.dot"),
+		"failing":  fakeUpstreamEntry(t, envFakeStartup+"=fail"),
+		"unset":    fakeUpstreamEntry(t, "TOKEN=${SPRUT_TEST_UNSET}"),
+		"disabled": map[string]any{"command": "x", "disabled": true},
+	})
+	env := []string{envFakeUpstream + "=1"}
+
+	// A normal run whose Agent goes away at once (EOF on stdin) logs startup
+	// and nothing else.
+	_, _, normal := runSprut(t, env, "serve", "-c", config)
+	_, _, dryRun := runSprut(t, env, "serve", "--dry-run", "-c", config)
+	if !strings.Contains(normal, `msg="gateway started"`) {
+		t.Fatalf("normal run logged no startup summary:\n%s", normal)
+	}
+
+	if got, want := withoutTimes(dryRun), withoutTimes(normal); !slices.Equal(got, want) {
+		t.Errorf("dry run log:\n%s\nwant the normal startup log:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// withoutTimes returns the lines of a log with their time= field removed.
+func withoutTimes(log string) []string {
+	var lines []string
+	for line := range strings.Lines(log) {
+		_, rest, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+		lines = append(lines, rest)
+	}
+	return lines
+}
+
+func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"one": fakeUpstreamEntry(t), "two": fakeUpstreamEntry(t)}
+	g := startGateway(t, writeConfig(t, upstreams), nil, "-v")
+
+	for _, upstream := range []string{"one", "two"} {
+		for _, tool := range []string{"echo", "fail"} {
+			g.wantLogLine(t, "DEBUG", "upstream="+upstream, "tool="+upstream+"__"+tool)
+		}
+	}
+
+	ctx := context.Background()
+	for _, tool := range []string{"two__echo", "two__fail"} {
+		if _, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}}); err != nil {
+			t.Fatalf("tools/call %s: %v", tool, err)
+		}
+	}
+	g.wantLogLine(t, "DEBUG", "upstream=two", "tool=two__echo", "duration=", "isError=false")
+	g.wantLogLine(t, "DEBUG", "upstream=two", "tool=two__fail", "duration=", "isError=true")
+}
+
+func TestServeLogsNothingAtDebugWithoutVerbose(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t)
+	if _, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	g.closeAgent(t)
+
+	g.wantLogLine(t, "INFO", "upstream=fake", "tools=2")
+	for _, line := range g.stderr.Lines() {
+		if strings.Contains(line, "level=DEBUG ") {
+			t.Errorf("DEBUG line without -v: %q", line)
+		}
 	}
 }
