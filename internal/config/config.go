@@ -157,29 +157,19 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 	u.Transport = Transport(typ)
 	switch u.Transport {
 	case "":
-		switch {
-		case u.Command != "" && u.URL != "":
-			return nil, nil, errors.New(`has both "command" and "url"; set only one`)
-		case u.Command != "":
-			u.Transport = Stdio
-		case u.URL != "":
-			u.Transport = HTTP
-		default:
-			return nil, nil, errors.New(`needs "command" (stdio) or "url" (http)`)
+		t, err := inferTransport(u.Command, u.URL)
+		if err != nil {
+			return nil, nil, err
 		}
+		u.Transport = t
 	case Stdio, HTTP:
 	case "sse":
 		return nil, []string{"SSE transport is not supported; upstream skipped"}, nil
 	default:
 		return nil, nil, fmt.Errorf(`unknown type %q, want "stdio", "http" or "sse"`, typ)
 	}
-	set := map[string]bool{"command": u.Command != "", "url": u.URL != ""}
-	need, other := "command", "url"
-	if u.Transport == HTTP {
-		need, other = other, need
-	}
-	if !set[need] || set[other] {
-		return nil, nil, fmt.Errorf("type %q needs %q and no %q", u.Transport, need, other)
+	if err := checkTarget(u); err != nil {
+		return nil, nil, err
 	}
 
 	var warnings []string
@@ -199,14 +189,47 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 	}
 
 	if missing := interpolate(&u, lookupEnv); len(missing) > 0 {
-		noun := "variable"
-		if len(missing) > 1 {
-			noun = "variables"
-		}
-		warnings = append(warnings, fmt.Sprintf("unset %s %s; upstream skipped", noun, strings.Join(missing, ", ")))
-		return nil, warnings, nil
+		return nil, append(warnings, unsetWarning(missing)), nil
 	}
 	return &u, warnings, nil
+}
+
+// inferTransport picks the transport of an entry without "type" from
+// whichever of "command" and "url" it sets.
+func inferTransport(command, url string) (Transport, error) {
+	switch {
+	case command != "" && url != "":
+		return "", errors.New(`has both "command" and "url"; set only one`)
+	case command != "":
+		return Stdio, nil
+	case url != "":
+		return HTTP, nil
+	default:
+		return "", errors.New(`needs "command" (stdio) or "url" (http)`)
+	}
+}
+
+// checkTarget checks that u sets the target its transport needs ("command"
+// for stdio, "url" for HTTP) and not the other one.
+func checkTarget(u Upstream) error {
+	set := map[string]bool{"command": u.Command != "", "url": u.URL != ""}
+	need, other := "command", "url"
+	if u.Transport == HTTP {
+		need, other = other, need
+	}
+	if !set[need] || set[other] {
+		return fmt.Errorf("type %q needs %q and no %q", u.Transport, need, other)
+	}
+	return nil
+}
+
+// unsetWarning says which variables are unset, so the Upstream is skipped.
+func unsetWarning(missing []string) string {
+	noun := "variable"
+	if len(missing) > 1 {
+		noun = "variables"
+	}
+	return fmt.Sprintf("unset %s %s; upstream skipped", noun, strings.Join(missing, ", "))
 }
 
 // varRef is a ${VAR} reference.
