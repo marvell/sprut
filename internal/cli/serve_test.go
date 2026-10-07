@@ -3,15 +3,12 @@ package cli_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -108,22 +105,11 @@ func TestServeShutsDownGatewayAndUpstreamOnStdinEOF(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "upstream.pid")
 	g := startFakeGateway(t, envFakePIDFile+"="+pidFile)
 
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("fake Upstream did not record its PID: %v", err)
-	}
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	g.closeAgent(t)
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Errorf("Upstream process %d still exists after Gateway exit (kill -0: %v)", pid, err)
-	}
+	wantUpstreamGone(t, pidFile)
 }
 
-func TestServeLogsLogfmtToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
+func TestServeLogsLogfmtAtInfoToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
 	ctx := context.Background()
@@ -144,10 +130,11 @@ func TestServeLogsLogfmtToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
 		}
 	}
 
-	logfmt := regexp.MustCompile(`^time=\S+ level=(DEBUG|INFO|WARN|ERROR) msg=`)
+	// Without -v nothing is logged at DEBUG, not even the tool call.
+	logfmt := regexp.MustCompile(`^time=\S+ level=(INFO|WARN|ERROR) msg=`)
 	for _, line := range g.stderr.Lines() {
 		if !logfmt.MatchString(line) {
-			t.Errorf("stderr line is not logfmt: %q", line)
+			t.Errorf("stderr line is not logfmt at INFO or above: %q", line)
 		}
 	}
 	g.wantLogLine(t, "INFO", "upstream=fake", "tools=2", "protocol=")
@@ -170,8 +157,8 @@ func TestServeInterpolatesVariablesIntoUpstreamEnvironmentOverInheritedOne(t *te
 		t.Fatalf("fake Upstream did not record its environment: %v", err)
 	}
 	got := map[string][]string{}
-	for line := range strings.Lines(string(data)) {
-		k, v, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
+	for _, line := range lines(string(data)) {
+		k, v, _ := strings.Cut(line, "=")
 		got[k] = append(got[k], v)
 	}
 	for k, want := range map[string]string{
@@ -393,17 +380,7 @@ func TestServeDryRunWithHealthyUpstreamsExits0AndStopsThem(t *testing.T) {
 		t.Errorf("no startup summary for two ready Upstreams; stderr:\n%s", stderr)
 	}
 	for _, name := range []string{"one", "two"} {
-		data, err := os.ReadFile(filepath.Join(dir, name+".pid"))
-		if err != nil {
-			t.Fatalf("Upstream %s did not record its PID: %v", name, err)
-		}
-		pid, err := strconv.Atoi(string(data))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-			t.Errorf("Upstream %s (process %d) still exists after the dry run (kill -0: %v)", name, pid, err)
-		}
+		wantUpstreamGone(t, filepath.Join(dir, name+".pid"))
 	}
 }
 
@@ -464,12 +441,12 @@ func TestServeDryRunLogsExactlyWhatANormalStartupLogs(t *testing.T) {
 
 // withoutTimes returns the lines of a log with their time= field removed.
 func withoutTimes(log string) []string {
-	var lines []string
-	for line := range strings.Lines(log) {
-		_, rest, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
-		lines = append(lines, rest)
+	var out []string
+	for _, line := range lines(log) {
+		_, rest, _ := strings.Cut(line, " ")
+		out = append(out, rest)
 	}
-	return lines
+	return out
 }
 
 func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
@@ -491,20 +468,4 @@ func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
 	}
 	g.wantLogLine(t, "DEBUG", "upstream=two", "tool=two__echo", "duration=", "isError=false")
 	g.wantLogLine(t, "DEBUG", "upstream=two", "tool=two__fail", "duration=", "isError=true")
-}
-
-func TestServeLogsNothingAtDebugWithoutVerbose(t *testing.T) {
-	t.Parallel()
-	g := startFakeGateway(t)
-	if _, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "x"}}); err != nil {
-		t.Fatal(err)
-	}
-	g.closeAgent(t)
-
-	g.wantLogLine(t, "INFO", "upstream=fake", "tools=2")
-	for _, line := range g.stderr.Lines() {
-		if strings.Contains(line, "level=DEBUG ") {
-			t.Errorf("DEBUG line without -v: %q", line)
-		}
-	}
 }

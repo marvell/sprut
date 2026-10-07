@@ -184,15 +184,15 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 			err = fmt.Errorf("%v", p)
 		}
 	}()
+	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
 	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
-		attrs := []any{"upstream", upstream, "tool", namespaced.Name, "duration", time.Since(begin),
-			"isError", res != nil && res.IsError}
+		attrs := []any{"duration", time.Since(begin), "isError", res != nil && res.IsError}
 		if err != nil {
 			attrs = append(attrs, "err", err)
 		}
-		g.log.Debug("tool called", attrs...)
+		log.Debug("tool called", attrs...)
 		if res != nil {
 			// serverInfo identifies the responder of each hop; drop the
 			// Upstream's so the Gateway's own is reported to the Agent.
@@ -200,7 +200,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		}
 		return res, err
 	})
-	g.log.Debug("tool added", "upstream", upstream, "tool", namespaced.Name)
+	log.Debug("tool added")
 	return nil
 }
 

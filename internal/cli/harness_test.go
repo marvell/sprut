@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -299,6 +301,23 @@ func (g *gateway) closeAgent(t *testing.T) {
 	}
 }
 
+// wantUpstreamGone checks that the fake Upstream that wrote pidFile (see
+// envFakePIDFile) no longer exists as a process.
+func wantUpstreamGone(t *testing.T, pidFile string) {
+	t.Helper()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("fake Upstream did not record its PID: %v", err)
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("Upstream process %d (%s) still exists after Gateway exit (kill -0: %v)", pid, pidFile, err)
+	}
+}
+
 // wantTools checks that the Agent's tools are exactly want, by name.
 func (g *gateway) wantTools(t *testing.T, want ...string) {
 	t.Helper()
@@ -348,12 +367,15 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-func (b *syncBuffer) Lines() []string {
-	var lines []string
-	for line := range strings.Lines(b.String()) {
-		lines = append(lines, strings.TrimSuffix(line, "\n"))
+func (b *syncBuffer) Lines() []string { return lines(b.String()) }
+
+// lines splits s into lines without their newlines.
+func lines(s string) []string {
+	var out []string
+	for line := range strings.Lines(s) {
+		out = append(out, strings.TrimSuffix(line, "\n"))
 	}
-	return lines
+	return out
 }
 
 // toJSON normalises v through a JSON round trip, so that values decoded from
