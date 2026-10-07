@@ -132,3 +132,7 @@ Logs always go to stderr in logfmt, and stdout carries only MCP traffic. `-v` ad
 | 0 | Clean exit: the Agent closed stdin, SIGINT or SIGTERM, or a successful dry run. |
 | 1 | A Config error, or a dry run in which some Upstream failed. |
 | 2 | A usage error, such as an unknown flag or command. Bare `sprut` exits 2 too, so it never starts the server by accident. |
+
+## License
+
+[MIT](LICENSE)
