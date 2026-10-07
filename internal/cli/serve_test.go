@@ -130,7 +130,7 @@ func TestServeLogsLogfmtAtInfoToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
 			t.Errorf("stderr line is not logfmt at INFO or above: %q", line)
 		}
 	}
-	g.wantLogLine(t, "INFO", "upstream=fake", "tools=2", "protocol=")
+	g.wantLogLine(t, "INFO", `msg="upstream ready"`, "upstream=fake", "tools=2", "protocol=", "duration=")
 }
 
 func TestServeInterpolatesVariablesIntoUpstreamEnvironmentOverInheritedOne(t *testing.T) {
@@ -429,15 +429,18 @@ func TestServeDryRunLogsExactlyWhatANormalStartupLogs(t *testing.T) {
 	}
 }
 
-// withoutTimes returns the lines of a log with their time= field removed.
+// withoutTimes returns the lines of a log with their time= and duration=
+// fields removed.
 func withoutTimes(log string) []string {
 	var out []string
 	for _, line := range lines(log) {
 		_, rest, _ := strings.Cut(line, " ")
-		out = append(out, rest)
+		out = append(out, durationField.ReplaceAllString(rest, ""))
 	}
 	return out
 }
+
+var durationField = regexp.MustCompile(` duration=\S+`)
 
 func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
 	t.Parallel()

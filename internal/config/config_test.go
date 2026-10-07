@@ -47,6 +47,24 @@ func TestParse(t *testing.T) {
 			}},
 		},
 		{
+			name: "upstreams and their warnings in Config order",
+			config: `{"mcpServers": {
+				"zeta": {"command": "z", "x-zeta": 1},
+				"alpha": {"command": "a", "x-alpha": 1},
+				"mid": {"command": "m", "x-mid": 1}
+			}}`,
+			want: []config.Upstream{
+				{Name: "zeta", Transport: config.Stdio, Command: "z"},
+				{Name: "alpha", Transport: config.Stdio, Command: "a"},
+				{Name: "mid", Transport: config.Stdio, Command: "m"},
+			},
+			warnings: []config.Warning{
+				{Upstream: "zeta", Message: `unknown field "x-zeta" ignored`},
+				{Upstream: "alpha", Message: `unknown field "x-alpha" ignored`},
+				{Upstream: "mid", Message: `unknown field "x-mid" ignored`},
+			},
+		},
+		{
 			name: "explicit type matching the fields",
 			config: `{"mcpServers": {
 				"local": {"type": "stdio", "command": "uvx"},

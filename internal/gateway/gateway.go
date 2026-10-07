@@ -73,18 +73,20 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		}
 		attempts++
 		wg.Go(func() {
+			begin := time.Now()
 			r, err := st.start(ctx, u)
 			if err != nil {
 				log.Warn("upstream failed; skipped", "upstream", u.Name, "err", err)
 				return
 			}
+			r.took = time.Since(begin)
 			results[i] = r
 		})
 	}
 	wg.Wait()
 
-	// Tools are added in Config order, so the tool list doesn't depend on
-	// which Upstream was quickest.
+	// Upstreams are logged in Config order, so the log doesn't depend on
+	// which Upstream was quickest. (The SDK lists tools by name anyway.)
 	tools := 0
 	for i, r := range results {
 		if r == nil {
@@ -94,7 +96,7 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		g.sessions = append(g.sessions, r.session)
 		added := g.addTools(name, r)
 		log.Info("upstream ready", "upstream", name, "tools", added,
-			"protocol", r.session.InitializeResult().ProtocolVersion)
+			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
 	}
 	g.failed = attempts - len(g.sessions)
@@ -123,6 +125,7 @@ func (g *Gateway) addTools(name string, r *ready) int {
 type ready struct {
 	session *mcp.ClientSession
 	tools   []*mcp.Tool
+	took    time.Duration // to start, which "upstream ready" reports, as it is logged once all are done
 }
 
 // starter starts Upstreams: each as a process with env as its inherited

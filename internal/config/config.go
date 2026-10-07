@@ -69,11 +69,11 @@ func Path(flag string, lookupEnv LookupEnv) (string, error) {
 // contains the "__" separator.
 var validName = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// Parse parses Config bytes into the Upstreams to start, ordered by name,
+// Parse parses Config bytes into the Upstreams to start, in Config order,
 // plus warnings about the Config. lookupEnv resolves ${VAR} references.
 func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 	var f struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		MCPServers servers `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, nil, jsonError(data, err)
@@ -84,8 +84,8 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 		warnings  []Warning
 		errs      []error
 	)
-	for _, name := range slices.Sorted(maps.Keys(f.MCPServers)) {
-		u, msgs, err := parseUpstream(name, f.MCPServers[name], lookupEnv)
+	for _, name := range f.MCPServers.names {
+		u, msgs, err := parseUpstream(name, f.MCPServers.entries[name], lookupEnv)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("upstream %q: %w", name, err))
 			continue
@@ -101,6 +101,43 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 		return nil, nil, err
 	}
 	return upstreams, warnings, nil
+}
+
+// servers are the entries of mcpServers, keeping the order of their names.
+// As when decoding into a map, a name given twice keeps its last entry; it
+// keeps its first place.
+type servers struct {
+	names   []string
+	entries map[string]json.RawMessage
+}
+
+func (s *servers) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	// json.Unmarshal has checked the syntax before calling this, so only
+	// the shape can be wrong.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, _ := dec.Token(); tok != json.Delim('{') {
+		return errors.New("mcpServers must be a JSON object")
+	}
+	s.entries = map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		name := tok.(string)
+		var entry json.RawMessage
+		if err := dec.Decode(&entry); err != nil {
+			return err
+		}
+		if _, ok := s.entries[name]; !ok {
+			s.names = append(s.names, name)
+		}
+		s.entries[name] = entry
+	}
+	return nil
 }
 
 // parseUpstream parses one Config entry. It returns a nil Upstream, and
