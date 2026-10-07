@@ -49,7 +49,12 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		}),
 		log: log,
 	}
-	client := mcp.NewClient(impl, nil)
+	st := &starter{
+		client:   mcp.NewClient(impl, nil),
+		env:      env,
+		timeout:  startupTimeout,
+		starting: &g.starting,
+	}
 
 	results := make([]*ready, len(upstreams))
 	var (
@@ -63,12 +68,12 @@ func Start(ctx context.Context, upstreams []config.Upstream, env []string, start
 		}
 		attempts++
 		wg.Go(func() {
-			s, err := g.startUpstream(ctx, client, u, env, startupTimeout)
+			r, err := st.start(ctx, u)
 			if err != nil {
 				log.Warn("upstream failed; skipped", "upstream", u.Name, "err", err)
 				return
 			}
-			results[i] = s
+			results[i] = r
 		})
 	}
 	wg.Wait()
@@ -115,8 +120,17 @@ type ready struct {
 	tools   []*mcp.Tool
 }
 
-func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, timeout time.Duration) (*ready, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+// starter starts Upstreams: each as a process with env as its inherited
+// environment, given timeout to connect and list its tools.
+type starter struct {
+	client   *mcp.Client
+	env      []string
+	timeout  time.Duration
+	starting *sync.WaitGroup // the Gateway's, so that Close waits for abandoned starts
+}
+
+func (s *starter) start(ctx context.Context, u config.Upstream) (*ready, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
 	// Connecting runs on its own, because a failed connect stops the
@@ -128,8 +142,8 @@ func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u confi
 		err error
 	}
 	done := make(chan result) // unbuffered: a result is either taken or left
-	g.starting.Go(func() {
-		r, err := g.connectUpstream(ctx, client, u, env)
+	s.starting.Go(func() {
+		r, err := s.connect(ctx, u)
 		select {
 		case done <- result{r, err}:
 		case <-ctx.Done(): // given up on
@@ -146,15 +160,15 @@ func (g *Gateway) startUpstream(ctx context.Context, client *mcp.Client, u confi
 		res.err = ctx.Err()
 	}
 	if res.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		res.err = fmt.Errorf("startup timed out after %s", timeout)
+		res.err = fmt.Errorf("startup timed out after %s", s.timeout)
 	}
 	return res.r, res.err
 }
 
-func (g *Gateway) connectUpstream(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) (*ready, error) {
+func (s *starter) connect(ctx context.Context, u config.Upstream) (*ready, error) {
 	cmd := exec.Command(u.Command, u.Args...)
-	cmd.Env = upstreamEnv(env, u.Env)
-	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	cmd.Env = upstreamEnv(s.env, u.Env)
+	session, err := s.client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return nil, err
 	}
