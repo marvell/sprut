@@ -40,10 +40,8 @@ const (
 // connectStdio launches u's process, connects to it over its stdin and
 // stdout, and lists its tools. env is the environment the process inherits.
 func connectStdio(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*ready, error) {
-	cmd := exec.Command(u.Command, u.Args...)
-	cmd.Env = upstreamEnv(env, u.Env)
-	t := &stdioTransport{cmd: cmd, log: log.With("upstream", u.Name)}
-	session, err := client.Connect(ctx, t, nil)
+	s := newStdioUpstream(u, env, log)
+	session, err := client.Connect(ctx, s, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +49,7 @@ func connectStdio(ctx context.Context, client *mcp.Client, u config.Upstream, en
 	if err != nil {
 		return nil, err
 	}
-	t.proc.on(toolsListed)
+	s.listed()
 	return r, nil
 }
 
@@ -66,77 +64,18 @@ func upstreamEnv(env []string, extra map[string]string) []string {
 	return out
 }
 
-// stdioTransport runs a stdio Upstream in its own process group and talks MCP
-// to it over its stdin and stdout. The Upstream's stderr is logged line by
-// line to log. Closing the connection stops the whole process group, so that
-// the Upstream's own children go with it.
-type stdioTransport struct {
-	cmd  *exec.Cmd
-	log  *slog.Logger
-	proc *process // once connected
-}
+// stdioUpstream is the Transport to a stdio Upstream, and the process that
+// connecting to it launches: in its own process group, talking MCP over its
+// stdin and stdout, with its stderr logged line by line. Closing the
+// connection stops the whole process group, so that the Upstream's own
+// children go with it. The Upstream's exit is logged if it ends the session
+// after its tools are listed.
+type stdioUpstream struct {
+	cmd *exec.Cmd
+	log *slog.Logger
 
-func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
-	t.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stderr := &lineLogger{log: t.log}
-	t.cmd.Stderr = stderr
-	// Once the Upstream has exited, stop reading a stderr still held open by
-	// something that outlived it.
-	t.cmd.WaitDelay = drainGrace
-	stdin, err := t.cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	// A plain pipe rather than exec's, which Wait would close while it is
-	// still being read.
-	stdout, stdoutW, err := os.Pipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, err
-	}
-	t.cmd.Stdout = stdoutW
-	err = t.cmd.Start()
-	_ = stdoutW.Close() // the Upstream holds its own copy
-	if err != nil {
-		_ = stdout.Close()
-		return nil, err
-	}
-
-	p := &process{
-		pgid:   t.cmd.Process.Pid, // the leader's, by Setpgid
-		log:    t.log,
-		stdin:  stdin,
-		stdout: stdout,
-		exited: make(chan struct{}),
-	}
-	t.proc = p
-	go func() {
-		err := t.cmd.Wait()
-		end := p.on(upstreamEnded)
-		if end != stopping {
-			// What the Upstream left running in its group; Close, which
-			// ending stdout leads to, kills whatever ignores this.
-			_ = p.signal(syscall.SIGTERM)
-		}
-		// A descendant that inherited stdout would keep it from ending, and
-		// so the connection from closing; the reader takes the deadline as
-		// the end.
-		_ = stdout.SetReadDeadline(time.Now().Add(drainGrace))
-		stderr.flush()
-		// Before exited is closed, so that an exit reported here is out once
-		// Close returns.
-		p.reap(err)
-		close(p.exited)
-	}()
-	// The connection is closed by closing stdin (p), not stdout.
-	return (&mcp.IOTransport{Reader: io.NopCloser(&eofReader{r: stdout, p: p}), Writer: p}).Connect(ctx)
-}
-
-// process is a started stdio Upstream. Writing to it writes to its stdin;
-// closing it stops it.
-type process struct {
+	// Set by Connect.
 	pgid   int
-	log    *slog.Logger
 	stdin  io.WriteCloser
 	stdout *os.File      // read end
 	exited chan struct{} // closed once the process is reaped and stderr drained
@@ -148,9 +87,74 @@ type process struct {
 	reported bool  // whether its exit is logged
 }
 
+// newStdioUpstream returns the Transport to u, whose process is launched on
+// Connect. env is the environment the process inherits.
+func newStdioUpstream(u config.Upstream, env []string, log *slog.Logger) *stdioUpstream {
+	cmd := exec.Command(u.Command, u.Args...)
+	cmd.Env = upstreamEnv(env, u.Env)
+	return &stdioUpstream{cmd: cmd, log: log.With("upstream", u.Name)}
+}
+
+// listed records that the Upstream has listed its tools, from when on its
+// exit is reported.
+func (s *stdioUpstream) listed() { s.on(toolsListed) }
+
+// Connect launches the Upstream. Writing to the connection writes to its
+// stdin; closing the connection closes s.
+func (s *stdioUpstream) Connect(ctx context.Context) (mcp.Connection, error) {
+	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stderr := &lineLogger{log: s.log}
+	s.cmd.Stderr = stderr
+	// Once the Upstream has exited, stop reading a stderr still held open by
+	// something that outlived it.
+	s.cmd.WaitDelay = drainGrace
+	stdin, err := s.cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	// A plain pipe rather than exec's, which Wait would close while it is
+	// still being read.
+	stdout, stdoutW, err := os.Pipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, err
+	}
+	s.cmd.Stdout = stdoutW
+	err = s.cmd.Start()
+	_ = stdoutW.Close() // the Upstream holds its own copy
+	if err != nil {
+		_ = stdout.Close()
+		return nil, err
+	}
+
+	s.pgid = s.cmd.Process.Pid // the leader's, by Setpgid
+	s.stdin, s.stdout = stdin, stdout
+	s.exited = make(chan struct{})
+	go func() {
+		err := s.cmd.Wait()
+		end := s.on(upstreamEnded)
+		if end != stopping {
+			// What the Upstream left running in its group; Close, which
+			// ending stdout leads to, kills whatever ignores this.
+			_ = s.signal(syscall.SIGTERM)
+		}
+		// A descendant that inherited stdout would keep it from ending, and
+		// so the connection from closing; the reader takes the deadline as
+		// the end.
+		_ = stdout.SetReadDeadline(time.Now().Add(drainGrace))
+		stderr.flush()
+		// Before exited is closed, so that an exit reported here is out once
+		// Close returns.
+		s.reap(err)
+		close(s.exited)
+	}()
+	// The connection is closed by closing stdin (s), not stdout.
+	return (&mcp.IOTransport{Reader: io.NopCloser(&eofReader{r: stdout, s: s}), Writer: s}).Connect(ctx)
+}
+
 // state is where a stdio Upstream is in its life, which decides whether its
 // exit is reported and whether what it left in its group is stopped.
-type state int32
+type state int
 
 const (
 	connecting state = iota // launched; its tools not listed yet
@@ -189,74 +193,74 @@ func next(s state, e event) state {
 	return s
 }
 
-// on moves p on e and returns the state p is in afterwards.
-func (p *process) on(e event) state {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.state = next(p.state, e)
-	p.report()
-	return p.state
+// on moves s on e and returns the state s is in afterwards.
+func (s *stdioUpstream) on(e event) state {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = next(s.state, e)
+	s.report()
+	return s.state
 }
 
-// reap records that p's process is reaped, with err from waiting for it,
+// reap records that s's process is reaped, with err from waiting for it,
 // and that its stderr is drained.
-func (p *process) reap(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.reaped, p.waitErr = true, err
-	p.report()
+func (s *stdioUpstream) reap(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reaped, s.waitErr = true, err
+	s.report()
 }
 
 // report logs, once, that the Upstream exited, as soon as it is both
 // exited and reaped: whichever comes second, its exit or its tools turning
 // out to be listed, reports it.
-func (p *process) report() {
-	if p.state != exited || !p.reaped || p.reported {
+func (s *stdioUpstream) report() {
+	if s.state != exited || !s.reaped || s.reported {
 		return
 	}
-	p.reported = true
-	err := p.waitErr
+	s.reported = true
+	err := s.waitErr
 	if err == nil {
 		err = errors.New("exit status 0")
 	}
-	p.log.Warn("upstream exited", "err", err)
+	s.log.Warn("upstream exited", "err", err)
 }
 
-func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
+func (s *stdioUpstream) Write(b []byte) (int, error) { return s.stdin.Write(b) }
 
 // Close closes stdin and sends SIGTERM to the process group, then SIGKILL if
 // any of it is still running after stopGrace. It gives up on an Upstream not
 // reaped exitGrace later, such as one that can't be signalled or is stuck in
 // the kernel, and logs it; the Upstream is still reaped if it ever exits.
-func (p *process) Close() error {
+func (s *stdioUpstream) Close() error {
 	// No move if the Upstream ended the session first, as the SDK closes the
 	// connection itself once stdout ends.
-	p.on(gatewayClosed)
-	_ = p.stdin.Close()
-	sigErr := p.signal(syscall.SIGTERM)
-	if !p.waitGone(stopGrace) {
-		sigErr = errors.Join(sigErr, p.signal(syscall.SIGKILL))
+	s.on(gatewayClosed)
+	_ = s.stdin.Close()
+	sigErr := s.signal(syscall.SIGTERM)
+	if !s.waitGone(stopGrace) {
+		sigErr = errors.Join(sigErr, s.signal(syscall.SIGKILL))
 		// SIGKILL can't be ignored; this only covers the reaping.
-		p.waitGone(time.Second)
+		s.waitGone(time.Second)
 	}
 	// A signal error only says why the Upstream didn't stop, as one that did
 	// can get EPERM too (see signal).
 	select {
-	case <-p.exited:
+	case <-s.exited:
 	case <-time.After(exitGrace):
-		attrs := []any{"pid", p.pgid}
+		attrs := []any{"pid", s.pgid}
 		if sigErr != nil {
 			attrs = append(attrs, "err", sigErr)
 		}
-		p.log.Warn("upstream did not stop", attrs...)
+		s.log.Warn("upstream did not stop", attrs...)
 	}
-	return p.stdout.Close()
+	return s.stdout.Close()
 }
 
 // signal sends sig to the process group. A group already gone is no error,
 // but on darwin one whose only member is its unreaped leader gives EPERM.
-func (p *process) signal(sig syscall.Signal) error {
-	err := syscall.Kill(-p.pgid, sig)
+func (s *stdioUpstream) signal(sig syscall.Signal) error {
+	err := syscall.Kill(-s.pgid, sig)
 	if err == nil || errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
@@ -265,12 +269,12 @@ func (p *process) signal(sig syscall.Signal) error {
 
 // waitGone waits up to timeout for the whole process group to be gone, and
 // reports whether it is. An unreaped leader still counts as a member.
-func (p *process) waitGone(timeout time.Duration) bool {
+func (s *stdioUpstream) waitGone(timeout time.Duration) bool {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if err := syscall.Kill(-p.pgid, 0); errors.Is(err, syscall.ESRCH) {
+		if err := syscall.Kill(-s.pgid, 0); errors.Is(err, syscall.ESRCH) {
 			return true
 		}
 		select {
@@ -281,11 +285,11 @@ func (p *process) waitGone(timeout time.Duration) bool {
 	}
 }
 
-// eofReader reads from r, p's stdout, and moves p on upstreamEnded once r
+// eofReader reads from r, s's stdout, and moves s on upstreamEnded once r
 // reaches its end. Its read deadline passing counts as the end too.
 type eofReader struct {
 	r io.Reader
-	p *process
+	s *stdioUpstream
 }
 
 func (e *eofReader) Read(b []byte) (int, error) {
@@ -294,7 +298,7 @@ func (e *eofReader) Read(b []byte) (int, error) {
 		err = io.EOF
 	}
 	if err == io.EOF {
-		e.p.on(upstreamEnded)
+		e.s.on(upstreamEnded)
 	}
 	return n, err
 }
