@@ -187,7 +187,7 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
-			name: "url empty after interpolation skips only that upstream",
+			name: "url empty after interpolation skips only that Upstream",
 			config: `{"mcpServers": {
 				"remote": {"url": "${ENDPOINT}"},
 				"local": {"command": "uvx"}
