@@ -64,6 +64,12 @@ const (
 	// of a grandchild to: a process it starts that shares its stderr and
 	// sleeps until killed.
 	envFakeGrandchild = "SPRUT_TEST_FAKE_GRANDCHILD"
+	// envFakeLeaveGroup, if set, is a path, and makes the fake Upstream
+	// leave its process group for that of a child that sleeps until killed,
+	// writing the child's PID, which is also the new group's, to the path.
+	// Signals to its old group no longer reach it, and it ignores its stdin
+	// closing, so it never exits on its own.
+	envFakeLeaveGroup = "SPRUT_TEST_FAKE_LEAVE_GROUP"
 	// envFakeCrashTool, if set, adds a tool "crash" that makes the fake
 	// Upstream exit 1 mid-call, without answering. It hangs up its stdout
 	// first and exits only once the Gateway reacts with SIGTERM, so the
@@ -153,6 +159,18 @@ func runFakeUpstream() int {
 		}
 	}
 
+	if path := os.Getenv(envFakeLeaveGroup); path != "" {
+		pid, err := startSleeper(path, true, nil, nil)
+		if err == nil {
+			err = syscall.Setpgid(0, pid)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake upstream:", err)
+			return 1
+		}
+		defer time.Sleep(fakeLifetime)
+	}
+
 	if path := os.Getenv(envFakeEnvFile); path != "" {
 		if err := os.WriteFile(path, []byte(strings.Join(os.Environ(), "\n")), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
@@ -161,7 +179,7 @@ func runFakeUpstream() int {
 	}
 
 	if path := os.Getenv(envFakeGrandchild); path != "" {
-		if err := startSleeper(path, nil, os.Stderr); err != nil {
+		if _, err := startSleeper(path, false, nil, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
 			return 1
 		}
@@ -218,7 +236,7 @@ func runFakeUpstream() int {
 	if path := os.Getenv(envFakeOrphanTool); path != "" {
 		server.AddTool(&mcp.Tool{Name: "orphan", InputSchema: objectSchema},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				if err := startSleeper(path, os.Stdout, os.Stderr); err != nil {
+				if _, err := startSleeper(path, false, os.Stdout, os.Stderr); err != nil {
 					return nil, err
 				}
 				os.Exit(1)
@@ -416,16 +434,18 @@ func gather(want int) mcp.ToolHandler {
 }
 
 // startSleeper starts a process that sleeps until killed, sharing the given
-// stdout and stderr, and writes its PID to pidFile. It implements
-// envFakeGrandchild and envFakeOrphanTool.
-func startSleeper(pidFile string, stdout, stderr io.Writer) error {
+// stdout and stderr, and in a process group of its own if ownGroup is set.
+// It writes the process's PID to pidFile and returns it. It implements
+// envFakeGrandchild, envFakeOrphanTool and envFakeLeaveGroup.
+func startSleeper(pidFile string, ownGroup bool, stdout, stderr io.Writer) (int, error) {
 	// By absolute path: the fake Upstream's environment has no PATH.
 	cmd := exec.Command("/bin/sleep", strconv.Itoa(int(fakeLifetime.Seconds())))
 	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: ownGroup}
 	if err := cmd.Start(); err != nil {
-		return err
+		return 0, err
 	}
-	return writePID(pidFile, cmd.Process.Pid)
+	return cmd.Process.Pid, writePID(pidFile, cmd.Process.Pid)
 }
 
 // writePID records pid in path, for wantGone.

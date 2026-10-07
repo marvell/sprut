@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -23,6 +24,10 @@ const (
 	// after it exits, for its last output, before they are cut off even if
 	// something that outlived it holds them open.
 	drainGrace = time.Second
+	// exitGrace is how long a stopped Upstream whose process group is gone,
+	// or was killed, still gets to be reaped and drained before it is given
+	// up on.
+	exitGrace = drainGrace + time.Second
 	// maxStderrLine is the longest stderr line logged whole; a longer one is
 	// logged in pieces.
 	maxStderrLine = 64 << 10
@@ -70,6 +75,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 
 	p := &process{
 		pgid:   t.cmd.Process.Pid, // the leader's, by Setpgid
+		log:    t.log,
 		stdin:  stdin,
 		stdout: stdout,
 		exited: make(chan struct{}),
@@ -80,7 +86,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		if !p.stopping.Load() {
 			// What the Upstream left running in its group; Close, which
 			// ending stdout leads to, kills whatever ignores this.
-			_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+			_ = p.signal(syscall.SIGTERM)
 		}
 		// A descendant that inherited stdout would keep it from ending, and
 		// so the connection from closing; the reader takes the deadline as
@@ -104,6 +110,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 // closing it stops it.
 type process struct {
 	pgid   int
+	log    *slog.Logger
 	stdin  io.WriteCloser
 	stdout *os.File      // read end
 	exited chan struct{} // closed once the process is reaped and stderr drained
@@ -116,7 +123,9 @@ type process struct {
 func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 
 // Close closes stdin and sends SIGTERM to the process group, then SIGKILL if
-// any of it is still running after stopGrace.
+// any of it is still running after stopGrace. It gives up on an Upstream not
+// reaped exitGrace later, such as one that can't be signalled or is stuck in
+// the kernel, and logs it; the Upstream is still reaped if it ever exits.
 func (p *process) Close() error {
 	// The SDK closes the connection itself once stdout ends, which an
 	// Upstream exiting on its own causes; that exit is still reported.
@@ -124,14 +133,34 @@ func (p *process) Close() error {
 		p.stopping.Store(true)
 	}
 	_ = p.stdin.Close()
-	_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+	sigErr := p.signal(syscall.SIGTERM)
 	if !p.waitGone(stopGrace) {
-		_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
+		sigErr = errors.Join(sigErr, p.signal(syscall.SIGKILL))
 		// SIGKILL can't be ignored; this only covers the reaping.
 		p.waitGone(time.Second)
 	}
-	<-p.exited
+	select {
+	case <-p.exited:
+		if sigErr != nil {
+			p.log.Warn("signalling upstream failed", "err", sigErr)
+		}
+	case <-time.After(exitGrace):
+		attrs := []any{"pid", p.pgid}
+		if sigErr != nil {
+			attrs = append(attrs, "err", sigErr)
+		}
+		p.log.Warn("upstream did not stop", attrs...)
+	}
 	return p.stdout.Close()
+}
+
+// signal sends sig to the process group. A group already gone is no error.
+func (p *process) signal(sig syscall.Signal) error {
+	err := syscall.Kill(-p.pgid, sig)
+	if err == nil || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return fmt.Errorf("sending %s: %w", sig, err)
 }
 
 // waitGone waits up to timeout for the whole process group to be gone, and
