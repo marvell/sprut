@@ -197,11 +197,11 @@ func TestParse(t *testing.T) {
 			warnings: []config.Warning{{Upstream: "remote", Message: `"url" is empty after interpolation; upstream skipped`}},
 		},
 		{
-			name:   "unset variable in a disabled upstream is not reported",
+			name:   "unset variable in a disabled Upstream is not reported",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": ["${NOPE}"], "disabled": true}}}`,
 		},
 		{
-			name:   "null in a disabled upstream's args is not checked",
+			name:   "null in a disabled Upstream's args is not checked",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": [null], "disabled": true}}}`,
 		},
 	}
@@ -335,6 +335,16 @@ func TestParseRejectsInvalidConfig(t *testing.T) {
 			name:    "null env",
 			config:  `{"mcpServers": {"fs": {"command": "npx", "env": null}}}`,
 			wantErr: []string{`"fs"`, `"env" must be an object of strings`},
+		},
+		{
+			name:    "null args",
+			config:  `{"mcpServers": {"fs": {"command": "npx", "args": null}}}`,
+			wantErr: []string{`"fs"`, `"args" must be an array of strings`},
+		},
+		{
+			name:    "null headers",
+			config:  `{"mcpServers": {"remote": {"url": "https://example.com/mcp", "headers": null}}}`,
+			wantErr: []string{`"remote"`, `"headers" must be an object of strings`},
 		},
 		{
 			name:    "every invalid entry is reported",
