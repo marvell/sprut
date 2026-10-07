@@ -84,7 +84,7 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		close(p.exited)
 	}()
 	// The connection is closed by closing stdin (p), not stdout.
-	return (&mcp.IOTransport{Reader: io.NopCloser(stdout), Writer: p}).Connect(ctx)
+	return (&mcp.IOTransport{Reader: io.NopCloser(&eofReader{r: stdout, eof: &p.hungUp}), Writer: p}).Connect(ctx)
 }
 
 // process is a started stdio Upstream. Writing to it writes to its stdin;
@@ -97,6 +97,7 @@ type process struct {
 
 	started  atomic.Bool // see stdioTransport.started
 	stopping atomic.Bool // set by Close, so that the exit it causes isn't reported
+	hungUp   atomic.Bool // whether stdout reached EOF, as when the process exits
 }
 
 func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
@@ -104,7 +105,11 @@ func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 // Close closes stdin and sends SIGTERM to the process group, then SIGKILL if
 // any of it is still running after stopGrace.
 func (p *process) Close() error {
-	p.stopping.Store(true)
+	// The SDK closes the connection itself once stdout ends, which an
+	// Upstream exiting on its own causes; that exit is still reported.
+	if !p.hungUp.Load() {
+		p.stopping.Store(true)
+	}
 	_ = p.stdin.Close()
 	_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
 	if !p.waitGone(stopGrace) {
@@ -132,6 +137,20 @@ func (p *process) waitGone(timeout time.Duration) bool {
 		case <-tick.C:
 		}
 	}
+}
+
+// eofReader reads from r and records in eof that r reached its end.
+type eofReader struct {
+	r   io.Reader
+	eof *atomic.Bool
+}
+
+func (e *eofReader) Read(b []byte) (int, error) {
+	n, err := e.r.Read(b)
+	if err == io.EOF {
+		e.eof.Store(true)
+	}
+	return n, err
 }
 
 // lineLogger logs each line written to it.
