@@ -69,6 +69,11 @@ const (
 	// first and exits only once the Gateway reacts with SIGTERM, so the
 	// Gateway always sees the exit after closing the connection itself.
 	envFakeCrashTool = "SPRUT_TEST_FAKE_CRASH_TOOL"
+	// envFakeOrphanTool, if set, is a path, and adds a tool "orphan" that
+	// starts a child sharing its stdout, writes the child's PID to the path,
+	// then exits 1 mid-call, without answering. The child sleeps until
+	// killed, holding the Upstream's stdout open.
+	envFakeOrphanTool = "SPRUT_TEST_FAKE_ORPHAN_TOOL"
 	// envFakeBlockTool, if set, is a path, and adds a tool "block" that
 	// writes "started" to it, blocks until the call is cancelled, then
 	// writes "cancelled" to it.
@@ -156,7 +161,7 @@ func runFakeUpstream() int {
 	}
 
 	if path := os.Getenv(envFakeGrandchild); path != "" {
-		if err := startGrandchild(path); err != nil {
+		if err := startGrandchild(path, nil, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, "fake upstream:", err)
 			return 1
 		}
@@ -205,6 +210,16 @@ func runFakeUpstream() int {
 				select {
 				case <-sigterm:
 				case <-time.After(fakeLifetime):
+				}
+				os.Exit(1)
+				return nil, nil
+			})
+	}
+	if path := os.Getenv(envFakeOrphanTool); path != "" {
+		server.AddTool(&mcp.Tool{Name: "orphan", InputSchema: objectSchema},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if err := startGrandchild(path, os.Stdout, nil); err != nil {
+					return nil, err
 				}
 				os.Exit(1)
 				return nil, nil
@@ -400,11 +415,13 @@ func gather(want int) mcp.ToolHandler {
 	}
 }
 
-// startGrandchild implements envFakeGrandchild.
-func startGrandchild(pidFile string) error {
+// startGrandchild starts a process that sleeps until killed, sharing the
+// given stdout and stderr, and writes its PID to pidFile. It implements
+// envFakeGrandchild and envFakeOrphanTool.
+func startGrandchild(pidFile string, stdout, stderr io.Writer) error {
 	// By absolute path: the fake Upstream's environment has no PATH.
 	cmd := exec.Command("/bin/sleep", strconv.Itoa(int(fakeLifetime.Seconds())))
-	cmd.Stderr = os.Stderr
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -564,6 +581,33 @@ func (g *gateway) wantCleanExit(t *testing.T, cause string) {
 // envFakePIDFile and envFakeGrandchild) no longer exists.
 func wantGone(t *testing.T, pidFile string) {
 	t.Helper()
+	pid := readPID(t, pidFile)
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("process %d (%s) still exists after Gateway exit (kill -0: %v)", pid, pidFile, err)
+	}
+}
+
+// waitGone waits for the process whose PID is in pidFile to no longer
+// exist, while the Gateway keeps running.
+func waitGone(t *testing.T, pidFile string) {
+	t.Helper()
+	pid := readPID(t, pidFile)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d (%s) still exists (kill -0: %v)", pid, pidFile, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// readPID reads the PID recorded in pidFile.
+func readPID(t *testing.T, pidFile string) int {
+	t.Helper()
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatalf("PID not recorded: %v", err)
@@ -572,9 +616,7 @@ func wantGone(t *testing.T, pidFile string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Errorf("process %d (%s) still exists after Gateway exit (kill -0: %v)", pid, pidFile, err)
-	}
+	return pid
 }
 
 // waitForFile waits for the file at path to hold want.

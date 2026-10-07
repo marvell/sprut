@@ -19,6 +19,10 @@ const (
 	// stopGrace is how long a stopped Upstream gets to exit after SIGTERM
 	// before it is killed.
 	stopGrace = 5 * time.Second
+	// drainGrace is how long the Upstream's stdout and stderr are still read
+	// after it exits, for its last output, before they are cut off even if
+	// something that outlived it holds them open.
+	drainGrace = time.Second
 	// maxStderrLine is the longest stderr line logged whole; a longer one is
 	// logged in pieces.
 	maxStderrLine = 64 << 10
@@ -43,8 +47,8 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	stderr := &lineLogger{log: t.log}
 	t.cmd.Stderr = stderr
 	// Once the Upstream has exited, stop reading a stderr still held open by
-	// something that left its process group.
-	t.cmd.WaitDelay = time.Second
+	// something that outlived it.
+	t.cmd.WaitDelay = drainGrace
 	stdin, err := t.cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -73,6 +77,10 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.proc = p
 	go func() {
 		err := t.cmd.Wait()
+		// A descendant that inherited stdout would keep it from ending, and
+		// so the connection from closing; the reader takes the deadline as
+		// the end.
+		_ = stdout.SetReadDeadline(time.Now().Add(drainGrace))
 		stderr.flush()
 		// Logged before exited is closed, so that it is out once Close returns.
 		if p.started.Load() && !p.stopping.Load() {
@@ -139,7 +147,8 @@ func (p *process) waitGone(timeout time.Duration) bool {
 	}
 }
 
-// eofReader reads from r and records in eof that r reached its end.
+// eofReader reads from r and records in eof that r reached its end. Its read
+// deadline passing counts as the end too.
 type eofReader struct {
 	r   io.Reader
 	eof *atomic.Bool
@@ -147,6 +156,9 @@ type eofReader struct {
 
 func (e *eofReader) Read(b []byte) (int, error) {
 	n, err := e.r.Read(b)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		err = io.EOF
+	}
 	if err == io.EOF {
 		e.eof.Store(true)
 	}

@@ -542,6 +542,33 @@ func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *
 	g.wantLogLine(t, "WARN", `msg="upstream exited"`, "upstream=doomed", `err="exit status 1"`)
 }
 
+func TestServeEndsCallsToAnUpstreamThatExitsWhileItsChildHoldsStdoutAndStopsTheChild(t *testing.T) {
+	t.Parallel()
+	childPIDFile := filepath.Join(t.TempDir(), "child.pid")
+	upstreams := map[string]any{"orphaner": fakeUpstreamEntry(t, envFakeOrphanTool+"="+childPIDFile)}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+	// Bounds the test, not the call: a call that is not ended promptly
+	// fails the timing check below.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	begin := time.Now()
+	res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "orphaner__orphan"})
+	if err != nil {
+		t.Fatalf("tools/call orphaner__orphan: %v, want an isError result", err)
+	}
+	if took := time.Since(begin); took > 5*time.Second {
+		t.Errorf("tools/call orphaner__orphan took %s, want it ended within a few seconds of the Upstream exiting", took)
+	}
+	if text := resultText(t, res); !res.IsError || !strings.Contains(text, `"orphaner"`) {
+		t.Errorf("tools/call orphaner__orphan = %q (isError %v), want an isError result naming the Upstream", text, res.IsError)
+	}
+	waitGone(t, childPIDFile)
+
+	g.closeAgent(t)
+	g.wantLogLine(t, "WARN", `msg="upstream exited"`, "upstream=orphaner", `err="exit status 1"`)
+}
+
 func TestServePassesUpstreamProtocolErrorsThrough(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
