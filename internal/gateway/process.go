@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 
@@ -112,7 +112,6 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	t.proc = p
 	go func() {
 		err := t.cmd.Wait()
-		// Both decisions below are taken from this one state.
 		end := p.on(upstreamEnded)
 		if end != stopping {
 			// What the Upstream left running in its group; Close, which
@@ -124,13 +123,9 @@ func (t *stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		// the end.
 		_ = stdout.SetReadDeadline(time.Now().Add(drainGrace))
 		stderr.flush()
-		// Logged before exited is closed, so that it is out once Close returns.
-		if end == exited {
-			if err == nil {
-				err = errors.New("exit status 0")
-			}
-			t.log.Warn("upstream exited", "err", err)
-		}
+		// Before exited is closed, so that an exit reported here is out once
+		// Close returns.
+		p.reap(err)
 		close(p.exited)
 	}()
 	// The connection is closed by closing stdin (p), not stdout.
@@ -146,7 +141,11 @@ type process struct {
 	stdout *os.File      // read end
 	exited chan struct{} // closed once the process is reaped and stderr drained
 
-	state atomic.Int32 // a state; see next
+	mu       sync.Mutex
+	state    state
+	reaped   bool  // whether reap has run
+	waitErr  error // from reaping it
+	reported bool  // whether its exit is logged
 }
 
 // state is where a stdio Upstream is in its life, which decides whether its
@@ -192,13 +191,35 @@ func next(s state, e event) state {
 
 // on moves p on e and returns the state p is in afterwards.
 func (p *process) on(e event) state {
-	for {
-		s := state(p.state.Load())
-		n := next(s, e)
-		if n == s || p.state.CompareAndSwap(int32(s), int32(n)) {
-			return n
-		}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.state = next(p.state, e)
+	p.report()
+	return p.state
+}
+
+// reap records that p's process is reaped, with err from waiting for it,
+// and that its stderr is drained.
+func (p *process) reap(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reaped, p.waitErr = true, err
+	p.report()
+}
+
+// report logs, once, that the Upstream exited, as soon as it is both
+// exited and reaped: whichever comes second, its exit or its tools turning
+// out to be listed, reports it.
+func (p *process) report() {
+	if p.state != exited || !p.reaped || p.reported {
+		return
 	}
+	p.reported = true
+	err := p.waitErr
+	if err == nil {
+		err = errors.New("exit status 0")
+	}
+	p.log.Warn("upstream exited", "err", err)
 }
 
 func (p *process) Write(b []byte) (int, error) { return p.stdin.Write(b) }

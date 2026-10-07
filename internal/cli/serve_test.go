@@ -519,6 +519,31 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 	}
 }
 
+func TestServeDoesNotReportTheExitOfAnUpstreamThatFailsAtStartup(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"fake": fakeUpstreamEntry(t), "failing": fakeUpstreamEntry(t, envFakeStartup+"=fail")}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=failing")
+	g.closeAgent(t)
+	if strings.Contains(g.stderr.String(), "upstream exited") {
+		t.Errorf("an Upstream that failed at startup was logged as exiting:\n%s", g.stderr)
+	}
+}
+
+func TestServeReportsTheExitOfAnUpstreamThatHangsUpRightAfterListingItsTools(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"quitter": fakeUpstreamEntry(t, envFakeHangUpAfterList+"=1")}
+	g := startGateway(t, writeConfig(t, upstreams), nil)
+
+	g.wantTools(t, "quitter__echo", "quitter__fail")
+	// Closing the Agent before the Gateway notices the Upstream is gone
+	// would have the Gateway end the session first, which is not reported.
+	eventually(func() bool { return strings.Contains(g.stderr.String(), "upstream exited") })
+	g.closeAgent(t)
+	g.wantLogLine(t, "WARN", `msg="upstream exited"`, "upstream=quitter", `err="exit status 1"`)
+}
+
 func TestServeAnswersCallsToUnknownToolsWithAnErrorResult(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)

@@ -93,6 +93,9 @@ const (
 	// envFakeAskTool, if set, adds a tool "ask" that asks for interactive
 	// input mid-call (multi-round-trip), and answers once it has some.
 	envFakeAskTool = "SPRUT_TEST_FAKE_ASK_TOOL"
+	// envFakeHangUpAfterList, if set, makes the fake Upstream exit 1 as soon
+	// as it has written its answer to tools/list.
+	envFakeHangUpAfterList = "SPRUT_TEST_FAKE_HANG_UP_AFTER_LIST"
 )
 
 // Protocol versions of the two eras, as the era matrix tests them.
@@ -293,7 +296,20 @@ func runFakeUpstream() int {
 			}
 		})
 	}
-	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+	var transport mcp.Transport = &mcp.StdioTransport{}
+	if os.Getenv(envFakeHangUpAfterList) != "" {
+		var listed atomic.Bool
+		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				if method == "tools/list" {
+					listed.Store(true)
+				}
+				return next(ctx, method, req)
+			}
+		})
+		transport = &mcp.IOTransport{Reader: os.Stdin, Writer: hangUpWriter{listed: &listed}}
+	}
+	if err := server.Run(context.Background(), transport); err != nil {
 		fmt.Fprintln(os.Stderr, "fake upstream:", err)
 		return 1
 	}
@@ -302,6 +318,21 @@ func runFakeUpstream() int {
 	}
 	return 0
 }
+
+// hangUpWriter writes to stdout, and exits 1 after the first write once
+// listed is set: the answer to tools/list, the only message the fake
+// Upstream sends after it.
+type hangUpWriter struct{ listed *atomic.Bool }
+
+func (w hangUpWriter) Write(b []byte) (int, error) {
+	n, err := os.Stdout.Write(b)
+	if w.listed.Load() {
+		os.Exit(1)
+	}
+	return n, err
+}
+
+func (hangUpWriter) Close() error { return os.Stdout.Close() }
 
 // newFakeServer is the MCP server of a fake Upstream, stdio or HTTP,
 // offering echo and fail. A non-empty protocol is the one protocol version it
