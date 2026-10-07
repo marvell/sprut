@@ -379,9 +379,8 @@ func startSSEOnlyUpstream(t *testing.T) string {
 // startGETStreamUpstream starts a fake Streamable HTTP Upstream that fails
 // every POST but, as the transport allows of a server that needs no session
 // id, answers a GET with an event stream, and returns its URL. The stream
-// stays open until the request ends, silent unless flood is set, in which
-// case it is one event whose data never ends.
-func startGETStreamUpstream(t *testing.T, flood bool) string {
+// repeats chunk until the request ends; it stays silent if chunk is empty.
+func startGETStreamUpstream(t *testing.T, chunk string) string {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -391,9 +390,8 @@ func startGETStreamUpstream(t *testing.T, flood bool) string {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_ = http.NewResponseController(w).Flush()
-		line := []byte("data: " + strings.Repeat("x", 1000) + "\n")
-		for flood {
-			if _, err := w.Write(line); err != nil {
+		for chunk != "" {
+			if _, err := io.WriteString(w, chunk); err != nil {
 				return
 			}
 		}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -58,12 +59,12 @@ func proxyConfig(lookupEnv config.LookupEnv) *httpproxy.Config {
 	}
 }
 
-// How long sseOnly waits for the first event of an Upstream's GET stream,
-// and the most of it that it reads. An HTTP+SSE server sends its endpoint
-// event as soon as the stream opens.
+// How long sseOnly waits for the endpoint event, and the most of the GET
+// stream that it reads. An HTTP+SSE server sends that event as soon as the
+// stream opens.
 const (
-	probeTimeout = 2 * time.Second
-	probeLimit   = 64 << 10
+	probeTimeout  = 2 * time.Second
+	probeMaxBytes = 64 << 10
 )
 
 // sseOnly reports whether the server at t's endpoint answers a GET with the
@@ -73,13 +74,36 @@ const (
 func sseOnly(ctx context.Context, t *mcp.StreamableClientTransport) bool {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	sse := &mcp.SSEClientTransport{Endpoint: t.Endpoint, HTTPClient: t.HTTPClient, MaxEventSize: probeLimit}
-	conn, err := sse.Connect(ctx)
+	client := *t.HTTPClient
+	// The SDK caps each event's size, but not the stream's: a run of empty
+	// events would go on until the timeout.
+	client.Transport = limitTransport{next: client.Transport, n: probeMaxBytes}
+	conn, err := (&mcp.SSEClientTransport{Endpoint: t.Endpoint, HTTPClient: &client}).Connect(ctx)
 	if err != nil {
 		return false
 	}
 	_ = conn.Close()
 	return true
+}
+
+// limitTransport ends each response body it gets from next after n bytes.
+type limitTransport struct {
+	next http.RoundTripper
+	n    int64
+}
+
+func (t limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = limitedBody{Reader: io.LimitReader(resp.Body, t.n), Closer: resp.Body}
+	return resp, nil
+}
+
+type limitedBody struct {
+	io.Reader
+	io.Closer
 }
 
 // headerTransport adds headers to every request to scheme and host that it
