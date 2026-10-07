@@ -11,6 +11,9 @@
     "hello": {
       "command": "go",
       "args": ["run", "github.com/modelcontextprotocol/go-sdk/examples/server/hello@v1.8.0"]
+    },
+    "deepwiki": {
+      "url": "https://mcp.deepwiki.com/mcp"
     }
   }
 }
