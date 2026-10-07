@@ -32,27 +32,10 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			if startupTimeout <= 0 {
 				return ucli.Exit(fmt.Sprintf("--startup-timeout must be positive, got %s", startupTimeout), 2)
 			}
-			level := slog.LevelInfo
-			if cmd.Bool("verbose") {
-				level = slog.LevelDebug
-			}
-			log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-
-			lookupEnv := lookupIn(env)
-			path, err := config.Path(cmd.String("config"), lookupEnv)
+			log := newLogger(stderr, cmd.Bool("verbose"))
+			upstreams, err := loadConfig(cmd.String("config"), lookupIn(env), log)
 			if err != nil {
 				return err
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("reading config: %w", err)
-			}
-			upstreams, warnings, err := config.Parse(data, lookupEnv)
-			if err != nil {
-				return fmt.Errorf("config %s: %w", path, err)
-			}
-			for _, w := range warnings {
-				log.Warn(w.Message, "upstream", w.Upstream)
 			}
 
 			gw := gateway.Start(ctx, upstreams, env, startupTimeout, version(), log)
@@ -73,6 +56,36 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			return nil
 		},
 	}
+}
+
+// newLogger logs logfmt to w at INFO, or at DEBUG when verbose.
+func newLogger(w io.Writer, verbose bool) *slog.Logger {
+	level := slog.LevelInfo
+	if verbose {
+		level = slog.LevelDebug
+	}
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
+}
+
+// loadConfig reads the Config that flag and the environment point at, logs
+// its warnings and returns the Upstreams to start.
+func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]config.Upstream, error) {
+	path, err := config.Path(flag, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	upstreams, warnings, err := config.Parse(data, lookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	for _, w := range warnings {
+		log.Warn(w.Message, "upstream", w.Upstream)
+	}
+	return upstreams, nil
 }
 
 // lookupIn returns a lookup over env, which is in os.Environ form. As with
