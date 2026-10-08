@@ -50,6 +50,7 @@ type oauthUpstream struct {
 	grantTypes []string   // of the last client registration
 	appType    string     // application_type of the last client registration
 	redirect   url.Values // added to the callback in place of the code
+	issParam   bool       // whether the metadata says the callback carries iss
 	mcpAuth    []string   // the Authorization header of each request to /mcp
 }
 
@@ -69,7 +70,11 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 		})
 	})
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		u.mu.Lock()
+		issParam := u.issParam
+		u.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
+			"authorization_response_iss_parameter_supported": issParam,
 			"issuer":                                u.Base,
 			"authorization_endpoint":                u.Base + "/authorize",
 			"token_endpoint":                        u.Base + "/token",
@@ -190,6 +195,14 @@ func (u *oauthUpstream) RedirectWith(params url.Values) {
 	u.redirect = params
 }
 
+// AdvertiseIss makes the metadata say that the callback carries iss
+// (RFC 9207).
+func (u *oauthUpstream) AdvertiseIss() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.issParam = true
+}
+
 // AppType returns the application_type of the last client registration.
 func (u *oauthUpstream) AppType() string {
 	u.mu.Lock()
@@ -203,9 +216,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// authURL finds the authorization URL that sprut printed for the
+// authURLPattern finds the authorization URL that sprut printed for the
 // Authorization Server at base.
-func authURL(base string) *regexp.Regexp {
+func authURLPattern(base string) *regexp.Regexp {
 	return regexp.MustCompile(regexp.QuoteMeta(base+"/authorize?") + `\S+`)
 }
 
@@ -251,7 +264,7 @@ func startLogin(t *testing.T, timeout time.Duration, env []string, args ...strin
 func (l *loginRun) authURL(t *testing.T, u *oauthUpstream) *url.URL {
 	t.Helper()
 	var link string
-	pattern := authURL(u.Base)
+	pattern := authURLPattern(u.Base)
 	found := eventually(func() bool {
 		if l.exited() {
 			return true

@@ -77,7 +77,7 @@ func TestAuthLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
 	}
-	at := authURL(u.Base).FindStringIndex(stderr)
+	at := authURLPattern(u.Base).FindStringIndex(stderr)
 	before := stderr[:at[0]]
 	for _, want := range []string{"authorization server: " + u.Base + "\n", "scopes: " + fakeScope + "\n"} {
 		if !strings.Contains(before, want) {
@@ -134,23 +134,30 @@ func TestAuthLoginChecksTheIssuerOfTheAuthorizationResponse(t *testing.T) {
 	t.Parallel()
 	const description = "fake-error-description-0b7c"
 	for _, tc := range []struct {
-		name     string
-		redirect func(u *oauthUpstream) url.Values
-		wantCode int
+		name      string
+		advertise bool
+		redirect  func(u *oauthUpstream) url.Values
+		wantCode  int
 	}{
-		{"matching iss", func(u *oauthUpstream) url.Values {
+		{"matching iss", false, func(u *oauthUpstream) url.Values {
 			return url.Values{"code": {fakeCode}, "iss": {u.Base}}
 		}, 0},
-		{"mismatched iss", func(*oauthUpstream) url.Values {
+		{"mismatched iss", false, func(*oauthUpstream) url.Values {
 			return url.Values{"code": {fakeCode}, "iss": {"https://evil.example"}}
 		}, 1},
-		{"error with a mismatched iss", func(*oauthUpstream) url.Values {
+		{"error with a mismatched iss", false, func(*oauthUpstream) url.Values {
 			return url.Values{"error": {"access_denied"}, "error_description": {description}, "iss": {"https://evil.example"}}
+		}, 1},
+		{"advertised iss missing from an error", true, func(*oauthUpstream) url.Values {
+			return url.Values{"error": {"access_denied"}, "error_description": {description}}
 		}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			u := startOAuthUpstream(t)
+			if tc.advertise {
+				u.AdvertiseIss()
+			}
 			u.RedirectWith(tc.redirect(u))
 			config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 			state := t.TempDir()
@@ -171,8 +178,8 @@ func TestAuthLoginChecksTheIssuerOfTheAuthorizationResponse(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(state, "sprut", "credentials", "fake.json")); err == nil {
 				t.Error("Credentials were written")
 			}
-			if !strings.Contains(stderr, "another issuer") {
-				t.Errorf("stderr does not say the response came from another issuer:\n%s", stderr)
+			if !strings.Contains(stderr, "issuer") {
+				t.Errorf("stderr does not say the response's issuer is wrong:\n%s", stderr)
 			}
 			wantNoSecrets(t, "auth login stderr", stderr, "access_denied", description, "evil.example")
 		})

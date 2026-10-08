@@ -35,7 +35,7 @@ const (
 // Login runs the Login for u and stores the Credentials it gets. It
 // registers a client with Dynamic Client Registration, prints the
 // Authorization Server's issuer, the scopes and the authorization URL to
-// prompt, opens the URL if browser is set, and waits a while for the
+// prompt, opens the URL if browser is set, and waits up to callbackTimeout for the
 // Authorization Server to redirect the user's browser to a callback on a
 // loopback port. env is where the proxy and the Credentials' directory come
 // from.
@@ -43,8 +43,6 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 	if err := CheckOAuthUpstream(u); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, callbackTimeout)
-	defer cancel()
 	store, err := credentials.NewStore(config.LookupIn(env))
 	if err != nil {
 		return err
@@ -63,10 +61,10 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 	}
 	// The SDK's discovery adds its SSRF checks only to a bare
 	// *http.Transport; a wrapped one, like this, is used as it is.
-	issuer := &issuerRecorder{next: t.HTTPClient.Transport}
+	recorder := &issuerRecorder{next: t.HTTPClient.Transport}
 	var (
 		resource string
-		asIssuer string
+		issuer   string
 		creds    *credentials.Credentials
 	)
 	h, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
@@ -86,17 +84,17 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 			}
 			q := authURL.Query()
 			resource = q.Get("resource")
-			asIssuer = issuer.Issuer()
-			if asIssuer == "" {
+			issuer = recorder.Issuer()
+			if issuer == "" {
 				// Without metadata, the SDK takes the Authorization Server's
 				// URL, under which the endpoints are, as its issuer.
-				asIssuer = strings.TrimSuffix(authURL.Scheme+"://"+authURL.Host+authURL.Path, "/authorize")
+				issuer = strings.TrimSuffix(authURL.Scheme+"://"+authURL.Host+authURL.Path, "/authorize")
 			}
 			scopes := q.Get("scope")
 			if scopes == "" {
 				scopes = "(none)"
 			}
-			_, _ = fmt.Fprintf(prompt, "Logging in to %s.\n  authorization server: %s\n  scopes: %s\n\n", u.Name, asIssuer, scopes)
+			_, _ = fmt.Fprintf(prompt, "Logging in to %s.\n  authorization server: %s\n  scopes: %s\n\n", u.Name, issuer, scopes)
 			lead := "Open this URL in your browser:"
 			if browser {
 				lead = "Opening this URL in your browser; if it does not open, open it yourself:"
@@ -107,7 +105,9 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 					_, _ = fmt.Fprintf(prompt, "Could not open a browser: %v\n\n", err)
 				}
 			}
-			callbacks.Expect(q.Get("state"), asIssuer)
+			callbacks.Expect(q.Get("state"), issuer, recorder.IssRequired())
+			ctx, cancel := context.WithTimeout(ctx, callbackTimeout)
+			defer cancel()
 			select {
 			case cb := <-callbacks.Results:
 				return cb.result, cb.err
@@ -120,7 +120,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		},
 		RequestRefreshToken:   true,
 		AcceptUnadvertisedIss: true,
-		Client:                &http.Client{Transport: issuer, Timeout: oauthTimeout},
+		Client:                &http.Client{Transport: recorder, Timeout: oauthTimeout},
 		// Called with the final client and token once the code is exchanged:
 		// all that the Credentials need.
 		NewTokenSource: func(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
@@ -147,7 +147,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 	if creds == nil {
 		return errors.New("it did not ask for authorization, so it needs no login")
 	}
-	creds.Resource, creds.Issuer = resource, asIssuer
+	creds.Resource, creds.Issuer = resource, issuer
 	if err := store.Save(u.Name, creds); err != nil {
 		return err
 	}
@@ -252,7 +252,10 @@ type callbackServer struct {
 	mu     sync.Mutex
 	state  string // expected; empty until the authorization URL is made
 	issuer string // the Authorization Server's
-	done   bool
+	// whether the callback must carry iss, as the Authorization Server's
+	// metadata says it does
+	issRequired bool
+	done        bool
 }
 
 func listenForCallback() (*callbackServer, error) {
@@ -269,12 +272,12 @@ func listenForCallback() (*callbackServer, error) {
 	return c, nil
 }
 
-// Expect sets the state that the callback must carry, and the issuer
-// that its iss, if any, must name.
-func (c *callbackServer) Expect(state, issuer string) {
+// Expect sets the state that the callback must carry, the issuer that
+// its iss must name, and whether iss must be there at all.
+func (c *callbackServer) Expect(state, issuer string, issRequired bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state, c.issuer = state, issuer
+	c.state, c.issuer, c.issRequired = state, issuer, issRequired
 }
 
 func (c *callbackServer) Close() { _ = c.srv.Close() }
@@ -303,14 +306,18 @@ func (c *callbackServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	iss := q.Get("iss")
 	cb := callback{result: &auth.AuthorizationResult{Code: q.Get("code"), State: c.state, Iss: iss}}
-	if iss != "" && iss != c.issuer {
+	switch {
+	case iss == "" && c.issRequired:
+		// RFC 9207: nothing in it is shown, as with another issuer's.
+		cb = callback{err: errors.New("the authorization response did not name its issuer, so it was rejected")}
+	case iss != "" && iss != c.issuer:
 		// RFC 9207: compared even when the server doesn't say it sends iss.
 		// Another server's response, so nothing in it is shown, not even
 		// an error code.
 		cb = callback{err: errors.New("the authorization response came from another issuer, so it was rejected")}
-	} else if code := q.Get("error"); code != "" {
+	case q.Get("error") != "":
 		// Only the error code: its description is the server's to word.
-		cb = callback{err: fmt.Errorf("authorization server answered %q", code)}
+		cb = callback{err: fmt.Errorf("authorization server answered %q", q.Get("error"))}
 	}
 	c.Results <- cb
 	if cb.err != nil {
@@ -338,14 +345,15 @@ func oauthError(err error) error {
 	return err
 }
 
-// issuerRecorder sends requests through next and keeps the issuer named
-// by the Authorization Server metadata that the SDK fetched, which it
+// issuerRecorder sends requests through next and keeps the issuer, and
+// whether it sends iss, from the Authorization Server metadata that the SDK fetched, which it
 // doesn't pass on.
 type issuerRecorder struct {
 	next http.RoundTripper
 
-	mu     sync.Mutex
-	issuer string
+	mu          sync.Mutex
+	issuer      string
+	issRequired bool
 }
 
 func (r *issuerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -363,10 +371,18 @@ func (r *issuerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	var meta oauthex.AuthServerMeta
 	if json.Unmarshal(body, &meta) == nil && meta.Issuer != "" {
 		r.mu.Lock()
-		r.issuer = meta.Issuer
+		r.issuer, r.issRequired = meta.Issuer, meta.AuthorizationResponseIssParameterSupported
 		r.mu.Unlock()
 	}
 	return resp, nil
+}
+
+// IssRequired reports whether the metadata says the Authorization Server
+// names itself in every authorization response (RFC 9207).
+func (r *issuerRecorder) IssRequired() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.issRequired
 }
 
 func (r *issuerRecorder) Issuer() string {
