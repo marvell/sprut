@@ -313,9 +313,10 @@ func TestAuthUsageErrorsExit2(t *testing.T) {
 	for _, args := range [][]string{
 		{"auth"},
 		{"auth", "bogus"},
-		{"auth", "login"},
-		{"auth", "login", "a", "b"},
 		{"auth", "login", "--bogus", "a"},
+		{"auth", "logout"},
+		{"auth", "logout", "a", "b"},
+		{"auth", "status", "a"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()

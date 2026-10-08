@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,6 +19,16 @@ import (
 // connectHTTP connects to u over Streamable HTTP and lists its tools. env
 // is where the proxy and the Credentials' directory come from.
 func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*ready, error) {
+	session, err := dialHTTP(ctx, client, u, env, log)
+	if err != nil {
+		return nil, err
+	}
+	return list(ctx, session)
+}
+
+// dialHTTP connects to u over Streamable HTTP, with its stored Credentials
+// if it is an OAuth Upstream.
+func dialHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*mcp.ClientSession, error) {
 	t, err := newHTTPTransport(u, env)
 	if err != nil {
 		return nil, err
@@ -39,7 +50,7 @@ func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env
 		}
 		return nil, err
 	}
-	return list(ctx, session)
+	return session, nil
 }
 
 // newHTTPTransport returns the transport to u over Streamable HTTP. Its
@@ -57,13 +68,17 @@ func newHTTPTransport(u config.Upstream, env []string) (*mcp.StreamableClientTra
 	base.Proxy = func(req *http.Request) (*url.URL, error) { return proxy(req.URL) }
 	var rt http.RoundTripper = base
 	if len(u.Headers) > 0 {
-		rt = &headerTransport{scheme: endpoint.Scheme, host: endpoint.Host, headers: u.Headers, next: base}
+		rt = &headerTransport{endpoint: endpoint, headers: u.Headers, next: base}
+	}
+	// No Timeout: the Gateway sets none on tool calls, and startup is
+	// bounded by the ctx given to Connect.
+	client := &http.Client{Transport: rt}
+	if CheckOAuthUpstream(u) == nil {
+		client.CheckRedirect = sameOriginRedirects(endpoint)
 	}
 	return &mcp.StreamableClientTransport{
-		Endpoint: u.URL,
-		// No Timeout: the Gateway sets none on tool calls, and startup is
-		// bounded by the ctx given to Connect.
-		HTTPClient: &http.Client{Transport: rt},
+		Endpoint:   u.URL,
+		HTTPClient: client,
 		// The tool list is fixed at startup, so there is nothing for a
 		// stream of server-initiated messages to deliver.
 		DisableStandaloneSSE: true,
@@ -135,19 +150,19 @@ type limitedBody struct {
 	io.Closer
 }
 
-// headerTransport adds headers to every request to scheme and host that it
-// sends through next, so that a redirect elsewhere, or from HTTPS to plain
-// HTTP on the same host, doesn't carry them, secrets included. A header the
-// request already has, which the SDK sets for the protocol, is left as it is.
+// headerTransport adds headers to every request to the origin of endpoint
+// that it sends through next, so that a redirect elsewhere, or from HTTPS
+// to plain HTTP on the same host, doesn't carry them, secrets included. A
+// header the request already has, which the SDK sets for the protocol, is
+// left as it is.
 type headerTransport struct {
-	scheme  string
-	host    string
-	headers map[string]string
-	next    http.RoundTripper
+	endpoint *url.URL
+	headers  map[string]string
+	next     http.RoundTripper
 }
 
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !toOrigin(req, t.scheme, t.host) {
+	if !sameOrigin(req.URL, t.endpoint) {
 		return t.next.RoundTrip(req)
 	}
 	// A RoundTripper must not modify the request it is given.
@@ -160,8 +175,44 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.next.RoundTrip(req)
 }
 
-// toOrigin reports whether req goes to scheme and host: the one origin that
-// an Upstream's secrets may go to.
-func toOrigin(req *http.Request, scheme, host string) bool {
-	return req.URL.Scheme == scheme && req.URL.Host == host
+// sameOrigin reports whether a and b have the same origin: scheme, host
+// and port, the default port of the scheme included. It is the one origin
+// that an Upstream's secrets may go to.
+func sameOrigin(a, b *url.URL) bool {
+	return a.Scheme == b.Scheme && strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
+}
+
+// port returns the port of u, or the default port of its scheme.
+func port(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch u.Scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
+// maxRedirects is how many redirects in a row a request follows, as
+// net/http's default.
+const maxRedirects = 10
+
+// sameOriginRedirects is the CheckRedirect of an OAuth Upstream's client: it
+// follows a redirect only within the origin of endpoint, so that a request
+// to the Upstream fails in place of going, body and all, anywhere else, a
+// subdomain or plain HTTP on the same host included. (bearerTransport adds
+// the access token only within that origin anyway.)
+func sameOriginRedirects(endpoint *url.URL) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if !sameOrigin(req.URL, endpoint) {
+			return fmt.Errorf("refused a redirect to another origin, %s://%s", req.URL.Scheme, req.URL.Host)
+		}
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		return nil
+	}
 }

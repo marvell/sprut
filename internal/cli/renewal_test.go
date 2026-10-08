@@ -3,7 +3,6 @@ package cli_test
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -32,15 +31,7 @@ func logIn(t *testing.T, expiresIn int) *loggedIn {
 func logInTo(t *testing.T, u *oauthUpstream, expiresIn int) *loggedIn {
 	t.Helper()
 	u.ExpireIn(expiresIn)
-	state := t.TempDir()
-	l := &loggedIn{
-		oauthUpstream: u,
-		config:        writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}}),
-		env:           []string{"XDG_STATE_HOME=" + state},
-		creds:         filepath.Join(state, "sprut", "credentials", "fake.json"),
-	}
-	mustLogin(t, u, l.env, l.config)
-	return l
+	return loginAs(t, u, t.TempDir(), writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}}), "fake")
 }
 
 // readCreds returns the content of the Credentials file.

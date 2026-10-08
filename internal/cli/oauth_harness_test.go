@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -75,9 +76,21 @@ type oauthUpstream struct {
 	release   chan struct{}        // closed when hanging refresh requests may end
 	noRefresh bool                 // whether tokens are issued without a refresh token
 	onRefresh func()               // runs before each refresh request is answered, if set
+
+	redirectTo string // where /mcp redirects requests with a live access token, if anywhere
+	// how client registrations and code exchanges fail, if they do (see
+	// FailRegistration and FailCodeExchange)
+	failRegister, failExchange string
 }
 
 func startOAuthUpstream(t *testing.T) *oauthUpstream {
+	t.Helper()
+	return startOAuthUpstreamOn(t, "")
+}
+
+// startOAuthUpstreamOn is startOAuthUpstream with host in its URLs in place
+// of 127.0.0.1, if set.
+func startOAuthUpstreamOn(t *testing.T, host string) *oauthUpstream {
 	t.Helper()
 	u := &oauthUpstream{
 		expiresIn: 3600, live: map[string]liveToken{}, release: make(chan struct{}),
@@ -122,6 +135,13 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 		})
 	})
 	mux.HandleFunc("POST /register", func(w http.ResponseWriter, r *http.Request) {
+		u.mu.Lock()
+		fail := u.failRegister
+		u.mu.Unlock()
+		if fail != "" {
+			writeEcho(w, fail, "invalid_client_metadata")
+			return
+		}
 		var meta map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&meta); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_client_metadata"})
@@ -176,8 +196,12 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			return
 		}
 		u.mu.Lock()
-		challenge, secret := u.challenge, u.secret
+		challenge, secret, fail := u.challenge, u.secret, u.failExchange
 		u.mu.Unlock()
+		if fail != "" {
+			writeEcho(w, fail, "invalid_grant")
+			return
+		}
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		if r.PostForm.Get("grant_type") != "authorization_code" || r.PostForm.Get("code") != fakeCode ||
 			r.PostForm.Get("client_secret") != secret ||
@@ -187,7 +211,7 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 		}
 		writeJSON(w, http.StatusOK, u.issue())
 	})
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+	serveMCP := func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")
 		u.mu.Lock()
 		u.mcpAuth = append(u.mcpAuth, got)
@@ -212,14 +236,26 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		u.mu.Lock()
+		redirectTo := u.redirectTo
+		u.mu.Unlock()
+		if redirectTo != "" && r.URL.Path == "/mcp" {
+			http.Redirect(w, r, redirectTo, http.StatusTemporaryRedirect)
+			return
+		}
 		mcpHandler.ServeHTTP(w, r)
-	})
+	}
+	mux.HandleFunc("/mcp", serveMCP)
+	mux.HandleFunc("/mcp-moved", serveMCP)
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	// Before the server closes, which waits for a hanging refresh.
 	t.Cleanup(u.Release)
 	u.Base = ts.URL
+	if host != "" {
+		u.Base = "http://" + net.JoinHostPort(host, strconv.Itoa(ts.Listener.Addr().(*net.TCPAddr).Port))
+	}
 	u.URL = ts.URL + "/mcp"
 	return u
 }
@@ -281,18 +317,12 @@ func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	failWith, current, release, secret := u.failWith, u.refresh, u.release, u.secret
 	u.mu.Unlock()
-	// What a careless server says, secrets included.
-	echo := map[string]any{
-		"error":             "invalid_grant",
-		"error_description": "refresh token " + r.PostForm.Get("refresh_token") + " of client " + r.PostForm.Get("client_secret"),
-	}
 	switch {
 	case failWith == "hang":
 		<-release
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "temporarily_unavailable"})
-	case failWith == "5xx":
-		echo["error"] = "server_error"
-		writeJSON(w, http.StatusBadGateway, echo)
+	case failWith == "5xx" || failWith == "text":
+		writeEcho(w, failWith, "server_error")
 	case failWith == "drop":
 		conn, _, err := http.NewResponseController(w).Hijack()
 		if err == nil {
@@ -300,7 +330,7 @@ func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	case failWith == "invalid_grant" || r.PostForm.Get("refresh_token") != current ||
 		r.PostForm.Get("client_id") != fakeClientID || r.PostForm.Get("client_secret") != secret:
-		writeJSON(w, http.StatusBadRequest, echo)
+		writeEcho(w, "json", "invalid_grant")
 	default:
 		writeJSON(w, http.StatusOK, u.issue())
 	}
@@ -321,6 +351,14 @@ func (u *oauthUpstream) ExpireIn(seconds int) {
 	u.expiresIn = seconds
 }
 
+// RedirectMCP makes /mcp redirect every request with a live access token
+// to link (307, so that a POST stays one), from now on.
+func (u *oauthUpstream) RedirectMCP(link string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.redirectTo = link
+}
+
 // RevokeAccessTokens makes every access token issued so far fail with 401.
 func (u *oauthUpstream) RevokeAccessTokens() {
 	u.mu.Lock()
@@ -329,7 +367,7 @@ func (u *oauthUpstream) RevokeAccessTokens() {
 }
 
 // FailRefresh makes every refresh request from now on fail: "invalid_grant",
-// "5xx", "drop" (the connection closes without an answer) or "hang" (until
+// "5xx", "text" (an error body that is not JSON; see writeEcho), "drop" (the connection closes without an answer) or "hang" (until
 // Release, then 503). "" makes them work again.
 func (u *oauthUpstream) FailRefresh(how string) {
 	u.mu.Lock()
@@ -454,6 +492,44 @@ func (u *oauthUpstream) AppType() string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.appType
+}
+
+// FailRegistration makes every client registration from now on fail as
+// writeEcho does with how.
+func (u *oauthUpstream) FailRegistration(how string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failRegister = how
+}
+
+// FailCodeExchange makes every exchange of an authorization code from now
+// on fail as writeEcho does with how.
+func (u *oauthUpstream) FailCodeExchange(how string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failExchange = how
+}
+
+// echoed is what a careless Authorization Server says when it fails, every
+// secret of the fake included.
+var echoed = "refresh token " + fakeRefreshToken + " of client " + fakeClientSecret + " with code " + fakeCode
+
+// writeEcho fails a request to the Authorization Server, echoing its
+// secrets: as how is "json" or "5xx", with a 400 or a 502 OAuth error whose
+// code is code and whose error_description echoes them; as it is "text",
+// with a 502 whose plain-text body does.
+func writeEcho(w http.ResponseWriter, how, code string) {
+	switch how {
+	case "json":
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": code, "error_description": echoed})
+		return
+	case "5xx":
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": code, "error_description": echoed})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusBadGateway)
+	_, _ = io.WriteString(w, echoed)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

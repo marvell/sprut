@@ -38,6 +38,12 @@ type Credentials struct {
 	Config   Binding `json:"config"`
 }
 
+// Dead reports whether c can't be used any more without a new Login: the
+// access token has expired, and there is no refresh token to renew it with.
+func (c *Credentials) Dead() bool {
+	return c.RefreshToken == "" && !c.Expiry.IsZero() && time.Now().After(c.Expiry)
+}
+
 // Binding is what an Upstream's Config said when its Credentials were
 // issued, and must still say for them to be used. oauth.clientSecret is
 // left out, so that rotating it keeps them.
@@ -149,6 +155,24 @@ func (s *Store) Save(ctx context.Context, upstream string, c *Credentials) error
 	}
 	defer l.Unlock()
 	return l.Save(c)
+}
+
+// Delete deletes the Credentials of upstream under its lock, and reports
+// whether there were any. The lock file stays.
+func (s *Store) Delete(ctx context.Context, upstream string) (bool, error) {
+	l, err := s.Lock(ctx, upstream)
+	if err != nil {
+		return false, err
+	}
+	defer l.Unlock()
+	err = os.Remove(s.path(upstream, ".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("deleting credentials: %w", err)
+	}
+	return true, nil
 }
 
 // Lock is the exclusive lock of one Upstream's Credentials, held by one

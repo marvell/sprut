@@ -82,7 +82,10 @@ func (e *needsLoginError) Error() string {
 	return "needs a login"
 }
 
-func (e *needsLoginError) Hint() string { return "run: sprut auth login " + e.upstream }
+func (e *needsLoginError) Hint() string { return loginHint(e.upstream) }
+
+// loginHint is the remedy of an Upstream that needs a Login.
+func loginHint(upstream string) string { return "run: sprut auth login " + upstream }
 
 // renewBefore is how long before its access token expires that the
 // Credentials are renewed, as oauth2.ReuseTokenSourceWithExpiry would.
@@ -202,7 +205,7 @@ type bearerTransport struct {
 func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	h := t.h
 	// Only to the Upstream itself, not wherever it redirects.
-	if !toOrigin(req, h.endpoint.Scheme, h.endpoint.Host) {
+	if !sameOrigin(req.URL, h.endpoint) {
 		return t.next.RoundTrip(req)
 	}
 	ctx := req.Context()
@@ -382,8 +385,8 @@ func (h *storedCredentials) settledLocked(stale string, onRejection bool) (token
 		return "", h.needsLogin(rejected), true
 	case h.creds.RefreshToken == "":
 		switch {
-		case time.Now().After(h.creds.Expiry):
-			h.dead = h.needsLogin("the credentials expired and cannot be renewed")
+		case h.creds.Dead():
+			h.dead = h.needsLogin(expired)
 			return "", h.dead, true
 		case onRejection:
 			return "", h.needsLogin(rejected), true
@@ -547,6 +550,9 @@ func sameIssuer(a, b string) bool {
 	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
 }
 
+// expired is why an Upstream whose Credentials are Dead needs a Login.
+const expired = "the credentials expired and cannot be renewed"
+
 // rejected is why an Upstream that answers 401 to its Credentials needs a
 // Login.
 const rejected = "the upstream rejected the credentials"
@@ -559,7 +565,36 @@ func (h *storedCredentials) needsLogin(reason string) error {
 // oauthClient is the HTTP client of requests to an Authorization Server
 // and of metadata lookups, through rt.
 func oauthClient(rt http.RoundTripper) *http.Client {
-	return &http.Client{Transport: rt, Timeout: oauthTimeout}
+	return &http.Client{Transport: errorBodies{next: rt}, Timeout: oauthTimeout}
+}
+
+// errorBodies reduces the body of every error response it gets from next
+// to the OAuth error code in it, if any: the SDK and oauth2 quote the bodies
+// of error responses in their errors, and a server may echo a secret there
+// or in its error_description.
+type errorBodies struct{ next http.RoundTripper }
+
+func (t errorBodies) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(req)
+	if err != nil || resp.StatusCode < 400 {
+		return resp, err
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&body)
+	_ = resp.Body.Close()
+	reduced := "{}"
+	if body.Error != "" {
+		data, _ := json.Marshal(map[string]string{"error": body.Error})
+		reduced = string(data)
+	}
+	resp.Header = resp.Header.Clone()
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Del("Content-Length")
+	resp.Body = io.NopCloser(strings.NewReader(reduced))
+	resp.ContentLength = int64(len(reduced))
+	return resp, nil
 }
 
 // fail records err, if any, as the last error, and returns it.

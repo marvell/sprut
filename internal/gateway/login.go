@@ -194,6 +194,24 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 	return nil
 }
 
+// NeedsLogin reports whether the OAuth Upstream u needs a Login: whether
+// serve, connecting to it now with its stored Credentials, renewing them if
+// it has to, would be told to run one. A failure to tell, such as a network
+// error, is an error.
+func NeedsLogin(ctx context.Context, u config.Upstream, env []string, version string, log *slog.Logger) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, oauthTimeout)
+	defer cancel()
+	session, err := dialHTTP(ctx, newClient(version), u, env, log)
+	if errors.As(err, new(*needsLoginError)) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_ = session.Close()
+	return false, nil
+}
+
 // preregisteredClient returns the client that u's Config registers, or nil
 // if it names none and Dynamic Client Registration is to make one.
 func preregisteredClient(u config.Upstream) *oauthex.ClientCredentials {
