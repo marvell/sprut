@@ -197,6 +197,71 @@ func TestParse(t *testing.T) {
 			warnings: []config.Warning{{Upstream: "remote", Message: `"url" is empty after interpolation; upstream skipped`}},
 		},
 		{
+			name: "oauth on an HTTP Upstream",
+			config: `{"mcpServers": {
+				"full": {"url": "https://example.com/mcp", "oauth": {
+					"clientId": "sprut", "clientSecret": "s3cret", "scopes": ["read", "write"]
+				}},
+				"empty": {"url": "https://example.com/mcp", "oauth": {"scopes": []}}
+			}}`,
+			want: []config.Upstream{
+				{
+					Name: "full", Transport: config.HTTP, URL: "https://example.com/mcp",
+					OAuth: &config.OAuth{ClientID: "sprut", ClientSecret: "s3cret", Scopes: []string{"read", "write"}},
+				},
+				{
+					Name: "empty", Transport: config.HTTP, URL: "https://example.com/mcp",
+					OAuth: &config.OAuth{Scopes: []string{}},
+				},
+			},
+		},
+		{
+			name: "${VAR} in each oauth field",
+			config: `{"mcpServers": {"remote": {"url": "https://example.com/mcp", "oauth": {
+				"clientId": "${ID}", "clientSecret": "${SECRET}", "scopes": ["${SCOPE}", "x-${SCOPE}"]
+			}}}}`,
+			env: map[string]string{"ID": "sprut", "SECRET": "s3cret", "SCOPE": "read"},
+			want: []config.Upstream{{
+				Name: "remote", Transport: config.HTTP, URL: "https://example.com/mcp",
+				OAuth: &config.OAuth{ClientID: "sprut", ClientSecret: "s3cret", Scopes: []string{"read", "x-read"}},
+			}},
+		},
+		{
+			name: "unset variable in oauth skips only that Upstream",
+			config: `{"mcpServers": {
+				"id": {"url": "https://example.com/mcp", "oauth": {"clientId": "${ID}"}},
+				"secret": {"url": "https://example.com/mcp", "oauth": {"clientId": "sprut", "clientSecret": "${SECRET}"}},
+				"scopes": {"url": "https://example.com/mcp", "oauth": {"scopes": ["${SCOPE}"]}},
+				"local": {"command": "uvx"}
+			}}`,
+			want: []config.Upstream{{Name: "local", Transport: config.Stdio, Command: "uvx"}},
+			warnings: []config.Warning{
+				{Upstream: "id", Message: "unset variable ID; upstream skipped"},
+				{Upstream: "secret", Message: "unset variable SECRET; upstream skipped"},
+				{Upstream: "scopes", Message: "unset variable SCOPE; upstream skipped"},
+			},
+		},
+		{
+			name:     "oauth on a stdio Upstream is ignored with a warning",
+			config:   `{"mcpServers": {"local": {"command": "npx", "oauth": {"clientId": "${UNSET}", "x": 1}}}}`,
+			want:     []config.Upstream{{Name: "local", Transport: config.Stdio, Command: "npx"}},
+			warnings: []config.Warning{{Upstream: "local", Message: `field "oauth" does not apply to stdio upstreams; ignored`}},
+		},
+		{
+			name: "unknown keys in oauth are ignored with a warning each",
+			config: `{"mcpServers": {"remote": {"url": "https://example.com/mcp", "oauth": {
+				"clientId": "sprut", "redirectUri": "x", "audience": "y"
+			}}}}`,
+			want: []config.Upstream{{
+				Name: "remote", Transport: config.HTTP, URL: "https://example.com/mcp",
+				OAuth: &config.OAuth{ClientID: "sprut"},
+			}},
+			warnings: []config.Warning{
+				{Upstream: "remote", Message: `unknown field "oauth.audience" ignored`},
+				{Upstream: "remote", Message: `unknown field "oauth.redirectUri" ignored`},
+			},
+		},
+		{
 			name:   "unset variable in a disabled Upstream is not reported",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": ["${NOPE}"], "disabled": true}}}`,
 		},
@@ -317,6 +382,31 @@ func TestParseRejectsInvalidConfig(t *testing.T) {
 			name:    "field of the wrong JSON type",
 			config:  `{"mcpServers": {"fs": {"command": "npx", "args": "-y"}}}`,
 			wantErr: []string{`"fs"`, "args"},
+		},
+		{
+			name:    "oauth not an object",
+			config:  `{"mcpServers": {"r": {"url": "https://example.com/mcp", "oauth": ["x"]}}}`,
+			wantErr: []string{`"r"`, `"oauth" must be an object`},
+		},
+		{
+			name:    "oauth scopes not an array of strings",
+			config:  `{"mcpServers": {"r": {"url": "https://example.com/mcp", "oauth": {"scopes": "read"}}}}`,
+			wantErr: []string{`"r"`, `oauth: "scopes" must be an array of strings`},
+		},
+		{
+			name:    "null oauth",
+			config:  `{"mcpServers": {"r": {"url": "https://example.com/mcp", "oauth": null}}}`,
+			wantErr: []string{`"r"`, `"oauth" must be an object`},
+		},
+		{
+			name:    "null oauth clientId",
+			config:  `{"mcpServers": {"r": {"url": "https://example.com/mcp", "oauth": {"clientId": null}}}}`,
+			wantErr: []string{`"r"`, `"oauth" must be an object`},
+		},
+		{
+			name:    "null oauth scopes element",
+			config:  `{"mcpServers": {"r": {"url": "https://example.com/mcp", "oauth": {"scopes": [null]}}}}`,
+			wantErr: []string{`"r"`, `oauth: "scopes" must be an array of strings`},
 		},
 		{
 			name:    "null disabled",

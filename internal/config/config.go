@@ -34,6 +34,17 @@ type Upstream struct {
 	// HTTP
 	URL     string
 	Headers map[string]string
+	OAuth   *OAuth // nil when the Config has no "oauth"
+}
+
+// OAuth is how sprut logs in to an OAuth Upstream, where the Config says.
+type OAuth struct {
+	// A pre-registered client, in place of Dynamic Client Registration.
+	ClientID     string
+	ClientSecret string
+	// The scopes to request, in place of those the Upstream asks for; nil
+	// when the Config has none.
+	Scopes []string
 }
 
 // Warning is a problem in the Config that does not stop the Gateway.
@@ -182,6 +193,7 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 	var (
 		typ      string
 		disabled bool
+		oauth    map[string]json.RawMessage
 	)
 	// known are the fields of an entry, by the transport they apply to ("" for
 	// every entry).
@@ -197,13 +209,11 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		"args":     {Stdio, &u.Args, "an array of strings"},
 		"env":      {Stdio, &u.Env, "an object of strings"},
 		"headers":  {HTTP, &u.Headers, "an object of strings"},
+		"oauth":    {HTTP, &oauth, "an object"},
 	}
 	decode := func(name string) error {
 		f := known[name]
-		if v, ok := fields[name]; ok && (hasNull(v) || json.Unmarshal(v, f.dst) != nil) {
-			return fmt.Errorf("%q must be %s", name, f.want)
-		}
-		return nil
+		return decodeField(fields, name, f.dst, f.want)
 	}
 	for _, name := range slices.Sorted(maps.Keys(known)) {
 		if known[name].transport == "" {
@@ -251,6 +261,16 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 			}
 		}
 	}
+	if oauth != nil {
+		var (
+			msgs []string
+			err  error
+		)
+		if u.OAuth, msgs, err = parseOAuth(oauth); err != nil {
+			return nil, nil, err
+		}
+		warnings = append(warnings, msgs...)
+	}
 
 	if missing := interpolate(&u, lookupEnv); len(missing) > 0 {
 		return nil, append(warnings, unsetWarning(missing)), nil
@@ -261,6 +281,41 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 		return nil, append(warnings, `"url" is empty after interpolation; upstream skipped`), nil
 	}
 	return &u, warnings, nil
+}
+
+// parseOAuth parses the fields of "oauth", with warnings about the ones
+// sprut doesn't know.
+func parseOAuth(fields map[string]json.RawMessage) (*OAuth, []string, error) {
+	o := &OAuth{}
+	known := map[string]struct {
+		dst  any
+		want string
+	}{
+		"clientId":     {&o.ClientID, "a string"},
+		"clientSecret": {&o.ClientSecret, "a string"},
+		"scopes":       {&o.Scopes, "an array of strings"},
+	}
+	var warnings []string
+	for _, name := range slices.Sorted(maps.Keys(fields)) {
+		f, ok := known[name]
+		if !ok {
+			warnings = append(warnings, fmt.Sprintf("unknown field %q ignored", "oauth."+name))
+			continue
+		}
+		if err := decodeField(fields, name, f.dst, f.want); err != nil {
+			return nil, nil, fmt.Errorf("oauth: %w", err)
+		}
+	}
+	return o, warnings, nil
+}
+
+// decodeField decodes the field name of fields, if there is one, into dst,
+// or says that it must be want.
+func decodeField(fields map[string]json.RawMessage, name string, dst any, want string) error {
+	if v, ok := fields[name]; ok && (hasNull(v) || json.Unmarshal(v, dst) != nil) {
+		return fmt.Errorf("%q must be %s", name, want)
+	}
+	return nil
 }
 
 // hasNull reports whether v is null or holds a null as an array element or
@@ -328,7 +383,7 @@ func unsetWarning(missing []string) string {
 var varRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // interpolate replaces ${VAR} references in the fields that allow them (in
-// env and headers, only the values) and returns the names of unset variables, sorted.
+// env and headers, only the values; in oauth, all of it) and returns the names of unset variables, sorted.
 func interpolate(u *Upstream, lookupEnv LookupEnv) []string {
 	missing := map[string]bool{}
 	expand := func(s string) string {
@@ -350,6 +405,13 @@ func interpolate(u *Upstream, lookupEnv LookupEnv) []string {
 	u.URL = expand(u.URL)
 	for k, v := range u.Headers {
 		u.Headers[k] = expand(v)
+	}
+	if o := u.OAuth; o != nil {
+		o.ClientID = expand(o.ClientID)
+		o.ClientSecret = expand(o.ClientSecret)
+		for i, s := range o.Scopes {
+			o.Scopes[i] = expand(s)
+		}
 	}
 	return slices.Sorted(maps.Keys(missing))
 }

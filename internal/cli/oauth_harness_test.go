@@ -57,9 +57,17 @@ type oauthUpstream struct {
 	mcpAuth    []string   // the Authorization header of each request to /mcp
 	rejected   int        // requests to /mcp answered 401
 
+	registrations  int        // client registrations so far
+	secret         string     // the client secret the token endpoint accepts
+	challengeScope string     // the scope a 401 names, if any
+	supported      []string   // the Protected Resource Metadata's scopes_supported; nil leaves it out
+	offline        bool       // whether the Authorization Server advertises offline_access
+	authorizeQuery url.Values // of the last authorization request, whose scope tokens are issued with
+	requireScope   string     // the scope /mcp answers 403 insufficient_scope without, if any
+
 	prmIssuer string               // the issuer the Protected Resource Metadata names, if not Base
 	expiresIn int                  // of each access token issued, in seconds
-	live      map[string]time.Time // access tokens issued and not revoked, with their expiry
+	live      map[string]liveToken // access tokens issued and not revoked
 	refresh   string               // the one refresh token that works
 	issued    int                  // access tokens issued so far
 	refreshes []url.Values         // the form of each refresh request
@@ -70,7 +78,10 @@ type oauthUpstream struct {
 
 func startOAuthUpstream(t *testing.T) *oauthUpstream {
 	t.Helper()
-	u := &oauthUpstream{expiresIn: 3600, live: map[string]time.Time{}, release: make(chan struct{})}
+	u := &oauthUpstream{
+		expiresIn: 3600, live: map[string]liveToken{}, release: make(chan struct{}),
+		secret: fakeClientSecret, challengeScope: fakeScope, supported: []string{fakeScope},
+	}
 	server := newFakeServer("")
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true})
@@ -78,19 +89,26 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
 		u.mu.Lock()
-		issuer := cmp.Or(u.prmIssuer, u.Base)
-		u.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{
+		meta := map[string]any{
 			"resource":              u.URL,
-			"authorization_servers": []string{issuer},
-			"scopes_supported":      []string{fakeScope},
-		})
+			"authorization_servers": []string{cmp.Or(u.prmIssuer, u.Base)},
+		}
+		if u.supported != nil {
+			meta["scopes_supported"] = u.supported
+		}
+		u.mu.Unlock()
+		writeJSON(w, http.StatusOK, meta)
 	})
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
 		u.mu.Lock()
 		issParam := u.issParam
+		scopes := []string{fakeScope}
+		if u.offline {
+			scopes = append(scopes, "offline_access")
+		}
 		u.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
+			"scopes_supported": scopes,
 			"authorization_response_iss_parameter_supported": issParam,
 			"issuer":                                u.Base,
 			"authorization_endpoint":                u.Base + "/authorize",
@@ -113,6 +131,7 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			grantTypes = append(grantTypes, g.(string))
 		}
 		u.mu.Lock()
+		u.registrations++
 		u.grantTypes = grantTypes
 		u.appType, _ = meta["application_type"].(string)
 		u.mu.Unlock()
@@ -129,6 +148,7 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 		}
 		u.mu.Lock()
 		u.challenge = q.Get("code_challenge")
+		u.authorizeQuery = q
 		u.mu.Unlock()
 		callback, err := url.Parse(q.Get("redirect_uri"))
 		if err != nil {
@@ -155,11 +175,11 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			return
 		}
 		u.mu.Lock()
-		challenge := u.challenge
+		challenge, secret := u.challenge, u.secret
 		u.mu.Unlock()
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		if r.PostForm.Get("grant_type") != "authorization_code" || r.PostForm.Get("code") != fakeCode ||
-			r.PostForm.Get("client_secret") != fakeClientSecret ||
+			r.PostForm.Get("client_secret") != secret ||
 			base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_grant"})
 			return
@@ -170,16 +190,25 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 		got := r.Header.Get("Authorization")
 		u.mu.Lock()
 		u.mcpAuth = append(u.mcpAuth, got)
-		expiry, ok := u.live[strings.TrimPrefix(got, "Bearer ")]
-		ok = ok && strings.HasPrefix(got, "Bearer ") && time.Now().Before(expiry)
+		live, ok := u.live[strings.TrimPrefix(got, "Bearer ")]
+		ok = ok && strings.HasPrefix(got, "Bearer ") && time.Now().Before(live.expiry)
 		if !ok {
 			u.rejected++
 		}
+		challengeScope, requireScope := u.challengeScope, u.requireScope
 		u.mu.Unlock()
+		challenge := `Bearer resource_metadata="` + u.Base + `/.well-known/oauth-protected-resource/mcp"`
 		if !ok {
-			w.Header().Set("WWW-Authenticate",
-				`Bearer resource_metadata="`+u.Base+`/.well-known/oauth-protected-resource/mcp", scope="`+fakeScope+`"`)
+			if challengeScope != "" {
+				challenge += `, scope="` + challengeScope + `"`
+			}
+			w.Header().Set("WWW-Authenticate", challenge)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if requireScope != "" && !slices.Contains(strings.Fields(live.scope), requireScope) {
+			w.Header().Set("WWW-Authenticate", challenge+`, error="insufficient_scope", scope="`+requireScope+`"`)
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		mcpHandler.ServeHTTP(w, r)
@@ -194,6 +223,12 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 	return u
 }
 
+// liveToken is an access token that the fake accepts, until expiry.
+type liveToken struct {
+	expiry time.Time
+	scope  string // granted
+}
+
 // issue issues a new access token and refresh token, and returns the token
 // response. The first are fakeAccessToken and fakeRefreshToken; later ones
 // add a counter to them.
@@ -206,14 +241,17 @@ func (u *oauthUpstream) issue() map[string]any {
 		n := "-" + strconv.Itoa(u.issued)
 		access, refresh = access+n, refresh+n
 	}
-	u.live[access] = time.Now().Add(time.Duration(u.expiresIn) * time.Second)
+	scope := u.authorizeQuery.Get("scope")
+	u.live[access] = liveToken{expiry: time.Now().Add(time.Duration(u.expiresIn) * time.Second), scope: scope}
 	u.refresh = refresh
 	resp := map[string]any{
 		"access_token":  access,
 		"token_type":    "Bearer",
 		"expires_in":    u.expiresIn,
 		"refresh_token": refresh,
-		"scope":         fakeScope,
+	}
+	if scope != "" {
+		resp["scope"] = scope
 	}
 	if u.noRefresh {
 		delete(resp, "refresh_token")
@@ -234,7 +272,7 @@ func (u *oauthUpstream) IssueNoRefreshToken() {
 func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	u.refreshes = append(u.refreshes, r.PostForm)
-	failWith, current, release := u.failWith, u.refresh, u.release
+	failWith, current, release, secret := u.failWith, u.refresh, u.release, u.secret
 	u.mu.Unlock()
 	// What a careless server says, secrets included.
 	echo := map[string]any{
@@ -254,7 +292,7 @@ func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close()
 		}
 	case failWith == "invalid_grant" || r.PostForm.Get("refresh_token") != current ||
-		r.PostForm.Get("client_id") != fakeClientID || r.PostForm.Get("client_secret") != fakeClientSecret:
+		r.PostForm.Get("client_id") != fakeClientID || r.PostForm.Get("client_secret") != secret:
 		writeJSON(w, http.StatusBadRequest, echo)
 	default:
 		writeJSON(w, http.StatusOK, u.issue())
@@ -348,6 +386,54 @@ func (u *oauthUpstream) AdvertiseIss() {
 	u.issParam = true
 }
 
+// Registrations returns how many clients were registered so far.
+func (u *oauthUpstream) Registrations() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.registrations
+}
+
+// AcceptClientSecret makes the token endpoint accept secret, and only it,
+// as the client's secret from now on.
+func (u *oauthUpstream) AcceptClientSecret(secret string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.secret = secret
+}
+
+// OfferScopes makes a 401 name challenge as its scope ("" for none), and
+// the Protected Resource Metadata list supported as scopes_supported (nil
+// to leave it out).
+func (u *oauthUpstream) OfferScopes(challenge string, supported []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.challengeScope, u.supported = challenge, supported
+}
+
+// AdvertiseOfflineAccess makes the Authorization Server list offline_access
+// in its scopes_supported.
+func (u *oauthUpstream) AdvertiseOfflineAccess() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.offline = true
+}
+
+// RequireScope makes /mcp answer 403 insufficient_scope, naming scope, to
+// an access token that was not granted it.
+func (u *oauthUpstream) RequireScope(scope string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.requireScope = scope
+}
+
+// RequestedScope returns the scope parameter of the last authorization
+// request, and whether it had one.
+func (u *oauthUpstream) RequestedScope() (string, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.authorizeQuery.Get("scope"), u.authorizeQuery.Has("scope")
+}
+
 // AppType returns the application_type of the last client registration.
 func (u *oauthUpstream) AppType() string {
 	u.mu.Lock()
@@ -380,6 +466,15 @@ func login(t *testing.T, u *oauthUpstream, env []string, args ...string) (code i
 		}
 	}
 	return l.wait(t)
+}
+
+// mustLogin logs in to u, the Upstream "fake" in config, failing the test
+// unless the Login succeeds.
+func mustLogin(t *testing.T, u *oauthUpstream, env []string, config string) {
+	t.Helper()
+	if code, stderr := login(t, u, env, "fake", "--no-browser", "-c", config); code != 0 {
+		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
+	}
 }
 
 // loginRun is a `sprut auth login` running in the background.

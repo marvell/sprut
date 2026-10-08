@@ -40,9 +40,7 @@ func logInTo(t *testing.T, u *oauthUpstream, expiresIn int) *loggedIn {
 		env:           []string{"XDG_STATE_HOME=" + state},
 		creds:         filepath.Join(state, "sprut", "credentials", "fake.json"),
 	}
-	if code, stderr := login(t, u, l.env, "fake", "--no-browser", "-c", l.config); code != 0 {
-		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
-	}
+	mustLogin(t, u, l.env, l.config)
 	return l
 }
 

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 
 	"golang.org/x/oauth2"
@@ -29,9 +30,33 @@ type Credentials struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 
 	// Identity: the canonical URI of the Upstream and the issuer of the
-	// Authorization Server.
-	Resource string `json:"resource"`
-	Issuer   string `json:"issuer"`
+	// Authorization Server, and what the Config said when they were issued
+	// (see Bind).
+	Resource      string   `json:"resource"`
+	Issuer        string   `json:"issuer"`
+	URL           string   `json:"url"`
+	OAuthClientID string   `json:"oauth_client_id,omitempty"`
+	OAuthScopes   []string `json:"oauth_scopes"` // null when the Config has none
+}
+
+// Bind records u's url, oauth.clientId and oauth.scopes as what c were
+// issued for. oauth.clientSecret is left out, so that rotating it keeps c.
+func (c *Credentials) Bind(u config.Upstream) {
+	c.URL, c.OAuthClientID, c.OAuthScopes = u.URL, "", nil
+	if u.OAuth != nil {
+		c.OAuthClientID = u.OAuth.ClientID
+		c.OAuthScopes = slices.Clone(u.OAuth.Scopes)
+	}
+}
+
+// boundTo reports whether c were issued for u as its Config is now. The
+// order of the scopes doesn't matter.
+func (c *Credentials) boundTo(u config.Upstream) bool {
+	var want Credentials
+	want.Bind(u)
+	return c.URL == want.URL && c.OAuthClientID == want.OAuthClientID &&
+		(c.OAuthScopes == nil) == (want.OAuthScopes == nil) &&
+		slices.Equal(slices.Sorted(slices.Values(c.OAuthScopes)), slices.Sorted(slices.Values(want.OAuthScopes)))
 }
 
 // Store is the directory holding the Credentials of every Upstream.
@@ -46,9 +71,10 @@ func NewStore(lookupEnv config.LookupEnv) (*Store, error) {
 	return nil, errors.New("cannot locate the credentials: HOME is not set")
 }
 
-// Load returns the Credentials of upstream, or nil if it has none.
-func (s *Store) Load(upstream string) (*Credentials, error) {
-	data, err := os.ReadFile(s.path(upstream, ".json"))
+// Load returns the Credentials of u, or nil if it has none, or none issued
+// for u as its Config is now.
+func (s *Store) Load(u config.Upstream) (*Credentials, error) {
+	data, err := os.ReadFile(s.path(u.Name, ".json"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -57,7 +83,10 @@ func (s *Store) Load(upstream string) (*Credentials, error) {
 	}
 	var c Credentials
 	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("reading credentials %s: %w", s.path(upstream, ".json"), err)
+		return nil, fmt.Errorf("reading credentials %s: %w", s.path(u.Name, ".json"), err)
+	}
+	if !c.boundTo(u) {
+		return nil, nil
 	}
 	return &c, nil
 }

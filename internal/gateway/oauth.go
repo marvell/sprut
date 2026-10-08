@@ -101,7 +101,10 @@ const renewBefore = 5 * time.Minute
 type storedCredentials struct {
 	name     string
 	endpoint *url.URL // the Upstream's
-	store    *credentials.Store
+	// the client that the Config registers, if any, which the Credentials
+	// don't hold
+	preregistered *oauthex.ClientCredentials
+	store         *credentials.Store
 	// refused is why the Upstream can't use OAuth, if it can't, or why its
 	// Credentials can't be read. It matters only once the server asks for
 	// authorization.
@@ -138,14 +141,16 @@ func newStoredCredentials(u config.Upstream, env []string, oauth http.RoundTripp
 	if hasAuthorization(u) {
 		return nil
 	}
-	h := &storedCredentials{name: u.Name, refused: CheckOAuthUpstream(u), oauth: oauth, log: log}
+	h := &storedCredentials{
+		name: u.Name, preregistered: preregisteredClient(u), refused: CheckOAuthUpstream(u), oauth: oauth, log: log,
+	}
 	h.endpoint, _ = url.Parse(u.URL) // parsed already by newHTTPTransport
 	if h.refused != nil {
 		return h
 	}
 	h.store, h.refused = credentials.NewStore(config.LookupIn(env))
 	if h.refused == nil {
-		h.creds, h.refused = h.store.Load(u.Name)
+		h.creds, h.refused = h.store.Load(u)
 	}
 	return h
 }
@@ -155,12 +160,16 @@ func (h *storedCredentials) TokenSource(context.Context) (oauth2.TokenSource, er
 	return nil, nil
 }
 
-// Authorize gets only the 401s that wrap's transport could not renew past.
+// Authorize gets only the 401s that wrap's transport could not renew past,
+// and the 403s.
 func (h *storedCredentials) Authorize(_ context.Context, _ *http.Request, resp *http.Response) error {
 	discard(resp)
+	if resp.StatusCode == http.StatusForbidden && insufficientScope(resp) {
+		return h.fail(h.needsLogin("the credentials lack a scope that the upstream needs"))
+	}
 	if resp.StatusCode != http.StatusUnauthorized {
-		// A 403 is the server's answer to give; the request is retried and
-		// fails as it is.
+		// Any other 403 is the server's answer to give; the request is
+		// retried and fails as it is.
 		return nil
 	}
 	if h.refused != nil {
@@ -231,10 +240,22 @@ func (t bearerTransport) send(req *http.Request, token string) (*http.Response, 
 // resourceMetadataURL returns the URL of the Protected Resource Metadata
 // that a 401 names, if it names one.
 func resourceMetadataURL(resp *http.Response) string {
+	return challengeParam(resp, "resource_metadata")
+}
+
+// insufficientScope reports whether resp's challenge says that the access
+// token lacks a scope (RFC 6750, section 3.1).
+func insufficientScope(resp *http.Response) bool {
+	return challengeParam(resp, "error") == "insufficient_scope"
+}
+
+// challengeParam returns the parameter name of the first challenge of resp
+// that has it, or "".
+func challengeParam(resp *http.Response, name string) string {
 	challenges, _ := oauthex.ParseWWWAuthenticate(resp.Header.Values("WWW-Authenticate"))
 	for _, c := range challenges {
-		if m := c.Params["resource_metadata"]; m != "" {
-			return m
+		if v := c.Params[name]; v != "" {
+			return v
 		}
 	}
 	return ""
@@ -349,11 +370,8 @@ func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credenti
 		return nil, h.needsLogin("its authorization server has changed")
 	}
 
-	cfg := &oauth2.Config{
-		ClientID:     c.ClientID,
-		ClientSecret: c.ClientSecret,
-		Endpoint:     oauth2.Endpoint{TokenURL: c.TokenURL, AuthStyle: c.AuthStyle},
-	}
+	cfg := &oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: c.TokenURL, AuthStyle: c.AuthStyle}}
+	cfg.ClientID, cfg.ClientSecret = h.client(c)
 	client := oauthClient(withResource{resource: c.Resource, next: h.oauth})
 	tok, err := cfg.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, client), &oauth2.Token{RefreshToken: c.RefreshToken}).Token()
 	var retrieve *oauth2.RetrieveError
@@ -364,15 +382,27 @@ func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credenti
 		return nil, fmt.Errorf("renewing credentials: %w", oauthError(err))
 	}
 
-	cfg.Scopes = c.Scopes
-	renewed := newCredentials(cfg, tok)
-	renewed.Resource, renewed.Issuer = c.Resource, c.Issuer
-	if err := h.store.Save(h.name, renewed); err != nil {
+	renewed := *c
+	renewed.Token, renewed.Scopes = *tok, grantedScopes(tok, c.Scopes)
+	if err := h.store.Save(h.name, &renewed); err != nil {
 		// Still good for this process.
 		h.log.Warn("renewed credentials not saved", "upstream", h.name, "err", err)
 	}
 	h.log.Debug("credentials renewed", "upstream", h.name, "expires", renewed.Expiry)
-	return renewed, nil
+	return &renewed, nil
+}
+
+// client returns the id and secret of the client that renews c: the one
+// the Config registers, if any, else the one registered at the Login.
+func (h *storedCredentials) client(c *credentials.Credentials) (id, secret string) {
+	p := h.preregistered
+	if p == nil {
+		return c.ClientID, c.ClientSecret
+	}
+	if p.ClientSecretAuth != nil {
+		secret = p.ClientSecretAuth.ClientSecret
+	}
+	return p.ClientID, secret
 }
 
 // issuer returns the issuer of the Authorization Server that the Upstream

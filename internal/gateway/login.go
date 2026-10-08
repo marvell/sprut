@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,9 @@ const (
 	maxMetadataBytes = 1 << 20
 )
 
-// Login runs the Login for u and stores the Credentials it gets. It
-// registers a client with Dynamic Client Registration, prints the
+// Login runs the Login for u and stores the Credentials it gets. It uses
+// the client that u's Config names, or registers one with Dynamic Client
+// Registration, prints the
 // Authorization Server's issuer, the scopes and the authorization URL to
 // prompt, opens the URL if browser is set, and waits up to callbackTimeout for the
 // Authorization Server to redirect the user's browser to a callback on a
@@ -46,6 +48,13 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		return err
 	}
 	store, err := credentials.NewStore(config.LookupIn(env))
+	if err != nil {
+		return err
+	}
+
+	// A new Login keeps the scopes that the last one got, so that one
+	// after a step-up keeps those it had before.
+	stored, err := store.Load(u)
 	if err != nil {
 		return err
 	}
@@ -69,16 +78,10 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		issuer   string
 		creds    *credentials.Credentials
 	)
-	h, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
-		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
-			Metadata: &oauthex.ClientRegistrationMetadata{
-				ClientName:      "sprut",
-				ApplicationType: "native",
-				RedirectURIs:    []string{callbacks.URL},
-				GrantTypes:      []string{"authorization_code", "refresh_token"},
-				ResponseTypes:   []string{"code"},
-			},
-		},
+	preregistered := preregisteredClient(u)
+	cfg := &auth.AuthorizationCodeHandlerConfig{
+		PreregisteredClient: preregistered,
+		RedirectURL:         callbacks.URL,
 		AuthorizationCodeFetcher: func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 			authURL, err := url.Parse(args.URL)
 			if err != nil {
@@ -120,6 +123,16 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 				return nil, ctx.Err()
 			}
 		},
+		ScopeFilter: func(discovered []string) []string {
+			scopes := discovered
+			if u.OAuth != nil && u.OAuth.Scopes != nil {
+				scopes = u.OAuth.Scopes
+			}
+			if stored != nil {
+				scopes = union(scopes, stored.Scopes)
+			}
+			return scopes
+		},
 		RequestRefreshToken:   true,
 		AcceptUnadvertisedIss: true,
 		Client:                oauthClient(recorder),
@@ -128,10 +141,32 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		// during the Login would rotate the refresh token stored, and serve
 		// renews Credentials that are about to expire anyway.
 		NewTokenSource: func(_ context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
-			creds = newCredentials(cfg, tok)
+			creds = &credentials.Credentials{
+				Token:     *tok,
+				Scopes:    grantedScopes(tok, cfg.Scopes),
+				TokenURL:  cfg.Endpoint.TokenURL,
+				AuthStyle: cfg.Endpoint.AuthStyle,
+			}
+			if preregistered == nil {
+				// Only a registered client is stored: the Config's is read
+				// from the Config each time.
+				creds.ClientID, creds.ClientSecret = cfg.ClientID, cfg.ClientSecret
+			}
 			return oauth2.StaticTokenSource(tok), nil
 		},
-	})
+	}
+	if preregistered == nil {
+		cfg.DynamicClientRegistrationConfig = &auth.DynamicClientRegistrationConfig{
+			Metadata: &oauthex.ClientRegistrationMetadata{
+				ClientName:      "sprut",
+				ApplicationType: "native",
+				RedirectURIs:    []string{callbacks.URL},
+				GrantTypes:      []string{"authorization_code", "refresh_token"},
+				ResponseTypes:   []string{"code"},
+			},
+		}
+	}
+	h, err := auth.NewAuthorizationCodeHandler(cfg)
 	if err != nil {
 		return err
 	}
@@ -152,11 +187,25 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		return errors.New("it did not ask for authorization, so it needs no login")
 	}
 	creds.Resource, creds.Issuer = resource, issuer
+	creds.Bind(u)
 	if err := store.Save(u.Name, creds); err != nil {
 		return err
 	}
 	log.Info("login complete", "upstream", u.Name, "scopes", strings.Join(creds.Scopes, " "))
 	return nil
+}
+
+// preregisteredClient returns the client that u's Config registers, or nil
+// if it names none and Dynamic Client Registration is to make one.
+func preregisteredClient(u config.Upstream) *oauthex.ClientCredentials {
+	if u.OAuth == nil || u.OAuth.ClientID == "" {
+		return nil
+	}
+	c := &oauthex.ClientCredentials{ClientID: u.OAuth.ClientID}
+	if u.OAuth.ClientSecret != "" {
+		c.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: u.OAuth.ClientSecret}
+	}
+	return c
 }
 
 // openBrowser opens link in the user's browser. The link is one argument
@@ -189,22 +238,26 @@ func openBrowser(link string, env []string) error {
 	return nil
 }
 
-// newCredentials are the Credentials of tok, issued to the client of cfg.
-func newCredentials(cfg *oauth2.Config, tok *oauth2.Token) *credentials.Credentials {
-	scopes := cfg.Scopes
+// union returns a and then the scopes of b that a lacks.
+func union(a, b []string) []string {
+	u := slices.Clone(a)
+	for _, s := range b {
+		if !slices.Contains(u, s) {
+			u = append(u, s)
+		}
+	}
+	return u
+}
+
+// grantedScopes are the scopes that tok was granted, for a request of
+// requested.
+func grantedScopes(tok *oauth2.Token, requested []string) []string {
 	// The server says which scopes it granted only if they differ from
 	// those requested (RFC 6749, section 5.1).
 	if granted, ok := tok.Extra("scope").(string); ok && granted != "" {
-		scopes = strings.Fields(granted)
+		return strings.Fields(granted)
 	}
-	return &credentials.Credentials{
-		Token:        *tok,
-		Scopes:       scopes,
-		TokenURL:     cfg.Endpoint.TokenURL,
-		AuthStyle:    cfg.Endpoint.AuthStyle,
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-	}
+	return requested
 }
 
 // authorizeOnce runs the Login at the first request that asks for
