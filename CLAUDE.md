@@ -12,7 +12,7 @@ Judgement-call standards: `docs/CODING_STANDARDS.md`.
 
 ## Library gotchas
 
-go-sdk, urfave/cli, os/exec or net/http errors: read `docs/agents/library-gotchas.md` before using any of them.
+Before writing code against go-sdk (hooks, transports, OAuth), urfave/cli, os/exec or net/http, and on any error from them: read `docs/agents/library-gotchas.md`.
 
 ## Agent skills
 

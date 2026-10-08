@@ -368,6 +368,7 @@ func newFakeServer(protocol string) *mcp.Server {
 // of every request it gets.
 type httpUpstream struct {
 	URL     string
+	Close   func() // stops the server, which then refuses connections
 	mu      sync.Mutex
 	headers []http.Header
 }
@@ -393,7 +394,7 @@ func startHTTPUpstream(t *testing.T, protocol string) *httpUpstream {
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	u.URL = ts.URL
+	u.URL, u.Close = ts.URL, ts.Close
 	return u
 }
 

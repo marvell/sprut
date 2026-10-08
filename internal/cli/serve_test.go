@@ -788,6 +788,32 @@ func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
 	}
 }
 
+// The request never gets an answer, which the SDK reports as a JSON-RPC
+// error of its own; it is not the Upstream's answer to pass on.
+func TestServeAnswersCallsToAnHTTPUpstreamThatIsGoneWithAnErrorResult(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{legacyProtocol, modernProtocol} {
+		t.Run("Upstream "+protocol, func(t *testing.T) {
+			t.Parallel()
+			remote := startHTTPUpstream(t, protocol)
+			g := startGateway(t, writeConfig(t, map[string]any{"remote": map[string]any{"url": remote.URL}}), nil)
+			g.wantTools(t, "remote__echo", "remote__fail")
+
+			remote.Close()
+			res, err := g.Agent.CallTool(context.Background(),
+				&mcp.CallToolParams{Name: "remote__echo", Arguments: map[string]any{"text": "hi"}})
+
+			if err != nil {
+				t.Fatalf("tools/call: %v, want an isError result", err)
+			}
+			if text := resultText(t, res); !res.IsError || !strings.Contains(text, `call to upstream "remote" failed`) {
+				t.Errorf("tools/call = %q (isError %v), want an isError result naming the Upstream", text, res.IsError)
+			}
+			g.closeAgent(t)
+		})
+	}
+}
+
 func TestServeSendsConfiguredHeadersOnEveryHTTPRequest(t *testing.T) {
 	t.Parallel()
 	remote := startHTTPUpstream(t, "")
