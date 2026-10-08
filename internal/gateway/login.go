@@ -122,11 +122,11 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		},
 		RequestRefreshToken:   true,
 		AcceptUnadvertisedIss: true,
-		Client:                &http.Client{Transport: recorder, Timeout: oauthTimeout},
+		Client:                oauthClient(recorder),
 		// Called with the final client and token once the code is exchanged:
 		// all that the Credentials need. The source is static: refreshing
 		// during the Login would rotate the refresh token stored, and serve
-		// renews a token that is about to expire anyway.
+		// renews Credentials that are about to expire anyway.
 		NewTokenSource: func(_ context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 			creds = newCredentials(cfg, tok)
 			return oauth2.StaticTokenSource(tok), nil
@@ -284,7 +284,15 @@ func (c *callbackServer) Expect(state, issuer string, issRequired bool) {
 	c.state, c.issuer, c.issRequired = state, issuer, issRequired
 }
 
-func (c *callbackServer) Close() { _ = c.srv.Close() }
+// Close stops listening, letting the answer to the callback go out first,
+// for a moment at most.
+func (c *callbackServer) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if c.srv.Shutdown(ctx) != nil {
+		_ = c.srv.Close()
+	}
+}
 
 func (c *callbackServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet || r.URL.Path != "/callback" {

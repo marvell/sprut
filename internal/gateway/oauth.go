@@ -123,9 +123,11 @@ type storedCredentials struct {
 // renewal is one renewal of the Credentials, which every request that needs
 // it waits for.
 type renewal struct {
-	done  chan struct{}
-	token string // the access token it got
-	err   error
+	done chan struct{}
+	// onRejection is set once any request that waits for it got a 401.
+	onRejection bool
+	token       string // the access token it got
+	err         error
 }
 
 // newStoredCredentials returns the OAuth handler of u, loading its
@@ -168,9 +170,9 @@ func (h *storedCredentials) Authorize(_ context.Context, _ *http.Request, resp *
 	has := h.creds != nil
 	h.mu.Unlock()
 	if !has {
-		return h.fail(&needsLoginError{upstream: h.name})
+		return h.fail(h.needsLogin(""))
 	}
-	return h.fail(&needsLoginError{upstream: h.name, reason: "the upstream rejected renewed credentials"})
+	return h.fail(h.needsLogin(rejected))
 }
 
 // wrap returns the transport of requests to the Upstream, which sends them
@@ -289,7 +291,7 @@ func (h *storedCredentials) renew(ctx context.Context, stale, metadata string, o
 			case err == nil:
 				h.creds = renewed
 				r.token = renewed.AccessToken
-				if onRejection {
+				if r.onRejection {
 					h.rejected = renewed.AccessToken
 				}
 			case errors.As(err, new(*needsLoginError)):
@@ -300,6 +302,7 @@ func (h *storedCredentials) renew(ctx context.Context, stale, metadata string, o
 			close(r.done)
 		}()
 	}
+	r.onRejection = r.onRejection || onRejection
 	h.mu.Unlock()
 	select {
 	case <-r.done:
@@ -318,11 +321,14 @@ func (h *storedCredentials) settledLocked(stale string, onRejection bool) (token
 	case h.creds.AccessToken != stale:
 		return h.creds.AccessToken, nil, true
 	case onRejection && stale == h.rejected:
-		return "", &needsLoginError{upstream: h.name, reason: "the upstream rejected renewed credentials"}, true
+		return "", h.needsLogin(rejected), true
 	case h.creds.RefreshToken == "":
-		if onRejection || time.Now().After(h.creds.Expiry) {
-			h.dead = &needsLoginError{upstream: h.name, reason: "the credentials expired and cannot be renewed"}
+		switch {
+		case time.Now().After(h.creds.Expiry):
+			h.dead = h.needsLogin("the credentials expired and cannot be renewed")
 			return "", h.dead, true
+		case onRejection:
+			return "", h.needsLogin(rejected), true
 		}
 		return stale, nil, true // good until they expire
 	}
@@ -340,7 +346,7 @@ func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credenti
 	}
 	if !sameIssuer(issuer, c.Issuer) {
 		// The Credentials are not sent to a server they were not issued by.
-		return nil, &needsLoginError{upstream: h.name, reason: "its authorization server has changed"}
+		return nil, h.needsLogin("its authorization server has changed")
 	}
 
 	cfg := &oauth2.Config{
@@ -348,11 +354,11 @@ func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credenti
 		ClientSecret: c.ClientSecret,
 		Endpoint:     oauth2.Endpoint{TokenURL: c.TokenURL, AuthStyle: c.AuthStyle},
 	}
-	client := &http.Client{Transport: withResource{resource: c.Resource, next: h.oauth}, Timeout: oauthTimeout}
+	client := oauthClient(withResource{resource: c.Resource, next: h.oauth})
 	tok, err := cfg.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, client), &oauth2.Token{RefreshToken: c.RefreshToken}).Token()
 	var retrieve *oauth2.RetrieveError
 	if errors.As(err, &retrieve) && retrieve.ErrorCode == "invalid_grant" {
-		return nil, &needsLoginError{upstream: h.name, reason: "the authorization server rejected the credentials"}
+		return nil, h.needsLogin("the authorization server rejected the credentials")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("renewing credentials: %w", oauthError(err))
@@ -386,7 +392,7 @@ func (h *storedCredentials) issuer(ctx context.Context, resource, metadata strin
 		candidates = append([]candidate{{metadata, resource}}, candidates...)
 	}
 
-	client := &http.Client{Transport: h.oauth, Timeout: oauthTimeout}
+	client := oauthClient(h.oauth)
 	for _, c := range candidates {
 		if link, err := url.Parse(c.link); err != nil || !isSecure(link) {
 			continue
@@ -443,6 +449,21 @@ func getResourceMetadata(ctx context.Context, client *http.Client, link string) 
 // trailing slash, which servers are careless about.
 func sameIssuer(a, b string) bool {
 	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
+}
+
+// rejected is why an Upstream that answers 401 to its Credentials needs a
+// Login.
+const rejected = "the upstream rejected the credentials"
+
+// needsLogin is the error of the Upstream needing a Login, for reason.
+func (h *storedCredentials) needsLogin(reason string) error {
+	return &needsLoginError{upstream: h.name, reason: reason}
+}
+
+// oauthClient is the HTTP client of requests to an Authorization Server
+// and of metadata lookups, through rt.
+func oauthClient(rt http.RoundTripper) *http.Client {
+	return &http.Client{Transport: rt, Timeout: oauthTimeout}
 }
 
 // fail records err, if any, as the last error, and returns it.

@@ -65,6 +65,7 @@ type oauthUpstream struct {
 	refreshes []url.Values         // the form of each refresh request
 	failWith  string               // how refresh requests fail, if they do (see FailRefresh)
 	release   chan struct{}        // closed when hanging refresh requests may end
+	noRefresh bool                 // whether tokens are issued without a refresh token
 }
 
 func startOAuthUpstream(t *testing.T) *oauthUpstream {
@@ -207,13 +208,25 @@ func (u *oauthUpstream) issue() map[string]any {
 	}
 	u.live[access] = time.Now().Add(time.Duration(u.expiresIn) * time.Second)
 	u.refresh = refresh
-	return map[string]any{
+	resp := map[string]any{
 		"access_token":  access,
 		"token_type":    "Bearer",
 		"expires_in":    u.expiresIn,
 		"refresh_token": refresh,
 		"scope":         fakeScope,
 	}
+	if u.noRefresh {
+		delete(resp, "refresh_token")
+	}
+	return resp
+}
+
+// IssueNoRefreshToken makes every token response from now on leave out the
+// refresh token.
+func (u *oauthUpstream) IssueNoRefreshToken() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.noRefresh = true
 }
 
 // serveRefresh answers a refresh request, as FailRefresh says, and records

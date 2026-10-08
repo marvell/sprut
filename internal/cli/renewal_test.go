@@ -26,7 +26,12 @@ type loggedIn struct {
 // seconds, and logs in to it.
 func logIn(t *testing.T, expiresIn int) *loggedIn {
 	t.Helper()
-	u := startOAuthUpstream(t)
+	return logInTo(t, startOAuthUpstream(t), expiresIn)
+}
+
+// logInTo logs in to u, whose access tokens live for expiresIn seconds.
+func logInTo(t *testing.T, u *oauthUpstream, expiresIn int) *loggedIn {
+	t.Helper()
 	u.ExpireIn(expiresIn)
 	state := t.TempDir()
 	l := &loggedIn{
@@ -195,6 +200,23 @@ func TestServeReportsCredentialsTheAuthorizationServerRejectsWithALoginHint(t *t
 		g.closeAgent(t)
 		wantNoSecrets(t, "serve stderr", g.stderr.String(), leakySecrets...)
 	})
+}
+
+func TestServeSkipsAnUpstreamWhoseCredentialsExpiredWithoutARefreshToken(t *testing.T) {
+	t.Parallel()
+	u := startOAuthUpstream(t)
+	u.IssueNoRefreshToken()
+	l := logInTo(t, u, 1)
+	time.Sleep(1100 * time.Millisecond) // past its expiry
+
+	g := startGateway(t, l.config, l.env)
+
+	g.wantTools(t)
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="run: sprut auth login fake"`)
+	if n := len(l.Refreshes()); n != 0 {
+		t.Errorf("refreshes = %d, want none", n)
+	}
+	g.closeAgent(t)
 }
 
 func TestServeKeepsCredentialsWhenRenewalFailsOnTheWay(t *testing.T) {
