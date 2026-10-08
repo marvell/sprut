@@ -1,6 +1,6 @@
 # Library gotchas
 
-Behaviour of go-sdk, urfave/cli and os/exec that no signature reveals. For the API itself, prefer `go doc` to reading source. Each item names the version it was verified against. When `go.mod` moves past that version, re-verify the item before relying on it, and then update or delete it.
+Behaviour of go-sdk, urfave/cli, net/http and os/exec that no signature reveals. For the API itself, prefer `go doc` to reading source. Each item names the version it was verified against. When `go.mod` moves past that version, re-verify the item before relying on it, and then update or delete it.
 
 When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. The module cache on this machine is not under `~/go`.
 
@@ -21,6 +21,7 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 - **Only a stateless `StreamableHTTPHandler` serves the modern protocol** (v1.8.0). A stateful one drops versions from 2026-07-28 on, and a modern-only stateful server then fails every client. A fake modern HTTP Upstream needs `StreamableHTTPOptions.Stateless`.
 - **A Streamable HTTP request outlives the call that sent it** (v1.8.0). Each POST stays open until the server answers. The caller's ctx and closing the session do not end it. When `Connect` fails on its deadline, it closes the session. That close waits up to 5s (`notifyCancellationTimeout`) for the `notifications/cancelled` POST. A hung HTTP Upstream therefore holds up `Gateway.Close` by up to 5s, and a test server that never answers must be released before `httptest.Server.Close`.
 - **`Server.AddReceivingMiddleware` can rewrite any outgoing result** (v1.8.0). Use it in a fake Upstream to serve what the SDK's own API refuses to register, such as a tool whose input schema is not an object.
+- **`NewServer` copies its `ServerOptions`** (v1.8.0), so changing them afterwards does nothing. `Instructions` must be known when the server is made, which is why `gateway.Start` makes it only once the Upstreams have started. The same `Instructions` go out in the `discover` result to a modern client and in the `initialize` result to a legacy one.
 
 ## urfave/cli (`github.com/urfave/cli/v3`)
 
@@ -29,6 +30,10 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 - **Usage errors print help to stdout** (v3.14.0), not to stderr, and exit 1. This covers flag parse errors and errors from a flag's `Validator`. Setting `OnUsageError` on a command replaces both the help dump and the "Incorrect Usage" line for that command's flags; return an `ucli.Exit(..., 2)` from it. `cli.strictUsage` sets it on every command.
 - **Unexpected positional args are not an error** (v3.14.0): a command with no `Arguments` still runs its `Action`, with them in `cmd.Args()`, and an unknown subcommand name reaches the parent's `Action` this way. Every command also gets a `help` subcommand at run time, so `cmd.Commands` is never empty inside an `Action`.
 - **An unknown help topic exits 3** (v3.14.0): `app help foo`, `app -h foo` and `app sub --help foo` print `No help topic for 'foo'` and return `ucli.Exit(..., 3)`, with no usage. A command's `CommandNotFound` replaces that, but it returns nothing and the run then ends with no error, so `cli.Run` keeps the usage error it reports aside.
+
+## net/http
+
+- **A request's `*url.Error` masks only the userinfo password** (go1.27.1): it quotes the URL as `Post "https://user:***@host/path?query"`, with the query string intact. A secret in an Upstream's URL query therefore reaches every error message that quotes the URL.
 
 ## os/exec and process groups
 

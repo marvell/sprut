@@ -1,6 +1,6 @@
 ## Checks
 
-Before every commit, `make check` must pass: it runs exactly what CI runs.
+Commit only after `make check` exits 0 on the exact tree being committed: it runs exactly what CI runs. Gate the commit on that exit code (`make check && git commit ...`, or a separate run you read first). Any failure blocks the commit until fixed, a flaky test included.
 
 Only `main` touches `os.Args`, env, std streams and `os.Exit`; tests live only in `internal/cli` and `internal/config`. `make lint` enforces both (`.golangci.yml`).
 
@@ -12,7 +12,7 @@ Judgement-call standards: `docs/CODING_STANDARDS.md`.
 
 ## Library gotchas
 
-go-sdk, urfave/cli or os/exec: read `docs/agents/library-gotchas.md` before using any of them.
+go-sdk, urfave/cli, os/exec or net/http errors: read `docs/agents/library-gotchas.md` before using any of them.
 
 ## Agent skills
 

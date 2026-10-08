@@ -13,3 +13,7 @@ Judgement calls for review. Anything mechanical lives in `.golangci.yml` instead
 ## Reuse
 
 - **A new helper replaces the existing copies of its logic**, including those outside the diff. Search the package for the same loop or check before accepting a helper, and flag each copy left behind.
+
+## Tests
+
+- **Timeouts in tests fail only the side meant to fail.** A timeout that a healthy fake must beat, such as a `--startup-timeout` shared with a fake that has to start, allows for `make test` loading the machine (`-race`, `-count=3`, parallel tests): 1s or more. Only a fake that must hang meets a tight one.

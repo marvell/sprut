@@ -259,15 +259,15 @@ func TestServeExcludesUpstreamThatHangsPastStartupTimeout(t *testing.T) {
 	hanging := fakeUpstreamEntry(t, envFakeStartup+"=hang")
 	begin := time.Now()
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "hanging": hanging}), nil,
-		"--startup-timeout", "300ms")
+		"--startup-timeout", "1s")
 	// Well under the ~5s grace a hung Upstream gets to exit once stopped:
 	// stopping it must not hold up startup.
 	if took := time.Since(begin); took > 3*time.Second {
-		t.Errorf("startup took %s with a 300ms startup timeout", took)
+		t.Errorf("startup took %s with a 1s startup timeout", took)
 	}
 
 	g.wantTools(t, "fake__echo", "fake__fail")
-	g.wantLogLine(t, "WARN", "upstream=hanging", "err=", "300ms")
+	g.wantLogLine(t, "WARN", "upstream=hanging", "err=", "1s")
 	g.closeAgent(t)
 }
 
@@ -390,7 +390,7 @@ func TestServeDryRunExits1WhenAnyUpstreamFailsOrTimesOut(t *testing.T) {
 			})
 
 			code, stdout, stderr := runSprut(t, []string{envFakeUpstream + "=1"},
-				"serve", "--dry-run", "--startup-timeout", "300ms", "-c", config)
+				"serve", "--dry-run", "--startup-timeout", "1s", "-c", config)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
 			}
@@ -691,9 +691,7 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	entry := fakeUpstreamEntry(t, envFakeBlockTool+"="+progress)
 	// The startup timeout is the Gateway's only timeout; it must not apply
 	// to calls.
-	// Long enough for the Upstream to start while other tests load the
-	// machine.
-	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "500ms")
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "1s")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -702,7 +700,7 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	select {
 	case err := <-called:
 		t.Fatalf("tools/call ended on its own: %v", err)
-	case <-time.After(1500 * time.Millisecond): // three startup timeouts
+	case <-time.After(3 * time.Second): // three startup timeouts
 	}
 	if data, err := os.ReadFile(progress); err != nil || string(data) != "started" {
 		t.Errorf("Upstream's call: %s holds %q (err %v), want it still started", progress, data, err)
@@ -838,13 +836,13 @@ func TestServeExcludesHTTPUpstreamThatHangsPastStartupTimeout(t *testing.T) {
 	g := startGateway(t, writeConfig(t, map[string]any{
 		"fake":    fakeUpstreamEntry(t),
 		"hanging": map[string]any{"url": startHangingHTTPUpstream(t)},
-	}), nil, "--startup-timeout", "300ms")
+	}), nil, "--startup-timeout", "1s")
 	if took := time.Since(begin); took > 3*time.Second {
-		t.Errorf("startup took %s with a 300ms startup timeout", took)
+		t.Errorf("startup took %s with a 1s startup timeout", took)
 	}
 
 	g.wantTools(t, "fake__echo", "fake__fail")
-	g.wantLogLine(t, "WARN", "upstream=hanging", "startup timed out after 300ms")
+	g.wantLogLine(t, "WARN", "upstream=hanging", "startup timed out after 1s")
 	g.closeAgent(t)
 }
 
@@ -935,10 +933,10 @@ func TestServeListsUpstreamsSkippedAtStartupInItsInstructions(t *testing.T) {
 				"fake":    fakeUpstreamEntry(t),
 				"failing": fakeUpstreamEntry(t, envFakeStartup+"=fail"),
 				"hanging": fakeUpstreamEntry(t, envFakeStartup+"=hang"),
-			}), nil, "--startup-timeout", "300ms")
+			}), nil, "--startup-timeout", "1s")
 
 			instructions := g.Agent.InitializeResult().Instructions
-			for _, want := range []string{"failing", "hanging", "startup timed out after 300ms"} {
+			for _, want := range []string{"failing", "hanging", "startup timed out after 1s"} {
 				if !strings.Contains(instructions, want) {
 					t.Errorf("instructions do not mention %q:\n%s", want, instructions)
 				}
