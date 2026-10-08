@@ -14,6 +14,6 @@ Implement the work described by the user in the spec or tickets.
 
 4. Call the Skill tool with "code-review" from the commit before this work's first commit. It diffs commits, so uncommitted and untracked files escape it. Review fixes go in a follow-up commit.
 
-5. Post the decisions the ticket left open as a comment on the issue, so the reviewer and later tickets see them.
+5. Post the decisions the ticket left open as a comment on the issue, so the reviewer and later tickets see them. Where a decision departs from the spec's wording, also edit the spec to match: later tickets and the Spec review read it as the source of truth.
 
 6. Finish by moving the issue to Done with a closing comment.
