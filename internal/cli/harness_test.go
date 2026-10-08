@@ -456,6 +456,14 @@ func startHangingHTTPUpstream(t *testing.T) string {
 	return ts.URL
 }
 
+// refusingURL returns an HTTP URL at which nothing listens any more, so
+// connecting to it is refused.
+func refusingURL() string {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close()
+	return gone.URL
+}
+
 // Headers returns the headers of each request the Upstream got so far.
 func (u *httpUpstream) Headers() []http.Header {
 	u.mu.Lock()

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,23 +31,26 @@ var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 type Gateway struct {
 	server      *mcp.Server
 	upstreams   *upstreams
-	failed      int             // Upstreams that failed or timed out at startup
+	skipped     []skipped       // Upstreams that failed or timed out at startup
 	tools       map[string]bool // Namespaced tools served; fixed once Start returns
 	agentLogged atomic.Bool     // whether "agent connected" is logged
 	log         *slog.Logger
 }
 
+// skipped is an Upstream left out at startup, and why.
+type skipped struct {
+	name string
+	err  error
+}
+
 // Start launches every Upstream concurrently, collects their tools and
 // returns a Gateway ready to serve them. env is the environment Upstream
 // processes inherit. Each Upstream gets startupTimeout to connect and list
-// its tools; one that fails or runs out of time is logged and left out.
+// its tools; one that fails or runs out of time is logged, left out and
+// listed in the instructions the Agent gets.
 func Start(ctx context.Context, configured []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
 	impl := &mcp.Implementation{Name: "sprut", Version: version}
 	g := &Gateway{
-		server: mcp.NewServer(impl, &mcp.ServerOptions{
-			// Advertise only tools; the tool list is fixed for the session.
-			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		}),
 		upstreams: &upstreams{
 			// The Gateway proxies no interactive input, so a modern Upstream's
 			// request for it comes back to forward rather than being retried.
@@ -58,9 +62,18 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 		tools: map[string]bool{},
 		log:   log,
 	}
+	started, skips := g.upstreams.start(ctx, configured)
+	g.skipped = skips
+
+	// The server takes its instructions when it is made, so it is made once
+	// the skipped Upstreams are known.
+	g.server = mcp.NewServer(impl, &mcp.ServerOptions{
+		// Advertise only tools; the tool list is fixed for the session.
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+		Instructions: instructions(skips),
+	})
 	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.logAgentConnected)
 
-	started := g.upstreams.start(ctx, configured)
 	tools := 0
 	for _, r := range started {
 		added := g.addTools(r)
@@ -68,13 +81,51 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
 	}
-	g.failed = len(configured) - len(started)
-	log.Info("gateway started", "ready", len(started), "failed", g.failed, "tools", tools)
+	log.Info("gateway started", "ready", len(started), "failed", len(skips), "tools", tools)
 	return g
 }
 
-// Failed reports how many Upstreams failed or timed out at startup.
-func (g *Gateway) Failed() int { return g.failed }
+// Skipped reports how many Upstreams failed or timed out at startup.
+func (g *Gateway) Skipped() int { return len(g.skipped) }
+
+// instructions tells the Agent which Upstreams were skipped at startup and
+// why, so that it can tell the user why their tools are missing. It is
+// empty when none was.
+func instructions(skipped []skipped) string {
+	if len(skipped) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("These MCP servers failed to start, so their tools are missing. Tell the user why, and how to fix it where a fix is given:\n")
+	for _, s := range skipped {
+		fmt.Fprintf(&b, "- %s: %s\n", s.name, withHint(s.err))
+	}
+	return b.String()
+}
+
+// hinted is an error that carries a remedy the user can act on, such as a
+// command to run.
+type hinted interface {
+	error
+	Hint() string
+}
+
+// hint returns the remedy err carries, or "" if it carries none.
+func hint(err error) string {
+	var h hinted
+	if errors.As(err, &h) {
+		return h.Hint()
+	}
+	return ""
+}
+
+// withHint is err's message followed by its remedy, if it carries one.
+func withHint(err error) string {
+	if h := hint(err); h != "" {
+		return fmt.Sprintf("%v (%s)", err, h)
+	}
+	return err.Error()
+}
 
 // addTools serves r's tools as Namespaced tools, skipping the ones addTool
 // rejects, and returns how many it added.
@@ -113,35 +164,46 @@ type upstreams struct {
 }
 
 // start starts every Upstream in configured concurrently, and returns those
-// that started, in Config order. One that fails or runs out of time is
-// logged and left out.
-func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []*ready {
-	results := make([]*ready, len(configured))
+// that started and those that failed or ran out of time, each in Config
+// order. A skipped one is logged.
+func (s *upstreams) start(ctx context.Context, configured []config.Upstream) ([]*ready, []skipped) {
+	results := make([]struct {
+		r   *ready
+		err error
+	}, len(configured))
 	var wg sync.WaitGroup
 	for i, u := range configured {
 		wg.Go(func() {
 			begin := time.Now()
 			r, err := s.startOne(ctx, u)
 			if err != nil {
-				s.log.Warn("upstream failed; skipped", "upstream", u.Name, "err", err)
+				attrs := []any{"upstream", u.Name, "err", err}
+				if h := hint(err); h != "" {
+					attrs = append(attrs, "hint", h)
+				}
+				s.log.Warn("upstream failed; skipped", attrs...)
+				results[i].err = err
 				return
 			}
 			r.name, r.took = u.Name, time.Since(begin)
-			results[i] = r
+			results[i].r = r
 		})
 	}
 	wg.Wait()
 
-	// In Config order, so the log doesn't depend on which Upstream was
-	// quickest. (The SDK lists tools by name anyway.)
+	// In Config order, so the log and the instructions don't depend on
+	// which Upstream was quickest. (The SDK lists tools by name anyway.)
 	var started []*ready
-	for _, r := range results {
-		if r != nil {
-			started = append(started, r)
-			s.sessions = append(s.sessions, r.session)
+	var skips []skipped
+	for i, res := range results {
+		if res.err != nil {
+			skips = append(skips, skipped{name: configured[i].Name, err: res.err})
+			continue
 		}
+		started = append(started, res.r)
+		s.sessions = append(s.sessions, res.r.session)
 	}
-	return started
+	return started, skips
 }
 
 // startOne starts u, giving up on it once the timeout runs out.
@@ -304,10 +366,11 @@ func forward(upstream string, session *mcp.ClientSession, original string, log *
 	}
 }
 
-// errorResult is an isError result saying err.
+// errorResult is an isError result saying err, and the remedy it carries,
+// if any.
 func errorResult(err error) *mcp.CallToolResult {
 	res := &mcp.CallToolResult{}
-	res.SetError(err)
+	res.SetError(errors.New(withHint(err)))
 	return res
 }
 

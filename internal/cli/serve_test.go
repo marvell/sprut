@@ -879,9 +879,7 @@ func TestServeReachesHTTPUpstreamThroughTheProxyInItsEnvironment(t *testing.T) {
 
 func TestServeBlamesHTTPSSEOnlyOnAServerThatSpeaksIt(t *testing.T) {
 	t.Parallel()
-	gone := httptest.NewServer(http.NotFoundHandler())
-	gone.Close() // nothing listens at its URL any more
-	g := startGateway(t, writeConfig(t, map[string]any{"gone": map[string]any{"url": gone.URL}}), nil)
+	g := startGateway(t, writeConfig(t, map[string]any{"gone": map[string]any{"url": refusingURL()}}), nil)
 
 	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=gone", "connection refused")
 	g.wantNoLogLine(t, "WARN", "HTTP+SSE")
@@ -917,4 +915,62 @@ func TestServeDoesNotBlameHTTPSSEOnAStreamableHTTPServerWithASessionlessGETStrea
 			g.closeAgent(t)
 		})
 	}
+}
+
+func TestServeListsUpstreamsSkippedAtStartupInItsInstructions(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{legacyProtocol, modernProtocol} {
+		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
+			g := startGatewayAs(t, protocol, writeConfig(t, map[string]any{
+				"fake":    fakeUpstreamEntry(t),
+				"failing": fakeUpstreamEntry(t, envFakeStartup+"=fail"),
+				"hanging": fakeUpstreamEntry(t, envFakeStartup+"=hang"),
+			}), nil, "--startup-timeout", "300ms")
+
+			instructions := g.Agent.InitializeResult().Instructions
+			for _, want := range []string{"failing", "hanging", "startup timed out after 300ms"} {
+				if !strings.Contains(instructions, want) {
+					t.Errorf("instructions do not mention %q:\n%s", want, instructions)
+				}
+			}
+			if strings.Contains(instructions, "fake") {
+				t.Errorf("instructions mention the Upstream that started:\n%s", instructions)
+			}
+			g.closeAgent(t)
+		})
+	}
+}
+
+func TestServeHasEmptyInstructionsWhenNoUpstreamWasSkipped(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t)
+	if got := g.Agent.InitializeResult().Instructions; got != "" {
+		t.Errorf("instructions = %q, want empty", got)
+	}
+	g.closeAgent(t)
+}
+
+func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
+	t.Parallel()
+	// Refusing connections, so the reason quotes the URL.
+	withPassword := strings.Replace(refusingURL(), "://", "://user:url-secret@", 1)
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"fake":   fakeUpstreamEntry(t),
+		"remote": map[string]any{"url": withPassword, "headers": map[string]string{"Authorization": "Bearer ${TOKEN}"}},
+		"local":  fakeUpstreamEntry(t, envFakeStartup+"=fail", "API_KEY=${KEY}"),
+	}), []string{"TOKEN=header-secret", "KEY=env-secret"})
+
+	instructions := g.Agent.InitializeResult().Instructions
+	for _, name := range []string{"remote", "local"} {
+		if !strings.Contains(instructions, name) {
+			t.Errorf("instructions do not mention %q:\n%s", name, instructions)
+		}
+	}
+	for _, secret := range []string{"url-secret", "header-secret", "env-secret"} {
+		if strings.Contains(instructions, secret) {
+			t.Errorf("instructions contain %q:\n%s", secret, instructions)
+		}
+	}
+	g.closeAgent(t)
 }

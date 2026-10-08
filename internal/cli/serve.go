@@ -47,7 +47,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			defer gw.Close()
 
 			if cmd.Bool("dry-run") {
-				if gw.Failed() > 0 {
+				if gw.Skipped() > 0 {
 					return ucli.Exit("", 1)
 				}
 				return nil
