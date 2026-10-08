@@ -53,10 +53,11 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 				return nil
 			}
 
-			// The Agent going away (EOF on stdin) or ctx being cancelled by a
-			// signal are both normal ends of a session.
+			// The Agent going away (EOF on stdin, which Serve reports as nil)
+			// or ctx being cancelled by a signal are both normal ends of a
+			// session; anything else, such as a failed read, is not.
 			if err := gw.Serve(ctx, stdin, stdout); err != nil && ctx.Err() == nil {
-				log.Info("agent session ended", "err", err)
+				return fmt.Errorf("serving the agent: %w", err)
 			}
 			return nil
 		},

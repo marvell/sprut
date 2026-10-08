@@ -625,10 +625,16 @@ func startGatewayAs(t *testing.T, protocol, configPath string, env []string, arg
 // and env, and returns its exit code, stdout and stderr.
 func runSprut(t *testing.T, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
+	return runSprutOn(t, strings.NewReader(""), env, args...)
+}
+
+// runSprutOn is runSprut with stdin read from stdin.
+func runSprutOn(t *testing.T, stdin io.Reader, env []string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var out, errOut bytes.Buffer
-	code = cli.Run(ctx, append([]string{"sprut"}, args...), env, strings.NewReader(""), &out, &errOut)
+	code = cli.Run(ctx, append([]string{"sprut"}, args...), env, stdin, &out, &errOut)
 	return code, out.String(), errOut.String()
 }
 

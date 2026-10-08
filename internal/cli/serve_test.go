@@ -3,6 +3,7 @@ package cli_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -223,6 +224,24 @@ func TestServeConfigErrorsExit1(t *testing.T) {
 		})
 	}
 }
+
+func TestServeExits1WhenReadingFromTheAgentFails(t *testing.T) {
+	t.Parallel()
+	code, _, stderr := runSprutOn(t, failingReader{}, nil, "serve", "-c", writeConfig(t, map[string]any{}))
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, errAgentRead.Error()) {
+		t.Errorf("stderr does not contain %q:\n%s", errAgentRead, stderr)
+	}
+}
+
+var errAgentRead = errors.New("agent read failed")
+
+// failingReader is an Agent whose stdin fails with something other than EOF.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errAgentRead }
 
 func TestServeExcludesUpstreamThatFailsAtStartupAndServesTheOthers(t *testing.T) {
 	t.Parallel()
