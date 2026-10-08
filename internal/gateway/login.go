@@ -30,6 +30,8 @@ const (
 	oauthTimeout = 30 * time.Second
 	// callbackTimeout bounds the wait for the user to finish in the browser.
 	callbackTimeout = 5 * time.Minute
+	// maxMetadataBytes bounds the metadata read, as the SDK bounds it.
+	maxMetadataBytes = 1 << 20
 )
 
 // Login runs the Login for u and stores the Credentials it gets. It
@@ -122,10 +124,12 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		AcceptUnadvertisedIss: true,
 		Client:                &http.Client{Transport: recorder, Timeout: oauthTimeout},
 		// Called with the final client and token once the code is exchanged:
-		// all that the Credentials need.
-		NewTokenSource: func(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
+		// all that the Credentials need. The source is static: refreshing
+		// during the Login would rotate the refresh token stored, and serve
+		// renews a token that is about to expire anyway.
+		NewTokenSource: func(_ context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 			creds = newCredentials(cfg, tok)
-			return cfg.TokenSource(ctx, tok), nil
+			return oauth2.StaticTokenSource(tok), nil
 		},
 	})
 	if err != nil {
@@ -361,8 +365,7 @@ func (r *issuerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil || resp.StatusCode != http.StatusOK || !isAuthServerMetadata(req.URL.Path) {
 		return resp, err
 	}
-	// Bounded as the SDK bounds it.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBytes))
 	_ = resp.Body.Close()
 	if err != nil {
 		return nil, err

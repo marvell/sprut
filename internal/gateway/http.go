@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -15,15 +16,16 @@ import (
 )
 
 // connectHTTP connects to u over Streamable HTTP and lists its tools. env
-// is where the proxy comes from.
-func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string) (*ready, error) {
+// is where the proxy and the Credentials' directory come from.
+func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*ready, error) {
 	t, err := newHTTPTransport(u, env)
 	if err != nil {
 		return nil, err
 	}
-	h := newStoredCredentials(u, env)
+	h := newStoredCredentials(u, env, t.HTTPClient.Transport, log)
 	if h != nil {
 		t.OAuthHandler = h
+		t.HTTPClient.Transport = h.wrap(t.HTTPClient.Transport)
 	}
 	session, err := client.Connect(ctx, t, nil)
 	if err != nil {
@@ -145,7 +147,7 @@ type headerTransport struct {
 }
 
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Scheme != t.scheme || req.URL.Host != t.host {
+	if !toOrigin(req, t.scheme, t.host) {
 		return t.next.RoundTrip(req)
 	}
 	// A RoundTripper must not modify the request it is given.
@@ -156,4 +158,10 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	return t.next.RoundTrip(req)
+}
+
+// toOrigin reports whether req goes to scheme and host: the one origin that
+// an Upstream's secrets may go to.
+func toOrigin(req *http.Request, scheme, host string) bool {
+	return req.URL.Scheme == scheme && req.URL.Host == host
 }

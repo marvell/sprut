@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"os"
@@ -10,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.T) {
@@ -44,15 +41,7 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 	before := len(u.MCPAuth())
 	g := startGateway(t, config, env, "-v")
 	g.wantTools(t, "fake__echo", "fake__fail")
-	res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "fake__echo", Arguments: map[string]any{"text": "hi"},
-	})
-	if err != nil {
-		t.Fatalf("calling fake__echo: %v", err)
-	}
-	if got := resultText(t, res); got != "echo: hi" {
-		t.Errorf("fake__echo = %q, want %q", got, "echo: hi")
-	}
+	g.wantEcho(t)
 	g.closeAgent(t)
 
 	served := u.MCPAuth()[before:]

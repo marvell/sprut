@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,8 +41,9 @@ var fakeSecrets = []string{fakeClientSecret, fakeCode, fakeAccessToken, fakeRefr
 // oauthUpstream is a fake OAuth Upstream and its Authorization Server on one
 // httptest server: Protected Resource Metadata, Authorization Server
 // metadata, Dynamic Client Registration, an authorization endpoint that
-// redirects straight to the callback, a token endpoint, and an MCP endpoint
-// at /mcp that answers 401 to any request without the access token.
+// redirects straight to the callback, a token endpoint that also refreshes,
+// rotating the refresh token, and an MCP endpoint at /mcp that answers 401
+// to any request without a live access token.
 type oauthUpstream struct {
 	Base string // the server's origin, which is also the issuer
 	URL  string // the MCP endpoint
@@ -52,20 +55,33 @@ type oauthUpstream struct {
 	redirect   url.Values // added to the callback in place of the code
 	issParam   bool       // whether the metadata says the callback carries iss
 	mcpAuth    []string   // the Authorization header of each request to /mcp
+	rejected   int        // requests to /mcp answered 401
+
+	prmIssuer string               // the issuer the Protected Resource Metadata names, if not Base
+	expiresIn int                  // of each access token issued, in seconds
+	live      map[string]time.Time // access tokens issued and not revoked, with their expiry
+	refresh   string               // the one refresh token that works
+	issued    int                  // access tokens issued so far
+	refreshes []url.Values         // the form of each refresh request
+	failWith  string               // how refresh requests fail, if they do (see FailRefresh)
+	release   chan struct{}        // closed when hanging refresh requests may end
 }
 
 func startOAuthUpstream(t *testing.T) *oauthUpstream {
 	t.Helper()
-	u := &oauthUpstream{}
+	u := &oauthUpstream{expiresIn: 3600, live: map[string]time.Time{}, release: make(chan struct{})}
 	server := newFakeServer("")
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
+		u.mu.Lock()
+		issuer := cmp.Or(u.prmIssuer, u.Base)
+		u.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resource":              u.URL,
-			"authorization_servers": []string{u.Base},
+			"authorization_servers": []string{issuer},
 			"scopes_supported":      []string{fakeScope},
 		})
 	})
@@ -133,6 +149,10 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})
 			return
 		}
+		if r.PostForm.Get("grant_type") == "refresh_token" {
+			u.serveRefresh(w, r)
+			return
+		}
 		u.mu.Lock()
 		challenge := u.challenge
 		u.mu.Unlock()
@@ -143,20 +163,19 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_grant"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token":  fakeAccessToken,
-			"token_type":    "Bearer",
-			"expires_in":    3600,
-			"refresh_token": fakeRefreshToken,
-			"scope":         fakeScope,
-		})
+		writeJSON(w, http.StatusOK, u.issue())
 	})
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")
 		u.mu.Lock()
 		u.mcpAuth = append(u.mcpAuth, got)
+		expiry, ok := u.live[strings.TrimPrefix(got, "Bearer ")]
+		ok = ok && strings.HasPrefix(got, "Bearer ") && time.Now().Before(expiry)
+		if !ok {
+			u.rejected++
+		}
 		u.mu.Unlock()
-		if got != "Bearer "+fakeAccessToken {
+		if !ok {
 			w.Header().Set("WWW-Authenticate",
 				`Bearer resource_metadata="`+u.Base+`/.well-known/oauth-protected-resource/mcp", scope="`+fakeScope+`"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -167,9 +186,122 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
+	// Before the server closes, which waits for a hanging refresh.
+	t.Cleanup(u.Release)
 	u.Base = ts.URL
 	u.URL = ts.URL + "/mcp"
 	return u
+}
+
+// issue issues a new access token and refresh token, and returns the token
+// response. The first are fakeAccessToken and fakeRefreshToken; later ones
+// add a counter to them.
+func (u *oauthUpstream) issue() map[string]any {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.issued++
+	access, refresh := fakeAccessToken, fakeRefreshToken
+	if u.issued > 1 {
+		n := "-" + strconv.Itoa(u.issued)
+		access, refresh = access+n, refresh+n
+	}
+	u.live[access] = time.Now().Add(time.Duration(u.expiresIn) * time.Second)
+	u.refresh = refresh
+	return map[string]any{
+		"access_token":  access,
+		"token_type":    "Bearer",
+		"expires_in":    u.expiresIn,
+		"refresh_token": refresh,
+		"scope":         fakeScope,
+	}
+}
+
+// serveRefresh answers a refresh request, as FailRefresh says, and records
+// its form.
+func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	u.refreshes = append(u.refreshes, r.PostForm)
+	failWith, current, release := u.failWith, u.refresh, u.release
+	u.mu.Unlock()
+	// What a careless server says, secrets included.
+	echo := map[string]any{
+		"error":             "invalid_grant",
+		"error_description": "refresh token " + r.PostForm.Get("refresh_token") + " of client " + r.PostForm.Get("client_secret"),
+	}
+	switch {
+	case failWith == "hang":
+		<-release
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "temporarily_unavailable"})
+	case failWith == "5xx":
+		echo["error"] = "server_error"
+		writeJSON(w, http.StatusBadGateway, echo)
+	case failWith == "drop":
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	case failWith == "invalid_grant" || r.PostForm.Get("refresh_token") != current ||
+		r.PostForm.Get("client_id") != fakeClientID || r.PostForm.Get("client_secret") != fakeClientSecret:
+		writeJSON(w, http.StatusBadRequest, echo)
+	default:
+		writeJSON(w, http.StatusOK, u.issue())
+	}
+}
+
+// ExpireIn makes every access token issued from now on live for seconds.
+func (u *oauthUpstream) ExpireIn(seconds int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.expiresIn = seconds
+}
+
+// RevokeAccessTokens makes every access token issued so far fail with 401.
+func (u *oauthUpstream) RevokeAccessTokens() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	clear(u.live)
+}
+
+// FailRefresh makes every refresh request from now on fail: "invalid_grant",
+// "5xx", "drop" (the connection closes without an answer) or "hang" (until
+// Release, then 503). "" makes them work again.
+func (u *oauthUpstream) FailRefresh(how string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failWith = how
+}
+
+// Release ends every hanging refresh request.
+func (u *oauthUpstream) Release() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	select {
+	case <-u.release:
+	default:
+		close(u.release)
+	}
+}
+
+// NameIssuer makes the Protected Resource Metadata name issuer as the
+// Upstream's Authorization Server.
+func (u *oauthUpstream) NameIssuer(issuer string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.prmIssuer = issuer
+}
+
+// Refreshes returns the form of each refresh request so far.
+func (u *oauthUpstream) Refreshes() []url.Values {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.refreshes)
+}
+
+// Rejected returns how many requests to the MCP endpoint were answered 401.
+func (u *oauthUpstream) Rejected() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.rejected
 }
 
 // MCPAuth returns the Authorization header of each request to the MCP

@@ -269,7 +269,7 @@ func (s *upstreams) connect(ctx context.Context, u config.Upstream) (*ready, err
 	case config.Stdio:
 		return connectStdio(ctx, s.client, u, s.env, s.log)
 	case config.HTTP:
-		return connectHTTP(ctx, s.client, u, s.env)
+		return connectHTTP(ctx, s.client, u, s.env, s.log)
 	}
 	return nil, fmt.Errorf("unknown transport %q", u.Transport)
 }
@@ -385,10 +385,17 @@ func errorResult(err error) *mcp.CallToolResult {
 
 // answered reports whether err is the Upstream's own JSON-RPC error, as
 // opposed to the call failing on the way, such as the connection to it
-// breaking.
+// breaking or its request never being sent.
 func answered(err error) bool {
 	var wire *jsonrpc.Error
-	return errors.As(err, &wire)
+	return errors.As(err, &wire) && !isRejected(wire)
+}
+
+// isRejected reports whether wire is the SDK's mark of a request that its
+// transport never got an answer to (jsonrpc2.ErrRejected, which the SDK
+// doesn't export), such as one whose HTTP request failed.
+func isRejected(wire *jsonrpc.Error) bool {
+	return wire.Code == -32005 && wire.Message == "rejected by transport"
 }
 
 // Serve serves MCP to one Agent over stdin/stdout until the Agent
