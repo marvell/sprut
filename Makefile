@@ -1,8 +1,11 @@
 .PHONY: check fmt fmt-check vet lint test release-check
 
-GOLANGCI_LINT_VERSION := v2.14.0
-GORELEASER_VERSION := v2.18.2
-ACTIONLINT_VERSION := v1.7.12
+# Each tool is pinned in its own module, tools/<tool>/go.mod: its dependencies
+# stay out of sprut's build and out of the other tools' (a shared module would
+# resolve them together and break a tool). Being in tools/*/go.sum also puts
+# them in CI's Go cache key, and go tool caches their binaries.
+# Add or bump a tool with `go get -tool <pkg>@<version>` run inside tools/<tool>.
+TOOL = go tool -modfile=tools/$(1)/go.mod $(1)
 
 check: fmt-check vet lint test release-check
 
@@ -22,7 +25,7 @@ vet:
 
 # Built with the local Go toolchain, so it always understands go.mod's Go version.
 lint:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
+	$(call TOOL,golangci-lint) run
 
 # Repeated and shuffled, so a test that depends on timing or order fails here.
 test:
@@ -32,9 +35,9 @@ test:
 # build on every push: the host's binary must report the ldflags version
 # (v...-SNAPSHOT-...), not the ReadBuildInfo fallback.
 release-check:
-	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
-	go run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) check
-	go run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) build --snapshot --clean
+	$(call TOOL,actionlint)
+	$(call TOOL,goreleaser) check
+	$(call TOOL,goreleaser) build --snapshot --clean
 	@out=$$(dist/sprut_$$(go env GOOS)_$$(go env GOARCH)_*/sprut --version) || exit 1; \
 	echo "$$out"; \
 	case "$$out" in "sprut version v"*-SNAPSHOT-*) ;; \
