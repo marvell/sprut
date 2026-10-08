@@ -67,7 +67,7 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	stamp := `\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\S*`
 	want := []string{
 		`^dead: the credentials expired and cannot be renewed; run: sprut auth login dead$`,
-		`^none: no credentials; run: sprut auth login none$`,
+		`^none: no credentials$`,
 		`^stale: logged in, access token expired ` + stamp + `, renewable$`,
 		`^valid: logged in, access token expires ` + stamp + `, renewable$`,
 	}

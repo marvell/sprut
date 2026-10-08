@@ -17,7 +17,9 @@ func Status(store *credentials.Store, u config.Upstream) (string, error) {
 	case err != nil:
 		return "", err
 	case c == nil:
-		return "no credentials; " + loginHint(u.Name), nil
+		// No hint: an Upstream that never asks for authorization has none
+		// either, and needs no Login.
+		return "no credentials", nil
 	case c.Dead():
 		return expired + "; " + loginHint(u.Name), nil
 	}

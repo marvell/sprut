@@ -550,7 +550,8 @@ func sameIssuer(a, b string) bool {
 	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
 }
 
-// expired is why an Upstream whose Credentials are Dead needs a Login.
+// expired is why an Upstream whose Credentials are dead (see
+// credentials.Credentials.Dead) needs a Login.
 const expired = "the credentials expired and cannot be renewed"
 
 // rejected is why an Upstream that answers 401 to its Credentials needs a
@@ -574,6 +575,9 @@ func oauthClient(rt http.RoundTripper) *http.Client {
 // or in its error_description.
 type errorBodies struct{ next http.RoundTripper }
 
+// maxErrorBytes bounds how much of an error response errorBodies reads.
+const maxErrorBytes = 64 << 10
+
 func (t errorBodies) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.next.RoundTrip(req)
 	if err != nil || resp.StatusCode < 400 {
@@ -582,7 +586,7 @@ func (t errorBodies) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body struct {
 		Error string `json:"error"`
 	}
-	_ = json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&body)
+	_ = json.NewDecoder(io.LimitReader(resp.Body, maxErrorBytes)).Decode(&body)
 	_ = resp.Body.Close()
 	reduced := "{}"
 	if body.Error != "" {

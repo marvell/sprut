@@ -167,7 +167,7 @@ sprut prints the authorization server and the scopes it requests before the URL,
 ```console
 $ sprut auth status
 linear: logged in, access token expires 2026-10-08T21:10:00+03:00, renewable
-notion: no credentials; run: sprut auth login notion
+notion: no credentials
 $ sprut auth logout linear
 linear: logged out
 ```
