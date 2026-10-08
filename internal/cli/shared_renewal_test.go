@@ -167,7 +167,9 @@ func TestServeRenewsOnceWhileAnotherWritesTheCredentialsWithARename(t *testing.T
 
 	l.rewriteCreds(t, func(map[string]any) {})
 	cDone := l.startEcho(t, c)
-	time.Sleep(200 * time.Millisecond) // for c to reach the lock
+	// For c to reach the lock. If it is late, a's renewal is over, and the
+	// test no longer tells a lock on the replaced inode apart.
+	time.Sleep(200 * time.Millisecond)
 	close(release)
 
 	for _, done := range []<-chan *callOutcome{aDone, cDone} {
@@ -256,7 +258,9 @@ func TestServeDropsCredentialsWhoseFileIsDeleted(t *testing.T) {
 		unlock := l.lockCreds(t)
 		l.RevokeAccessTokens()
 		done := l.startEcho(t, g)
-		time.Sleep(200 * time.Millisecond) // for the renewal to reach the lock
+		// For the renewal to reach the lock. If it is late, it finds the file
+		// gone before it locks, which the test can't tell apart.
+		time.Sleep(200 * time.Millisecond)
 		if err := os.Remove(l.creds); err != nil {
 			t.Fatal(err)
 		}

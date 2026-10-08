@@ -17,3 +17,4 @@ Judgement calls for review. Anything mechanical lives in `.golangci.yml` instead
 ## Tests
 
 - **Timeouts in tests fail only the side meant to fail.** A timeout that a healthy fake must beat, such as a `--startup-timeout` shared with a fake that has to start, allows for `make test` loading the machine (`-race`, `-count=3`, parallel tests): 1s or more. Only a fake that must hang meets a tight one.
+- **A wait that lets a race happen errs toward the race.** When a test sleeps so that another party reaches a point it can't observe, the test still passes if that party arrives late. A comment says what a late arrival leaves untested.
