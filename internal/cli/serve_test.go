@@ -691,7 +691,9 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	entry := fakeUpstreamEntry(t, envFakeBlockTool+"="+progress)
 	// The startup timeout is the Gateway's only timeout; it must not apply
 	// to calls.
-	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "100ms")
+	// Long enough for the Upstream to start while other tests load the
+	// machine.
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "500ms")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -700,11 +702,18 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	select {
 	case err := <-called:
 		t.Fatalf("tools/call ended on its own: %v", err)
-	case <-time.After(500 * time.Millisecond): // five startup timeouts
+	case <-time.After(1500 * time.Millisecond): // three startup timeouts
 	}
 	if data, err := os.ReadFile(progress); err != nil || string(data) != "started" {
 		t.Errorf("Upstream's call: %s holds %q (err %v), want it still started", progress, data, err)
 	}
+
+	// The Upstream writes progress once more when the call ends, which must
+	// happen before the test's temp dir is removed.
+	cancel()
+	<-called
+	waitForFile(t, progress, "cancelled")
+	g.closeAgent(t)
 }
 
 func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
