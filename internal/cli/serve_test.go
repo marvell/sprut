@@ -974,10 +974,6 @@ func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
 			t.Errorf("instructions do not mention %q:\n%s", name, instructions)
 		}
 	}
-	for _, secret := range []string{"url-secret", "header-secret", "env-secret"} {
-		if strings.Contains(instructions, secret) {
-			t.Errorf("instructions contain %q:\n%s", secret, instructions)
-		}
-	}
+	wantNoSecrets(t, "instructions", instructions, "url-secret", "header-secret", "env-secret")
 	g.closeAgent(t)
 }

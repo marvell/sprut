@@ -21,8 +21,15 @@ func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env
 	if err != nil {
 		return nil, err
 	}
+	h := newStoredCredentials(u, env)
+	if h != nil {
+		t.OAuthHandler = h
+	}
 	session, err := client.Connect(ctx, t, nil)
 	if err != nil {
+		if h != nil && h.Err() != nil {
+			return nil, h.Err()
+		}
 		// The SDK never falls back to the deprecated HTTP+SSE transport, and
 		// an SSE-only server fails here with a bare HTTP status, so say why.
 		if sseOnly(ctx, t) {

@@ -70,14 +70,24 @@ func Path(flag string, lookupEnv LookupEnv) (string, error) {
 	if p, _ := lookupEnv("SPRUT_CONFIG"); p != "" {
 		return p, nil
 	}
-	// The XDG spec says relative paths are invalid and must be ignored.
-	if dir, _ := lookupEnv("XDG_CONFIG_HOME"); filepath.IsAbs(dir) {
+	if dir, ok := XDGDir(lookupEnv, "XDG_CONFIG_HOME", ".config"); ok {
 		return filepath.Join(dir, "sprut", "config.json"), nil
 	}
-	if home, _ := lookupEnv("HOME"); home != "" {
-		return filepath.Join(home, ".config", "sprut", "config.json"), nil
-	}
 	return "", errors.New("cannot locate the config: HOME is not set; use -c PATH or SPRUT_CONFIG")
+}
+
+// XDGDir returns the base directory that the XDG variable names, or the
+// fallback under $HOME that the XDG spec gives for it. It reports false if
+// neither is set.
+func XDGDir(lookupEnv LookupEnv, variable, fallback string) (string, bool) {
+	// The XDG spec says relative paths are invalid and must be ignored.
+	if dir, _ := lookupEnv(variable); filepath.IsAbs(dir) {
+		return dir, true
+	}
+	if home, _ := lookupEnv("HOME"); home != "" {
+		return filepath.Join(home, fallback), true
+	}
+	return "", false
 }
 
 // validName keeps Namespaced tool names unambiguous: an Upstream name never

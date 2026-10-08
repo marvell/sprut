@@ -20,7 +20,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Name:  "serve",
 		Usage: "run the Gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
-			&ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the Config file"},
+			configFlag(),
 			&ucli.DurationFlag{
 				Name:  "startup-timeout",
 				Value: 30 * time.Second,
@@ -62,6 +62,10 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			return nil
 		},
 	}
+}
+
+func configFlag() *ucli.StringFlag {
+	return &ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the Config file"}
 }
 
 // newLogger logs logfmt to w at INFO, or at DEBUG when verbose.

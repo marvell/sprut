@@ -43,6 +43,7 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 		},
 		Commands: []*ucli.Command{
 			serveCommand(env, stdin, stdout, stderr),
+			authCommand(env, stderr),
 		},
 	}
 	// An unknown help topic (sprut help bogus) can only be reported from a
@@ -69,8 +70,8 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 }
 
 // strictUsage makes every usage error in the tree under c a usageError: a
-// bad flag or flag value, and any positional argument, which no command
-// takes. An unknown help topic's usage error goes to *helpErr instead.
+// bad flag or flag value, a missing argument, and any positional argument
+// beyond those a command declares. An unknown help topic's usage error goes to *helpErr instead.
 func strictUsage(c *ucli.Command, helpErr *error) {
 	c.OnUsageError = func(ctx context.Context, cmd *ucli.Command, err error, _ bool) error {
 		return usageError(ctx, cmd, err)

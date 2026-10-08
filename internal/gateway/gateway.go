@@ -49,12 +49,9 @@ type skippedUpstream struct {
 // its tools; one that fails or runs out of time is logged, left out and
 // listed in the instructions the Agent gets.
 func Start(ctx context.Context, configured []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
-	impl := &mcp.Implementation{Name: "sprut", Version: version}
 	g := &Gateway{
 		upstreams: &upstreams{
-			// The Gateway proxies no interactive input, so a modern Upstream's
-			// request for it comes back to forward rather than being retried.
-			client:  mcp.NewClient(impl, &mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}}),
+			client:  newClient(version),
 			env:     env,
 			timeout: startupTimeout,
 			log:     log,
@@ -67,7 +64,7 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 
 	// The server takes its instructions when it is made, so it is made once
 	// the skipped Upstreams are known.
-	g.server = mcp.NewServer(impl, &mcp.ServerOptions{
+	g.server = mcp.NewServer(&mcp.Implementation{Name: "sprut", Version: version}, &mcp.ServerOptions{
 		// Advertise only tools; the tool list is fixed for the session.
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		Instructions: instructions(skips),
@@ -83,6 +80,14 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 	}
 	log.Info("gateway started", "ready", len(started), "failed", len(skips), "tools", tools)
 	return g
+}
+
+// newClient is sprut's MCP client to Upstreams.
+func newClient(version string) *mcp.Client {
+	// The Gateway proxies no interactive input, so a modern Upstream's
+	// request for it comes back to forward rather than being retried.
+	return mcp.NewClient(&mcp.Implementation{Name: "sprut", Version: version},
+		&mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}})
 }
 
 // SkippedCount reports how many Upstreams failed or timed out at startup.
