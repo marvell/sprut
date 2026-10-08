@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -154,16 +153,7 @@ func TestServeRenewsOnceForConcurrentCalls(t *testing.T) {
 	g.wantEcho(t)
 
 	l.RevokeAccessTokens()
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Go(func() {
-			res, err := g.callEcho(context.Background())
-			if err != nil || res.IsError {
-				t.Errorf("fake__echo = %v, %v; want it to echo", res, err)
-			}
-		})
-	}
-	wg.Wait()
+	callAll(t, slices.Repeat([]*gateway{g}, 8)...)
 
 	if n := len(l.Refreshes()); n != 1 {
 		t.Errorf("refreshes = %d, want 1", n)

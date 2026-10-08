@@ -187,7 +187,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 	}
 	creds.Resource, creds.Issuer = resource, issuer
 	creds.Config = credentials.BindingOf(u)
-	if err := store.Save(u.Name, creds); err != nil {
+	if err := store.Save(ctx, u.Name, creds); err != nil {
 		return err
 	}
 	log.Info("login complete", "upstream", u.Name, "scopes", strings.Join(creds.Scopes, " "))

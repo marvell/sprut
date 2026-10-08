@@ -99,7 +99,7 @@ const renewBefore = 5 * time.Minute
 // Server would hold the call up past its cancellation, and it ends the
 // whole connection when Authorize fails on a cancelled call.
 type storedCredentials struct {
-	name     string
+	upstream config.Upstream
 	endpoint *url.URL // the Upstream's
 	// the client that the Config registers, if any, which the Credentials
 	// don't hold
@@ -114,6 +114,8 @@ type storedCredentials struct {
 
 	mu    sync.Mutex
 	creds *credentials.Credentials // nil without Credentials; replaced, never changed
+	// version is the Credentials file that creds were last read from.
+	version credentials.Version
 	// dead is why the Credentials can't be used any more, once they can't.
 	dead error
 	// rejected is the access token that the last renewal on a 401 got, which
@@ -142,7 +144,7 @@ func newStoredCredentials(u config.Upstream, env []string, oauth http.RoundTripp
 		return nil
 	}
 	h := &storedCredentials{
-		name: u.Name, preregistered: preregisteredClient(u), refused: CheckOAuthUpstream(u), oauth: oauth, log: log,
+		upstream: u, preregistered: preregisteredClient(u), refused: CheckOAuthUpstream(u), oauth: oauth, log: log,
 	}
 	h.endpoint, _ = url.Parse(u.URL) // parsed already by newHTTPTransport
 	if h.refused != nil {
@@ -150,7 +152,7 @@ func newStoredCredentials(u config.Upstream, env []string, oauth http.RoundTripp
 	}
 	h.store, h.refused = credentials.NewStore(config.LookupIn(env))
 	if h.refused == nil {
-		h.creds, h.refused = h.store.Load(u)
+		h.creds, h.version, h.refused = h.store.Read(u)
 	}
 	return h
 }
@@ -271,6 +273,9 @@ func discard(resp *http.Response) {
 // token returns the access token to send, renewed first if it expires
 // within renewBefore, or "" without Credentials.
 func (h *storedCredentials) token(ctx context.Context) (string, error) {
+	if err := h.reload(); err != nil {
+		return "", err
+	}
 	h.mu.Lock()
 	dead, creds := h.dead, h.creds
 	h.mu.Unlock()
@@ -283,6 +288,35 @@ func (h *storedCredentials) token(ctx context.Context) (string, error) {
 		return creds.AccessToken, nil
 	}
 	return h.renew(ctx, creds.AccessToken, "", false)
+}
+
+// reload reads the Credentials again if their file is no longer the one
+// they were read from: a Login, or another process, wrote it, or a logout
+// deleted it. That is how serve picks up a new Login without a restart.
+func (h *storedCredentials) reload() error {
+	if h.store == nil {
+		return nil
+	}
+	h.mu.Lock()
+	last := h.version
+	h.mu.Unlock()
+	if !h.store.Changed(h.upstream.Name, last) {
+		return nil
+	}
+	creds, version, err := h.store.Read(h.upstream)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.version != last {
+		// Another request has read them meanwhile.
+		version.Close()
+		return nil
+	}
+	h.version.Close()
+	h.creds, h.version, h.dead = creds, version, nil
+	return nil
 }
 
 // renew renews the Credentials and returns their access token, unless the
@@ -303,9 +337,8 @@ func (h *storedCredentials) renew(ctx context.Context, stale, metadata string, o
 	if r == nil {
 		r = &renewal{done: make(chan struct{})}
 		h.renewing = r
-		c := *h.creds
 		go func() {
-			renewed, err := h.refresh(context.WithoutCancel(ctx), &c, metadata)
+			renewed, err := h.refresh(context.WithoutCancel(ctx), stale, metadata)
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			switch {
@@ -339,6 +372,8 @@ func (h *storedCredentials) settledLocked(stale string, onRejection bool) (token
 	switch {
 	case h.dead != nil:
 		return "", h.dead, true
+	case h.creds == nil: // deleted since the request read them
+		return "", h.needsLogin(""), true
 	case h.creds.AccessToken != stale:
 		return h.creds.AccessToken, nil, true
 	case onRejection && stale == h.rejected:
@@ -356,11 +391,30 @@ func (h *storedCredentials) settledLocked(stale string, onRejection bool) (token
 	return "", nil, false
 }
 
-// refresh gets a new access token for c from its Authorization Server,
-// once it has checked that the Upstream still names that server, and
-// stores the Credentials it makes. A needsLoginError means that c can't be
-// used any more; any other error leaves c as it is.
-func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credentials, metadata string) (*credentials.Credentials, error) {
+// refresh renews the Credentials whose access token is stale, under their
+// lock, so that only one process renews them at a time, and returns them.
+// It reads them again first: if another process has already renewed them,
+// those are returned; if they are gone, nothing is written. Otherwise it
+// gets a new access token from their Authorization Server, once it has
+// checked that the Upstream still names that server, and stores the
+// Credentials it makes. A needsLoginError means that the Credentials can't
+// be used any more; any other error leaves them as they are.
+func (h *storedCredentials) refresh(ctx context.Context, stale, metadata string) (*credentials.Credentials, error) {
+	lock, err := h.store.Lock(ctx, h.upstream.Name)
+	if err != nil {
+		return nil, fmt.Errorf("renewing credentials: %w", err)
+	}
+	defer lock.Unlock()
+	c, err := h.store.Load(h.upstream)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("renewing credentials: %w", err)
+	case c == nil:
+		return nil, h.needsLogin("")
+	case c.AccessToken != stale:
+		return c, nil // renewed by another process
+	}
+
 	issuer, err := h.issuer(ctx, c.Resource, metadata)
 	if err != nil {
 		return nil, fmt.Errorf("renewing credentials: reading the protected resource metadata: %w", err)
@@ -376,6 +430,11 @@ func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credenti
 	tok, err := cfg.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, client), &oauth2.Token{RefreshToken: c.RefreshToken}).Token()
 	var retrieve *oauth2.RetrieveError
 	if errors.As(err, &retrieve) && retrieve.ErrorCode == "invalid_grant" {
+		// Unless a process that did not wait for the lock has rotated the
+		// refresh token meanwhile.
+		if again, _ := h.store.Load(h.upstream); again != nil && again.RefreshToken != c.RefreshToken {
+			return again, nil
+		}
 		return nil, h.needsLogin("the authorization server rejected the credentials")
 	}
 	if err != nil {
@@ -384,11 +443,11 @@ func (h *storedCredentials) refresh(ctx context.Context, c *credentials.Credenti
 
 	renewed := *c
 	renewed.Token, renewed.Scopes = *tok, grantedScopes(tok, c.Scopes)
-	if err := h.store.Save(h.name, &renewed); err != nil {
+	if err := lock.Save(&renewed); err != nil {
 		// Still good for this process.
-		h.log.Warn("renewed credentials not saved", "upstream", h.name, "err", err)
+		h.log.Warn("renewed credentials not saved", "upstream", h.upstream.Name, "err", err)
 	}
-	h.log.Debug("credentials renewed", "upstream", h.name, "expires", renewed.Expiry)
+	h.log.Debug("credentials renewed", "upstream", h.upstream.Name, "expires", renewed.Expiry)
 	return &renewed, nil
 }
 
@@ -487,7 +546,7 @@ const rejected = "the upstream rejected the credentials"
 
 // needsLogin is the error of the Upstream needing a Login, for reason.
 func (h *storedCredentials) needsLogin(reason string) error {
-	return &needsLoginError{upstream: h.name, reason: reason}
+	return &needsLoginError{upstream: h.upstream.Name, reason: reason}
 }
 
 // oauthClient is the HTTP client of requests to an Authorization Server

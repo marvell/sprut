@@ -3,6 +3,7 @@
 package credentials
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"syscall"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -73,45 +75,139 @@ func NewStore(lookupEnv config.LookupEnv) (*Store, error) {
 	return nil, errors.New("cannot locate the credentials: HOME is not set")
 }
 
+// lockTimeout bounds the wait for another process to release the lock.
+const lockTimeout = 30 * time.Second
+
+// Version is one write of an Upstream's Credentials file, as last read: every
+// write makes a new file, so a Version that is no longer the file means that
+// the Credentials were written or deleted since. The zero Version is no
+// file.
+type Version struct {
+	// Kept open, so that the system can't give its inode to a later write,
+	// which would then pass for this one.
+	f  *os.File
+	fi os.FileInfo
+}
+
+// Close releases v.
+func (v Version) Close() {
+	if v.f != nil {
+		_ = v.f.Close()
+	}
+}
+
 // Load returns the Credentials of u, or nil if it has none, or none issued
 // for u as its Config is now.
 func (s *Store) Load(u config.Upstream) (*Credentials, error) {
-	data, err := os.ReadFile(s.path(u.Name, ".json"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading credentials: %w", err)
-	}
-	var c Credentials
-	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("reading credentials %s: %w", s.path(u.Name, ".json"), err)
-	}
-	if !c.Config.equal(BindingOf(u)) {
-		return nil, nil
-	}
-	return &c, nil
+	c, v, err := s.Read(u)
+	v.Close()
+	return c, err
 }
 
-// Save replaces the Credentials of upstream with c. It holds the lock of
-// upstream while it writes, and writes a new file in place of the old one,
-// so that a reader sees either whole.
-func (s *Store) Save(upstream string, c *Credentials) error {
+// Read is Load, and also returns the Version of the file it read, which the
+// caller closes.
+func (s *Store) Read(u config.Upstream) (*Credentials, Version, error) {
+	f, err := os.Open(s.path(u.Name, ".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, Version{}, nil
+	}
+	if err != nil {
+		return nil, Version{}, fmt.Errorf("reading credentials: %w", err)
+	}
+	var c Credentials
+	if err := json.NewDecoder(f).Decode(&c); err != nil {
+		_ = f.Close()
+		return nil, Version{}, fmt.Errorf("reading credentials %s: %w", f.Name(), err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, Version{}, fmt.Errorf("reading credentials: %w", err)
+	}
+	v := Version{f, fi}
+	if !c.Config.equal(BindingOf(u)) {
+		return nil, v, nil
+	}
+	return &c, v, nil
+}
+
+// Changed reports whether the Credentials file of upstream is no longer the
+// one that v read.
+func (s *Store) Changed(upstream string, v Version) bool {
+	now, err := os.Stat(s.path(upstream, ".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return v.f != nil
+	}
+	return err != nil || v.f == nil || !os.SameFile(now, v.fi)
+}
+
+// Save replaces the Credentials of upstream with c, under its lock.
+func (s *Store) Save(ctx context.Context, upstream string, c *Credentials) error {
+	l, err := s.Lock(ctx, upstream)
+	if err != nil {
+		return err
+	}
+	defer l.Unlock()
+	return l.Save(c)
+}
+
+// Lock is the exclusive lock of one Upstream's Credentials, held by one
+// process at a time.
+type Lock struct {
+	s        *Store
+	upstream string
+	f        *os.File
+}
+
+// Lock takes the exclusive lock of upstream, waiting for another process to
+// release it no longer than lockTimeout and ctx allow.
+//
+// The lock is on a file of its own, never renamed or deleted, because a
+// lock on the Credentials file would stay on the inode that a write
+// replaces.
+func (s *Store) Lock(ctx context.Context, upstream string) (*Lock, error) {
+	if err := s.mkdir(); err != nil {
+		return nil, fmt.Errorf("locking credentials: %w", err)
+	}
+	f, err := os.OpenFile(s.path(upstream, ".lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("locking credentials: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, lockTimeout)
+	defer cancel()
+	// flock can't be interrupted, so it is tried until it succeeds.
+	for wait := time.Millisecond; ; wait = min(2*wait, 50*time.Millisecond) {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return &Lock{s: s, upstream: upstream, f: f}, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			_ = f.Close()
+			return nil, fmt.Errorf("locking credentials: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, fmt.Errorf("locking credentials: waiting for another sprut: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+	}
+}
+
+// Unlock releases l.
+func (l *Lock) Unlock() {
+	_ = l.f.Close() // which releases the flock
+}
+
+// Save replaces the Credentials of l's Upstream with c. It writes a new file
+// in place of the old one, so that a reader sees either whole.
+func (l *Lock) Save(c *Credentials) error {
 	data, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	if err := s.mkdir(); err != nil {
-		return fmt.Errorf("writing credentials: %w", err)
-	}
-	unlock, err := s.lock(upstream)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
 	// CreateTemp makes the file 0600.
-	tmp, err := os.CreateTemp(s.dir, upstream+".*.tmp")
+	tmp, err := os.CreateTemp(l.s.dir, l.upstream+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("writing credentials: %w", err)
 	}
@@ -124,29 +220,12 @@ func (s *Store) Save(upstream string, c *Credentials) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp.Name(), s.path(upstream, ".json"))
+		err = os.Rename(tmp.Name(), l.s.path(l.upstream, ".json"))
 	}
 	if err != nil {
 		return fmt.Errorf("writing credentials: %w", err)
 	}
 	return nil
-}
-
-// lock takes the exclusive lock of upstream, and returns what releases it.
-// The lock is on a file of its own, never renamed or deleted, because a
-// lock on the Credentials file would stay on the inode that a write
-// replaces.
-func (s *Store) lock(upstream string) (unlock func(), err error) {
-	f, err := os.OpenFile(s.path(upstream, ".lock"), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("locking credentials: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("locking credentials: %w", err)
-	}
-	// Closing the file releases the lock.
-	return func() { _ = f.Close() }, nil
 }
 
 // mkdir makes the Store's directory and its parent, sprut's own, readable

@@ -74,6 +74,7 @@ type oauthUpstream struct {
 	failWith  string               // how refresh requests fail, if they do (see FailRefresh)
 	release   chan struct{}        // closed when hanging refresh requests may end
 	noRefresh bool                 // whether tokens are issued without a refresh token
+	onRefresh func()               // runs before each refresh request is answered, if set
 }
 
 func startOAuthUpstream(t *testing.T) *oauthUpstream {
@@ -272,6 +273,12 @@ func (u *oauthUpstream) IssueNoRefreshToken() {
 func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	u.refreshes = append(u.refreshes, r.PostForm)
+	onRefresh := u.onRefresh
+	u.mu.Unlock()
+	if onRefresh != nil {
+		onRefresh()
+	}
+	u.mu.Lock()
 	failWith, current, release, secret := u.failWith, u.refresh, u.release, u.secret
 	u.mu.Unlock()
 	// What a careless server says, secrets included.
@@ -297,6 +304,14 @@ func (u *oauthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, u.issue())
 	}
+}
+
+// OnRefresh makes f run before each refresh request from now on is
+// answered, and after it is recorded.
+func (u *oauthUpstream) OnRefresh(f func()) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.onRefresh = f
 }
 
 // ExpireIn makes every access token issued from now on live for seconds.
