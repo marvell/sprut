@@ -31,14 +31,14 @@ var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 type Gateway struct {
 	server      *mcp.Server
 	upstreams   *upstreams
-	skipped     []skipped       // Upstreams that failed or timed out at startup
-	tools       map[string]bool // Namespaced tools served; fixed once Start returns
-	agentLogged atomic.Bool     // whether "agent connected" is logged
+	skipped     []skippedUpstream // Upstreams that failed or timed out at startup
+	tools       map[string]bool   // Namespaced tools served; fixed once Start returns
+	agentLogged atomic.Bool       // whether "agent connected" is logged
 	log         *slog.Logger
 }
 
-// skipped is an Upstream left out at startup, and why.
-type skipped struct {
+// skippedUpstream is an Upstream left out at startup, and why.
+type skippedUpstream struct {
 	name string
 	err  error
 }
@@ -85,13 +85,13 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 	return g
 }
 
-// Skipped reports how many Upstreams failed or timed out at startup.
-func (g *Gateway) Skipped() int { return len(g.skipped) }
+// SkippedCount reports how many Upstreams failed or timed out at startup.
+func (g *Gateway) SkippedCount() int { return len(g.skipped) }
 
 // instructions tells the Agent which Upstreams were skipped at startup and
 // why, so that it can tell the user why their tools are missing. It is
 // empty when none was.
-func instructions(skipped []skipped) string {
+func instructions(skipped []skippedUpstream) string {
 	if len(skipped) == 0 {
 		return ""
 	}
@@ -166,7 +166,7 @@ type upstreams struct {
 // start starts every Upstream in configured concurrently, and returns those
 // that started and those that failed or ran out of time, each in Config
 // order. A skipped one is logged.
-func (s *upstreams) start(ctx context.Context, configured []config.Upstream) ([]*ready, []skipped) {
+func (s *upstreams) start(ctx context.Context, configured []config.Upstream) ([]*ready, []skippedUpstream) {
 	results := make([]struct {
 		r   *ready
 		err error
@@ -194,10 +194,10 @@ func (s *upstreams) start(ctx context.Context, configured []config.Upstream) ([]
 	// In Config order, so the log and the instructions don't depend on
 	// which Upstream was quickest. (The SDK lists tools by name anyway.)
 	var started []*ready
-	var skips []skipped
+	var skips []skippedUpstream
 	for i, res := range results {
 		if res.err != nil {
-			skips = append(skips, skipped{name: configured[i].Name, err: res.err})
+			skips = append(skips, skippedUpstream{name: configured[i].Name, err: res.err})
 			continue
 		}
 		started = append(started, res.r)
