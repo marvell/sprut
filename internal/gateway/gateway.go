@@ -64,7 +64,7 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 
 	// The server takes its instructions when it is made, so it is made once
 	// the skipped Upstreams are known.
-	g.server = mcp.NewServer(&mcp.Implementation{Name: "sprut", Version: version}, &mcp.ServerOptions{
+	g.server = mcp.NewServer(implementation(version), &mcp.ServerOptions{
 		// Advertise only tools; the tool list is fixed for the session.
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		Instructions: instructions(skips),
@@ -86,8 +86,12 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 func newClient(version string) *mcp.Client {
 	// The Gateway proxies no interactive input, so a modern Upstream's
 	// request for it comes back to forward rather than being retried.
-	return mcp.NewClient(&mcp.Implementation{Name: "sprut", Version: version},
-		&mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}})
+	return mcp.NewClient(implementation(version), &mcp.ClientOptions{MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true}})
+}
+
+// implementation is how sprut names itself, to the Agent and to Upstreams.
+func implementation(version string) *mcp.Implementation {
+	return &mcp.Implementation{Name: "sprut", Version: version}
 }
 
 // SkippedCount reports how many Upstreams failed or timed out at startup.

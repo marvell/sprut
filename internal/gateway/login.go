@@ -32,7 +32,7 @@ const oauthTimeout = 30 * time.Second
 // redirect the user's browser to a callback on a loopback port. env is where
 // the proxy and the Credentials' directory come from.
 func Login(ctx context.Context, u config.Upstream, env []string, prompt io.Writer, version string, log *slog.Logger) error {
-	if err := OAuthUpstream(u); err != nil {
+	if err := CheckOAuthUpstream(u); err != nil {
 		return err
 	}
 	store, err := credentials.NewStore(config.LookupIn(env))
@@ -60,7 +60,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, prompt io.Write
 	issuer := &issuerRecorder{next: t.HTTPClient.Transport}
 	var (
 		resource string
-		got      *credentials.Credentials
+		creds    *credentials.Credentials
 	)
 	h, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
 		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
@@ -90,7 +90,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, prompt io.Write
 		// Called with the final client and token once the code is exchanged:
 		// all that the Credentials need.
 		NewTokenSource: func(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
-			got = newCredentials(cfg, tok)
+			creds = newCredentials(cfg, tok)
 			return cfg.TokenSource(ctx, tok), nil
 		},
 	})
@@ -99,20 +99,20 @@ func Login(ctx context.Context, u config.Upstream, env []string, prompt io.Write
 	}
 	t.OAuthHandler = h
 
-	// Connecting is what makes the server ask for authorization.
+	// Connecting is what makes the Upstream ask for authorization.
 	session, err := newClient(version).Connect(ctx, t, nil)
 	if err != nil {
 		return oauthError(err)
 	}
 	_ = session.Close()
-	if got == nil {
-		return errors.New("the server did not ask for authorization, so it needs no login")
+	if creds == nil {
+		return errors.New("it did not ask for authorization, so it needs no login")
 	}
-	got.Resource, got.Issuer = resource, issuer.get()
-	if err := store.Save(u.Name, got); err != nil {
+	creds.Resource, creds.Issuer = resource, issuer.Issuer()
+	if err := store.Save(u.Name, creds); err != nil {
 		return err
 	}
-	log.Info("login complete", "upstream", u.Name, "scopes", strings.Join(got.Scopes, " "))
+	log.Info("login complete", "upstream", u.Name, "scopes", strings.Join(creds.Scopes, " "))
 	return nil
 }
 
@@ -210,7 +210,7 @@ func (r *issuerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-func (r *issuerRecorder) get() string {
+func (r *issuerRecorder) Issuer() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.issuer

@@ -70,7 +70,7 @@ func (s *Store) Save(upstream string, c *Credentials) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	if err := s.mkdir(); err != nil {
 		return fmt.Errorf("writing credentials: %w", err)
 	}
 	unlock, err := s.lock(upstream)
@@ -116,6 +116,20 @@ func (s *Store) lock(upstream string) (unlock func(), err error) {
 	}
 	// Closing the file releases the lock.
 	return func() { _ = f.Close() }, nil
+}
+
+// mkdir makes the Store's directory and its parent, sprut's own, readable
+// only by the user, including when they already exist.
+func (s *Store) mkdir() error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	for _, dir := range []string{filepath.Dir(s.dir), s.dir} {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) path(upstream, ext string) string {

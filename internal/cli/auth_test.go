@@ -17,6 +17,11 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 	state := t.TempDir()
 	env := []string{"XDG_STATE_HOME=" + state}
+	dir := filepath.Join(state, "sprut", "credentials")
+	// Left open by something else: the Login closes it.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	code, stderr := login(t, u, env, "fake", "--no-browser", "-v", "-c", config)
 	if code != 0 {
@@ -25,7 +30,7 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 	if got, want := u.GrantTypes(), []string{"authorization_code", "refresh_token"}; !slices.Equal(got, want) {
 		t.Errorf("registered grant types = %v, want %v", got, want)
 	}
-	dir := filepath.Join(state, "sprut", "credentials")
+	wantMode(t, filepath.Join(state, "sprut"), os.ModeDir|0o700)
 	wantMode(t, dir, os.ModeDir|0o700)
 	wantMode(t, filepath.Join(dir, "fake.json"), 0o600)
 	wantMode(t, filepath.Join(dir, "fake.lock"), 0o600)

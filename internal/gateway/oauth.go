@@ -16,11 +16,11 @@ import (
 	"github.com/marvell/sprut/internal/credentials"
 )
 
-// OAuthUpstream reports why u is not an OAuth Upstream, or nil if it is:
-// an HTTP Upstream without an Authorization header, over HTTPS or over
+// CheckOAuthUpstream reports why u is not an OAuth Upstream, or nil if it
+// is: an HTTP Upstream without an Authorization header, over HTTPS or over
 // plain HTTP on a loopback address. Whether it actually uses OAuth is up
-// to the server, which asks for it by answering 401.
-func OAuthUpstream(u config.Upstream) error {
+// to the Upstream, which asks for it by answering 401.
+func CheckOAuthUpstream(u config.Upstream) error {
 	if u.Transport != config.HTTP {
 		return fmt.Errorf("uses %s, and OAuth is only for HTTP upstreams", u.Transport)
 	}
@@ -31,7 +31,7 @@ func OAuthUpstream(u config.Upstream) error {
 	if err != nil {
 		return err
 	}
-	if endpoint.Scheme == "https" || endpoint.Scheme == "http" && loopback(endpoint.Hostname()) {
+	if endpoint.Scheme == "https" || endpoint.Scheme == "http" && isLoopback(endpoint.Hostname()) {
 		return nil
 	}
 	// Its tokens would cross the network in the clear.
@@ -49,7 +49,7 @@ func hasAuthorization(u config.Upstream) bool {
 	return false
 }
 
-func loopback(host string) bool {
+func isLoopback(host string) bool {
 	if host == "localhost" {
 		return true
 	}
@@ -86,7 +86,7 @@ func newStoredCredentials(u config.Upstream, env []string) *storedCredentials {
 	if hasAuthorization(u) {
 		return nil
 	}
-	h := &storedCredentials{name: u.Name, refused: OAuthUpstream(u)}
+	h := &storedCredentials{name: u.Name, refused: CheckOAuthUpstream(u)}
 	if h.refused != nil {
 		return h
 	}
