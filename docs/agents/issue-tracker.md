@@ -3,7 +3,7 @@
 Issues and specs for this repo live in Linear. Use the Linear MCP tools (`mcp__linear__*`) for all operations.
 
 - **Team**: Personal (key `P`)
-- **Current project**: Sprut v0.1 (https://linear.app/zemliakov/project/sprut-v01-fbf046dfd678)
+- **Current project**: Sprut v0.2 (oauth2) (https://linear.app/zemliakov/project/sprut-v02-oauth2-39887ea65a9e)
 
 The Personal team also holds non-Sprut work, so always scope reads to the current project and always set it on create.
 

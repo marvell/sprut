@@ -27,3 +27,11 @@ _Avoid_: settings, manifest
 **Namespaced tool**:
 A tool as the Agent sees it: the Upstream's tool name prefixed with the Upstream's name, so tools from different Upstreams never collide.
 _Avoid_: aliased tool, prefixed tool
+
+**Login**:
+The one-time interactive step, done by the user in a browser, that grants the Gateway access to an HTTP Upstream protected by OAuth.
+_Avoid_: auth, authorization, sign-in
+
+**Credentials**:
+What the Gateway keeps for an Upstream after a Login and renews on its own, so the user does not log in again until renewal becomes impossible.
+_Avoid_: token, session (an MCP session is something else)
