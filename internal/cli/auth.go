@@ -46,9 +46,7 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 			if i < 0 {
 				return fmt.Errorf("no upstream %q in the config", name)
 			}
-			// Opening a browser is not supported yet, so --no-browser is
-			// what every Login does.
-			if err := gateway.Login(ctx, upstreams[i], env, stderr, version(), log); err != nil {
+			if err := gateway.Login(ctx, upstreams[i], env, !cmd.Bool("no-browser"), stderr, version(), log); err != nil {
 				return fmt.Errorf("upstream %q: %w", name, err)
 			}
 			return nil

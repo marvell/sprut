@@ -2,11 +2,14 @@ package cli_test
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,6 +32,9 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 	}
 	if got, want := u.GrantTypes(), []string{"authorization_code", "refresh_token"}; !slices.Equal(got, want) {
 		t.Errorf("registered grant types = %v, want %v", got, want)
+	}
+	if got := u.AppType(); got != "native" {
+		t.Errorf("registered application_type = %q, want %q", got, "native")
 	}
 	wantMode(t, filepath.Join(state, "sprut"), os.ModeDir|0o700)
 	wantMode(t, dir, os.ModeDir|0o700)
@@ -60,6 +66,133 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 	}
 	wantNoSecrets(t, "auth login stderr", stderr, fakeSecrets...)
 	wantNoSecrets(t, "serve stderr", g.stderr.String(), fakeSecrets...)
+}
+
+func TestAuthLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
+	t.Parallel()
+	u := startOAuthUpstream(t)
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+
+	code, stderr := login(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-c", config)
+	if code != 0 {
+		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
+	}
+	at := authURL(u.Base).FindStringIndex(stderr)
+	before := stderr[:at[0]]
+	for _, want := range []string{"authorization server: " + u.Base + "\n", "scopes: " + fakeScope + "\n"} {
+		if !strings.Contains(before, want) {
+			t.Errorf("stderr before the authorization URL lacks %q:\n%s", want, stderr)
+		}
+	}
+}
+
+func TestAuthLoginIgnoresCallbacksThatAreNotTheOneItWaitsFor(t *testing.T) {
+	t.Parallel()
+	u := startOAuthUpstream(t)
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+	l := startLogin(t, 30*time.Second, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-c", config)
+	link := l.mustAuthURL(t, u)
+	callback, err := url.Parse(link.Query().Get("redirect_uri"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := callback.Query()
+	valid.Set("code", fakeCode)
+	valid.Set("state", link.Query().Get("state"))
+	wrongState := callback.Query()
+	wrongState.Set("code", fakeCode)
+	wrongState.Set("state", "forged")
+
+	for _, tc := range []struct {
+		name, method, path, query string
+	}{
+		{"wrong path", http.MethodGet, "/other", valid.Encode()},
+		{"wrong method", http.MethodPost, callback.Path, valid.Encode()},
+		{"wrong state", http.MethodGet, callback.Path, wrongState.Encode()},
+		{"wrong state with an error", http.MethodGet, callback.Path, "error=access_denied&state=forged"},
+	} {
+		target := *callback
+		target.Path, target.RawQuery = tc.path, tc.query
+		resp := l.do(t, tc.method, target.String())
+		if resp.StatusCode < 400 {
+			t.Errorf("%s: callback answered %s, want an error status", tc.name, resp.Status)
+		}
+		if l.exited() {
+			code, stderr := l.wait(t)
+			t.Fatalf("%s: auth login exited %d\nstderr:\n%s", tc.name, code, stderr)
+		}
+	}
+	if resp := l.do(t, http.MethodGet, link.String()); resp.StatusCode != http.StatusOK {
+		t.Errorf("the valid callback answered %s", resp.Status)
+	}
+	if code, stderr := l.wait(t); code != 0 {
+		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
+	}
+}
+
+func TestAuthLoginChecksTheIssuerOfTheAuthorizationResponse(t *testing.T) {
+	t.Parallel()
+	const description = "fake-error-description-0b7c"
+	for _, tc := range []struct {
+		name     string
+		redirect func(u *oauthUpstream) url.Values
+		wantCode int
+	}{
+		{"matching iss", func(u *oauthUpstream) url.Values {
+			return url.Values{"code": {fakeCode}, "iss": {u.Base}}
+		}, 0},
+		{"mismatched iss", func(*oauthUpstream) url.Values {
+			return url.Values{"code": {fakeCode}, "iss": {"https://evil.example"}}
+		}, 1},
+		{"error with a mismatched iss", func(*oauthUpstream) url.Values {
+			return url.Values{"error": {"access_denied"}, "error_description": {description}, "iss": {"https://evil.example"}}
+		}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			u := startOAuthUpstream(t)
+			u.RedirectWith(tc.redirect(u))
+			config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+			state := t.TempDir()
+
+			l := startLogin(t, 30*time.Second, []string{"XDG_STATE_HOME=" + state}, "fake", "--no-browser", "-c", config)
+			if link := l.authURL(t, u); link != nil {
+				l.do(t, http.MethodGet, link.String())
+			}
+
+			code, stderr := l.wait(t)
+
+			if code != tc.wantCode {
+				t.Fatalf("auth login exit code = %d, want %d\nstderr:\n%s", code, tc.wantCode, stderr)
+			}
+			if code == 0 {
+				return
+			}
+			if _, err := os.Stat(filepath.Join(state, "sprut", "credentials", "fake.json")); err == nil {
+				t.Error("Credentials were written")
+			}
+			if !strings.Contains(stderr, "another issuer") {
+				t.Errorf("stderr does not say the response came from another issuer:\n%s", stderr)
+			}
+			wantNoSecrets(t, "auth login stderr", stderr, "access_denied", description, "evil.example")
+		})
+	}
+}
+
+// Only the test's deadline on the Login's context is short: the Login's
+// own 5 minutes are the same error.
+func TestAuthLoginWithoutACallbackTimesOutWithExit1(t *testing.T) {
+	t.Parallel()
+	u := startOAuthUpstream(t)
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+	l := startLogin(t, 3*time.Second, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-c", config)
+	l.mustAuthURL(t, u)
+
+	code, stderr := l.wait(t)
+
+	if code != 1 || !strings.Contains(stderr, "no callback from the browser") {
+		t.Errorf("exit code = %d, want 1 saying no callback came\nstderr:\n%s", code, stderr)
+	}
 }
 
 // wantMode checks that the file at path exists with mode want.

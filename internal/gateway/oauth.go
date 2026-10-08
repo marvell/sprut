@@ -31,7 +31,7 @@ func CheckOAuthUpstream(u config.Upstream) error {
 	if err != nil {
 		return err
 	}
-	if endpoint.Scheme == "https" || endpoint.Scheme == "http" && isLoopback(endpoint.Hostname()) {
+	if isSecure(endpoint) {
 		return nil
 	}
 	// Its tokens would cross the network in the clear.
@@ -47,6 +47,12 @@ func hasAuthorization(u config.Upstream) bool {
 		}
 	}
 	return false
+}
+
+// isSecure reports whether u is HTTPS, or plain HTTP to a loopback address,
+// which never crosses the network.
+func isSecure(u *url.URL) bool {
+	return u.Scheme == "https" || u.Scheme == "http" && isLoopback(u.Hostname())
 }
 
 func isLoopback(host string) bool {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -45,9 +46,11 @@ type oauthUpstream struct {
 	URL  string // the MCP endpoint
 
 	mu         sync.Mutex
-	challenge  string   // PKCE code challenge of the last authorization request
-	grantTypes []string // of the last client registration
-	mcpAuth    []string // the Authorization header of each request to /mcp
+	challenge  string     // PKCE code challenge of the last authorization request
+	grantTypes []string   // of the last client registration
+	appType    string     // application_type of the last client registration
+	redirect   url.Values // added to the callback in place of the code
+	mcpAuth    []string   // the Authorization header of each request to /mcp
 }
 
 func startOAuthUpstream(t *testing.T) *oauthUpstream {
@@ -89,6 +92,7 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 		}
 		u.mu.Lock()
 		u.grantTypes = grantTypes
+		u.appType, _ = meta["application_type"].(string)
 		u.mu.Unlock()
 		meta["client_id"] = fakeClientID
 		meta["client_secret"] = fakeClientSecret
@@ -109,8 +113,12 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 			http.Error(w, "bad redirect_uri", http.StatusBadRequest)
 			return
 		}
-		cq := callback.Query()
-		cq.Set("code", fakeCode)
+		u.mu.Lock()
+		cq := maps.Clone(u.redirect)
+		u.mu.Unlock()
+		if cq == nil {
+			cq = url.Values{"code": {fakeCode}}
+		}
 		cq.Set("state", q.Get("state"))
 		callback.RawQuery = cq.Encode()
 		http.Redirect(w, r, callback.String(), http.StatusFound)
@@ -174,6 +182,21 @@ func (u *oauthUpstream) GrantTypes() []string {
 	return slices.Clone(u.grantTypes)
 }
 
+// RedirectWith makes the authorization endpoint redirect to the callback
+// with params and the state, in place of the code.
+func (u *oauthUpstream) RedirectWith(params url.Values) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.redirect = params
+}
+
+// AppType returns the application_type of the last client registration.
+func (u *oauthUpstream) AppType() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.appType
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -192,43 +215,108 @@ func authURL(base string) *regexp.Regexp {
 // returns sprut's exit code and stderr.
 func login(t *testing.T, u *oauthUpstream, env []string, args ...string) (code int, stderr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	errOut := &syncBuffer{}
-	exit := make(chan int, 1)
-	go func() {
-		exit <- cli.Run(ctx, append([]string{"sprut", "auth", "login"}, args...), env,
-			strings.NewReader(""), io.Discard, errOut)
-	}()
-
-	var link string
-	opened := eventually(func() bool {
-		select {
-		case code := <-exit:
-			exit <- code
-			return true
-		default:
-		}
-		link = authURL(u.Base).FindString(errOut.String())
-		return link != ""
-	})
-	if !opened {
-		t.Fatalf("no authorization URL on stderr:\n%s", errOut)
-	}
-	if link != "" {
-		resp, err := http.Get(link)
-		if err != nil {
-			t.Fatalf("opening the authorization URL: %v", err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
+	l := startLogin(t, 30*time.Second, env, args...)
+	if link := l.authURL(t, u); link != nil {
+		if resp := l.do(t, http.MethodGet, link.String()); resp.StatusCode != http.StatusOK {
 			t.Errorf("callback answered %s", resp.Status)
 		}
 	}
-	select {
-	case code = <-exit:
-	case <-ctx.Done():
-		t.Fatalf("sprut auth login did not exit\nstderr:\n%s", errOut)
+	return l.wait(t)
+}
+
+// loginRun is a `sprut auth login` running in the background.
+type loginRun struct {
+	ctx      context.Context
+	deadline time.Time
+	stderr   *syncBuffer
+	exit     chan int
+}
+
+// startLogin starts `sprut auth login` with args (after "auth login") and
+// env, which must exit within timeout.
+func startLogin(t *testing.T, timeout time.Duration, env []string, args ...string) *loginRun {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	t.Cleanup(cancel)
+	l := &loginRun{ctx: ctx, deadline: time.Now().Add(timeout), stderr: &syncBuffer{}, exit: make(chan int, 1)}
+	go func() {
+		l.exit <- cli.Run(ctx, append([]string{"sprut", "auth", "login"}, args...), env,
+			strings.NewReader(""), io.Discard, l.stderr)
+	}()
+	return l
+}
+
+// authURL waits for the authorization URL of the Authorization Server of u
+// on stderr, and returns it, or nil if sprut exits first.
+func (l *loginRun) authURL(t *testing.T, u *oauthUpstream) *url.URL {
+	t.Helper()
+	var link string
+	pattern := authURL(u.Base)
+	found := eventually(func() bool {
+		if l.exited() {
+			return true
+		}
+		link = pattern.FindString(l.stderr.String())
+		return link != ""
+	})
+	if !found {
+		t.Fatalf("no authorization URL on stderr:\n%s", l.stderr)
 	}
-	return code, errOut.String()
+	if link == "" {
+		return nil
+	}
+	parsed, err := url.Parse(link)
+	if err != nil {
+		t.Fatalf("parsing the authorization URL: %v", err)
+	}
+	return parsed
+}
+
+// mustAuthURL is authURL, failing the test if sprut exits first.
+func (l *loginRun) mustAuthURL(t *testing.T, u *oauthUpstream) *url.URL {
+	t.Helper()
+	link := l.authURL(t, u)
+	if link == nil {
+		code, stderr := l.wait(t)
+		t.Fatalf("auth login exited %d before printing the authorization URL\nstderr:\n%s", code, stderr)
+	}
+	return link
+}
+
+// exited reports whether sprut has exited, without waiting.
+func (l *loginRun) exited() bool {
+	select {
+	case code := <-l.exit:
+		l.exit <- code
+		return true
+	default:
+		return false
+	}
+}
+
+// do sends a request with method to link, following redirects, and returns
+// the response, its body already closed.
+func (l *loginRun) do(t *testing.T, method, link string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(l.ctx, method, link, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, link, err)
+	}
+	_ = resp.Body.Close()
+	return resp
+}
+
+// wait returns sprut's exit code and stderr once it exits.
+func (l *loginRun) wait(t *testing.T) (code int, stderr string) {
+	t.Helper()
+	select {
+	case code = <-l.exit:
+	case <-time.After(time.Until(l.deadline) + 10*time.Second):
+		t.Fatalf("sprut auth login did not exit\nstderr:\n%s", l.stderr)
+	}
+	return code, l.stderr.String()
 }
