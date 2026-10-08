@@ -326,7 +326,9 @@ func (h *storedCredentials) reload() error {
 // Authorization Server may already have rotated the refresh token, and the
 // new one must be kept. onRejection is set when the Upstream rejected stale
 // with a 401, and metadata is then the URL of its Protected Resource
-// Metadata, if it named one.
+// Metadata, if it named one. The renewal waits for the lock of the
+// Credentials up to the Store's 30s, and each request only as long as its
+// ctx allows.
 func (h *storedCredentials) renew(ctx context.Context, stale, metadata string, onRejection bool) (string, error) {
 	h.mu.Lock()
 	if token, err, settled := h.settledLocked(stale, onRejection); settled {
@@ -432,7 +434,12 @@ func (h *storedCredentials) refresh(ctx context.Context, stale, metadata string)
 	if errors.As(err, &retrieve) && retrieve.ErrorCode == "invalid_grant" {
 		// Unless a process that did not wait for the lock has rotated the
 		// refresh token meanwhile.
-		if again, _ := h.store.Load(h.upstream); again != nil && again.RefreshToken != c.RefreshToken {
+		again, err := h.store.Load(h.upstream)
+		if err != nil {
+			// Unknown, so they are kept.
+			return nil, fmt.Errorf("renewing credentials: %w", err)
+		}
+		if again != nil && again.RefreshToken != c.RefreshToken {
 			return again, nil
 		}
 		return nil, h.needsLogin("the authorization server rejected the credentials")
