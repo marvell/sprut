@@ -45,6 +45,10 @@ var fakeSecrets = []string{fakeClientSecret, fakeCode, fakeAccessToken, fakeRefr
 // redirects straight to the callback, a token endpoint that also refreshes,
 // rotating the refresh token, and an MCP endpoint at /mcp that answers 401
 // to any request without a live access token.
+//
+// It honours only the refresh token it issued last, so one fake serves one
+// set of Credentials that is renewed; renewable Credentials of another
+// Upstream need a fake of their own.
 type oauthUpstream struct {
 	Base string // the server's origin, which is also the issuer
 	URL  string // the MCP endpoint
@@ -89,7 +93,9 @@ func startOAuthUpstream(t *testing.T) *oauthUpstream {
 }
 
 // startOAuthUpstreamOn is startOAuthUpstream with host in its URLs in place
-// of 127.0.0.1, if set.
+// of 127.0.0.1, if set: on localhost, it has subdomains for a proxy to stand
+// in for. It is always plain HTTP: seam 1 can't make sprut trust a test
+// certificate, so no fake Upstream is on HTTPS.
 func startOAuthUpstreamOn(t *testing.T, host string) *oauthUpstream {
 	t.Helper()
 	u := &oauthUpstream{

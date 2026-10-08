@@ -9,8 +9,9 @@ TOOL = go tool -modfile=tools/$(1)/go.mod $(1)
 
 check: fmt-check vet lint test release-check
 
+# goimports also adds and removes imports.
 fmt:
-	gofmt -w .
+	$(call TOOL,golangci-lint) fmt
 
 fmt-check:
 	@unformatted=$$(gofmt -l .) || exit 1; \

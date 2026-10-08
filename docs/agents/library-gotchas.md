@@ -33,7 +33,7 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 - **A `PreregisteredClient` needs `RedirectURL` set** (v1.8.0). Only with Dynamic Client Registration does the SDK default it to the first registered redirect URI. The pre-registered client's auth style is picked from the Authorization Server's `token_endpoint_auth_methods_supported`, as with a registered one.
 - **The token source made by `NewTokenSource` refreshes during the Login** (v1.8.0, golang.org/x/oauth2 v0.35.0) when the token expires within oauth2's 10s `expiryDelta`, and a rotating server then voids the refresh token that `NewTokenSource` was given. So `gateway.Login` returns a static source, and `serve` renews Credentials that are about to expire.
 - **`AuthorizationCodeHandler` checks `state` after `AuthorizationCodeFetcher` returns** (v1.8.0), and a mismatch fails the Login. A fetcher that must ignore a callback with a wrong `state` has to compare it itself, against the `state` parameter of the URL it was given.
-- **OAuth errors quote the Authorization Server's response** (v1.8.0, golang.org/x/oauth2 v0.35.0). `oauth2.RetrieveError.Error()` includes the response body. `oauthex.RegisterClient` puts the body in its error, except on a 400, whose `ClientRegistrationError` includes `error_description`. Report only `ErrorCode` and the HTTP status, as `gateway.oauthError` does.
+- **OAuth errors quote the Authorization Server's response** (v1.8.0, golang.org/x/oauth2 v0.35.0). `oauth2.RetrieveError.Error()` includes the response body. `oauthex.RegisterClient` puts the body in its error, except on a 400, whose `ClientRegistrationError` includes `error_description`; a non-JSON error body is quoted whole. Matching error types can't catch every such path, so `gateway.errorBodies`, in `oauthClient`, reduces each error response to its OAuth error code before the SDK or oauth2 sees it. Every request to an Authorization Server or for its metadata goes through `oauthClient`.
 - **`NewServer` copies its `ServerOptions`** (v1.8.0), so changing them afterwards does nothing. `Instructions` must be known when the server is made, which is why `gateway.Start` makes it only once the Upstreams have started. The same `Instructions` go out in the `discover` result to a modern client and in the `initialize` result to a legacy one.
 
 ## urfave/cli (`github.com/urfave/cli/v3`)
@@ -48,6 +48,7 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 ## net/http
 
 - **A request's `*url.Error` masks only the userinfo password** (go1.27.1): it quotes the URL as `Post "https://user:***@host/path?query"`, with the query string intact. A secret in an Upstream's URL query therefore reaches every error message that quotes the URL.
+- **The proxy from the env skips only `localhost` and loopback IPs** (golang.org/x/net v0.59.0, `httpproxy`), not `*.localhost` or any other name. So a test can put a fake Upstream on `localhost` and reach it directly, while a request to `sub.localhost` or `elsewhere.invalid` goes to the `HTTP_PROXY` fake, which stands in for another origin.
 
 ## os
 

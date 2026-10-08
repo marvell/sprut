@@ -59,3 +59,8 @@ linters:
         linters: [forbidigo]
       - path: _test\.go$
         linters: [forbidigo]
+
+# `make fmt` runs these; `make check` runs gofmt only.
+formatters:
+  enable:
+    - goimports
