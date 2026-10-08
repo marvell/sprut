@@ -468,13 +468,15 @@ func login(t *testing.T, u *oauthUpstream, env []string, args ...string) (code i
 	return l.wait(t)
 }
 
-// mustLogin logs in to u, the Upstream "fake" in config, failing the test
-// unless the Login succeeds.
-func mustLogin(t *testing.T, u *oauthUpstream, env []string, config string) {
+// mustLogin logs in to u, the Upstream "fake" in config, with args added,
+// failing the test unless the Login succeeds. It returns sprut's stderr.
+func mustLogin(t *testing.T, u *oauthUpstream, env []string, config string, args ...string) string {
 	t.Helper()
-	if code, stderr := login(t, u, env, "fake", "--no-browser", "-c", config); code != 0 {
+	code, stderr := login(t, u, env, append([]string{"fake", "--no-browser", "-c", config}, args...)...)
+	if code != 0 {
 		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
 	}
+	return stderr
 }
 
 // loginRun is a `sprut auth login` running in the background.

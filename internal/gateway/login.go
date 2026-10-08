@@ -37,11 +37,10 @@ const (
 
 // Login runs the Login for u and stores the Credentials it gets. It uses
 // the client that u's Config names, or registers one with Dynamic Client
-// Registration, prints the
-// Authorization Server's issuer, the scopes and the authorization URL to
-// prompt, opens the URL if browser is set, and waits up to callbackTimeout for the
-// Authorization Server to redirect the user's browser to a callback on a
-// loopback port. env is where the proxy and the Credentials' directory come
+// Registration, prints the Authorization Server's issuer, the scopes and the
+// authorization URL to prompt, opens the URL if browser is set, and waits up
+// to callbackTimeout for the Authorization Server to redirect the user's
+// browser to a callback on a loopback port. env is where the proxy and the Credentials' directory come
 // from.
 func Login(ctx context.Context, u config.Upstream, env []string, browser bool, prompt io.Writer, version string, log *slog.Logger) error {
 	if err := CheckOAuthUpstream(u); err != nil {
@@ -187,7 +186,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 		return errors.New("it did not ask for authorization, so it needs no login")
 	}
 	creds.Resource, creds.Issuer = resource, issuer
-	creds.Bind(u)
+	creds.Config = credentials.BindingOf(u)
 	if err := store.Save(u.Name, creds); err != nil {
 		return err
 	}

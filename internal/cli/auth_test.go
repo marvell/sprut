@@ -23,10 +23,7 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 		t.Fatal(err)
 	}
 
-	code, stderr := login(t, u, env, "fake", "--no-browser", "-v", "-c", config)
-	if code != 0 {
-		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
-	}
+	stderr := mustLogin(t, u, env, config, "-v")
 	if got, want := u.GrantTypes(), []string{"authorization_code", "refresh_token"}; !slices.Equal(got, want) {
 		t.Errorf("registered grant types = %v, want %v", got, want)
 	}
@@ -62,10 +59,7 @@ func TestAuthLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
 	u := startOAuthUpstream(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 
-	code, stderr := login(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-c", config)
-	if code != 0 {
-		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
-	}
+	stderr := mustLogin(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, config)
 	at := authURLPattern(u.Base).FindStringIndex(stderr)
 	before := stderr[:at[0]]
 	for _, want := range []string{"authorization server: " + u.Base + "\n", "scopes: " + fakeScope + "\n"} {

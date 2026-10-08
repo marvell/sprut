@@ -30,33 +30,35 @@ type Credentials struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 
 	// Identity: the canonical URI of the Upstream and the issuer of the
-	// Authorization Server, and what the Config said when they were issued
-	// (see Bind).
-	Resource      string   `json:"resource"`
-	Issuer        string   `json:"issuer"`
-	URL           string   `json:"url"`
-	OAuthClientID string   `json:"oauth_client_id,omitempty"`
-	OAuthScopes   []string `json:"oauth_scopes"` // null when the Config has none
+	// Authorization Server, and the Config they were issued for.
+	Resource string  `json:"resource"`
+	Issuer   string  `json:"issuer"`
+	Config   Binding `json:"config"`
 }
 
-// Bind records u's url, oauth.clientId and oauth.scopes as what c were
-// issued for. oauth.clientSecret is left out, so that rotating it keeps c.
-func (c *Credentials) Bind(u config.Upstream) {
-	c.URL, c.OAuthClientID, c.OAuthScopes = u.URL, "", nil
+// Binding is what an Upstream's Config said when its Credentials were
+// issued, and must still say for them to be used. oauth.clientSecret is
+// left out, so that rotating it keeps them.
+type Binding struct {
+	URL      string   `json:"url"`
+	ClientID string   `json:"client_id,omitempty"` // oauth.clientId
+	Scopes   []string `json:"scopes"`              // oauth.scopes; null when the Config has none
+}
+
+// BindingOf returns the Binding of u as its Config is now.
+func BindingOf(u config.Upstream) Binding {
+	b := Binding{URL: u.URL}
 	if u.OAuth != nil {
-		c.OAuthClientID = u.OAuth.ClientID
-		c.OAuthScopes = slices.Clone(u.OAuth.Scopes)
+		b.ClientID, b.Scopes = u.OAuth.ClientID, slices.Clone(u.OAuth.Scopes)
 	}
+	return b
 }
 
-// boundTo reports whether c were issued for u as its Config is now. The
-// order of the scopes doesn't matter.
-func (c *Credentials) boundTo(u config.Upstream) bool {
-	var want Credentials
-	want.Bind(u)
-	return c.URL == want.URL && c.OAuthClientID == want.OAuthClientID &&
-		(c.OAuthScopes == nil) == (want.OAuthScopes == nil) &&
-		slices.Equal(slices.Sorted(slices.Values(c.OAuthScopes)), slices.Sorted(slices.Values(want.OAuthScopes)))
+// equal reports whether b and o are the same, but for the order of the
+// scopes.
+func (b Binding) equal(o Binding) bool {
+	return b.URL == o.URL && b.ClientID == o.ClientID && (b.Scopes == nil) == (o.Scopes == nil) &&
+		slices.Equal(slices.Sorted(slices.Values(b.Scopes)), slices.Sorted(slices.Values(o.Scopes)))
 }
 
 // Store is the directory holding the Credentials of every Upstream.
@@ -85,7 +87,7 @@ func (s *Store) Load(u config.Upstream) (*Credentials, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("reading credentials %s: %w", s.path(u.Name, ".json"), err)
 	}
-	if !c.boundTo(u) {
+	if !c.Config.equal(BindingOf(u)) {
 		return nil, nil
 	}
 	return &c, nil

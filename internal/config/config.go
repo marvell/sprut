@@ -306,6 +306,12 @@ func parseOAuth(fields map[string]json.RawMessage) (*OAuth, []string, error) {
 			return nil, nil, fmt.Errorf("oauth: %w", err)
 		}
 	}
+	// A secret belongs to a pre-registered client; Dynamic Client
+	// Registration issues its own.
+	if _, ok := fields["clientSecret"]; ok && o.ClientID == "" {
+		o.ClientSecret = ""
+		warnings = append(warnings, `field "oauth.clientSecret" does not apply without "oauth.clientId"; ignored`)
+	}
 	return o, warnings, nil
 }
 
@@ -383,7 +389,8 @@ func unsetWarning(missing []string) string {
 var varRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // interpolate replaces ${VAR} references in the fields that allow them (in
-// env and headers, only the values; in oauth, all of it) and returns the names of unset variables, sorted.
+// env and headers, only the values; in oauth, all of it) and returns the
+// names of unset variables, sorted.
 func interpolate(u *Upstream, lookupEnv LookupEnv) []string {
 	missing := map[string]bool{}
 	expand := func(s string) string {

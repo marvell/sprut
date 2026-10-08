@@ -262,6 +262,14 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			name:   "oauth.clientSecret without oauth.clientId is ignored with a warning",
+			config: `{"mcpServers": {"remote": {"url": "https://example.com/mcp", "oauth": {"clientSecret": "${UNSET}"}}}}`,
+			want: []config.Upstream{{
+				Name: "remote", Transport: config.HTTP, URL: "https://example.com/mcp", OAuth: &config.OAuth{},
+			}},
+			warnings: []config.Warning{{Upstream: "remote", Message: `field "oauth.clientSecret" does not apply without "oauth.clientId"; ignored`}},
+		},
+		{
 			name:   "unset variable in a disabled Upstream is not reported",
 			config: `{"mcpServers": {"fs": {"command": "npx", "args": ["${NOPE}"], "disabled": true}}}`,
 		},
