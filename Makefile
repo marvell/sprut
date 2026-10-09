@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-check vet lint test release-check
+.PHONY: check fmt fmt-check vet lint test cover fuzz release-check
 
 # Each tool is pinned in its own module, tools/<tool>/go.mod: its dependencies
 # stay out of sprut's build and out of the other tools' (a shared module would
@@ -31,6 +31,19 @@ lint:
 # Repeated and shuffled, so a test that depends on timing or order fails here.
 test:
 	go test -race -count=3 -shuffle=on ./...
+
+# Statement coverage of the whole module by every test, including the
+# sprut and fake Upstream processes that the scripts and scenarios start.
+# One test at a time: processes of one binary that exit together race to
+# write its coverage metadata, and the loser says so on stderr.
+cover:
+	go test -p 1 -parallel 1 -coverpkg=./... -coverprofile=cover.out ./...
+	go tool cover -func=cover.out | tail -1
+
+# Not part of check: a fuzz run finds new inputs for as long as it is let.
+# A failing input lands in testdata/fuzz and is then a regular test case.
+fuzz:
+	go test -run '^$$' -fuzz FuzzParse -fuzztime 60s ./internal/config
 
 # The release job only runs on a v* tag, so check its config and a snapshot
 # build on every push: the host's binary must report the ldflags version

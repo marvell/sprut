@@ -1,6 +1,7 @@
 package mcptest
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -122,6 +123,11 @@ func (s Stdio) Entry(t testing.TB, env ...string) map[string]any {
 		t.Fatal(err)
 	}
 	vars := map[string]string{envStdio: string(spec)}
+	if testing.CoverMode() != "" {
+		// A test binary built for coverage warns on stderr when it exits
+		// without somewhere to write its counters, and the fake is one.
+		vars["GOCOVERDIR"] = cmp.Or(os.Getenv("GOCOVERDIR"), t.TempDir())
+	}
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
 		vars[k] = v
