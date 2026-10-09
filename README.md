@@ -80,7 +80,24 @@ added upstream "linear"
 note: running Agents see this change only after their sprut restarts
 ```
 
-Write a secret as a `'${VAR}'` reference, in single quotes so that your shell leaves it alone: it goes into the Config as typed and is replaced from sprut's environment when it runs.
+Flags set the rest of the Upstream's fields:
+
+| Flag | Field |
+| --- | --- |
+| `-e`, `--env KEY=VALUE` | `env` of a stdio Upstream. Repeat it for each variable. |
+| `-H`, `--header 'Name: value'` | `headers` of an HTTP Upstream, in the form `curl` takes. Repeat it for each header. |
+| `--oauth-client-id`, `--oauth-client-secret` | `oauth.clientId` and `oauth.clientSecret` of an HTTP Upstream: a pre-registered [OAuth](#oauth) client. A secret needs a client ID. |
+| `--oauth-scope` | `oauth.scopes` of an HTTP Upstream. Repeat it for each scope; without it, `scopes` is not written. |
+| `--disabled` | `"disabled": true`: the Upstream is added switched off. |
+
+A flag that doesn't apply to the Upstream's Transport, such as `-H` on a stdio Upstream, is a usage error rather than a field `sprut serve` would ignore.
+
+Write a secret as a `'${VAR}'` reference, in single quotes so that your shell leaves it alone: it goes into the Config as typed, keeping it out of the file and your shell history, and is replaced from sprut's environment when it runs. Every value, the URL included, is written as typed:
+
+```console
+$ sprut upstream add github https://api.githubcopilot.com/mcp/ -H 'Authorization: Bearer ${GITHUB_TOKEN}'
+$ sprut upstream add postgres -e 'DATABASE_URI=${DATABASE_URI}' -- uvx postgres-mcp
+```
 
 If there is no Config, `add` creates it where `sprut serve` reads it, readable only by you (file `0600`, directory `0700`); an existing Config keeps its mode. Before writing, it checks the result with the same parser `sprut serve` uses: a mistake such as an invalid name exits 1 and leaves the file as it was, while a warning such as an unset variable is printed and the Upstream is added anyway. It refuses to change a Config that already has errors. A name that is already in the Config fails; `--force` replaces that Upstream, keeping its place. The rest of the Config is kept as you wrote it, including fields and keys sprut doesn't know, but re-indented with two spaces. The file is replaced atomically, so an interrupted `add` never leaves it half-written; a Config that is a symlink is written at its target.
 
@@ -253,7 +270,7 @@ In `$XDG_STATE_HOME/sprut/credentials/<upstream>.json` (`~/.local/state/sprut/cr
 | --- | --- |
 | 0 | Clean exit: the Agent closed stdin, SIGINT or SIGTERM, or a successful dry run. |
 | 1 | A Config error (`sprut upstream list` on a missing Config is not one), a `sprut upstream add` that would make the Config invalid or whose name is taken, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, a `sprut upstream list --check` in which some enabled Upstream failed or needs a Login, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
-| 2 | A usage error, such as an unknown flag or command. Bare `sprut` exits 2 too, so it never starts the server by accident. |
+| 2 | A usage error, such as an unknown flag or command, or a `sprut upstream add` flag that doesn't apply to the Upstream's Transport. Bare `sprut` exits 2 too, so it never starts the server by accident. |
 
 ## Upgrading from v0.2
 

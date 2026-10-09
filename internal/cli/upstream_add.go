@@ -27,12 +27,27 @@ func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 			&ucli.StringArgs{Name: "target", UsageText: "(-- <command> [args...] | <url>)", Max: -1},
 		},
 		Flags: []ucli.Flag{
+			&ucli.StringSliceFlag{
+				Name: "env", Aliases: []string{"e"}, Usage: "set an environment variable of a stdio Upstream, as KEY=VALUE, such as -e 'TOKEN=${TOKEN}'",
+			},
+			&ucli.StringSliceFlag{
+				Name: "header", Aliases: []string{"H"}, Usage: "set a header of an HTTP Upstream, as 'Name: value', such as -H 'Authorization: Bearer ${TOKEN}'",
+			},
+			&ucli.StringFlag{Name: "oauth-client-id", Usage: "log in to an HTTP Upstream as this pre-registered OAuth client"},
+			&ucli.StringFlag{
+				Name: "oauth-client-secret", Usage: "the secret of the --oauth-client-id client, such as '${CLIENT_SECRET}'",
+			},
+			&ucli.StringSliceFlag{Name: "oauth-scope", Usage: "request this OAuth scope in place of those the HTTP Upstream asks for"},
+			&ucli.BoolFlag{Name: "disabled", Usage: "add the Upstream switched off"},
 			&ucli.BoolFlag{Name: "force", Usage: "replace an Upstream of that name, keeping its place in the Config"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("name")
 			def, err := definition(args, cmd.StringArgs("target"))
 			if err != nil {
+				return usageError(ctx, cmd, err)
+			}
+			if err := setFields(cmd, &def); err != nil {
 				return usageError(ctx, cmd, err)
 			}
 			err = editConfig(cmd.String("config"), config.LookupIn(env), stderr, name, func(doc *config.Document) error {
@@ -68,6 +83,85 @@ func definition(args, target []string) (config.Definition, error) {
 		return config.Definition{}, fmt.Errorf("%q is neither -- and a command nor an http(s) URL", strings.Join(target, " "))
 	}
 	return config.Definition{URL: target[0]}, nil
+}
+
+// transportFlags are add's flags that set a field of only one Transport's
+// Upstreams.
+var transportFlags = []struct {
+	name      string
+	usage     string // the flag as errors name it
+	transport config.Transport
+	upstream  string // the Upstreams it applies to, as errors name them
+}{
+	{"env", "-e/--env", config.Stdio, "a stdio upstream"},
+	{"header", "-H/--header", config.HTTP, "an HTTP upstream"},
+	{"oauth-client-id", "--oauth-client-id", config.HTTP, "an HTTP upstream"},
+	{"oauth-client-secret", "--oauth-client-secret", config.HTTP, "an HTTP upstream"},
+	{"oauth-scope", "--oauth-scope", config.HTTP, "an HTTP upstream"},
+}
+
+// setFields sets the fields of def, an Upstream from add's arguments, that
+// add's flags give. A flag that doesn't apply to def's Transport is an
+// error rather than a field serve would ignore, and so is a client secret
+// without a client ID.
+func setFields(cmd *ucli.Command, def *config.Definition) error {
+	transport := config.Stdio
+	if def.URL != "" {
+		transport = config.HTTP
+	}
+	for _, f := range transportFlags {
+		if f.transport != transport && cmd.IsSet(f.name) {
+			return fmt.Errorf("%s applies only to %s", f.usage, f.upstream)
+		}
+	}
+	id, secret, scopes := cmd.String("oauth-client-id"), cmd.String("oauth-client-secret"), cmd.StringSlice("oauth-scope")
+	if cmd.IsSet("oauth-client-secret") && id == "" {
+		return errors.New("--oauth-client-secret needs --oauth-client-id")
+	}
+	var err error
+	if def.Env, err = envVars(cmd.StringSlice("env")); err != nil {
+		return err
+	}
+	if def.Headers, err = headers(cmd.StringSlice("header")); err != nil {
+		return err
+	}
+	if id != "" || len(scopes) > 0 {
+		def.OAuth = &config.OAuth{ClientID: id, ClientSecret: secret, Scopes: scopes}
+	}
+	def.Disabled = cmd.Bool("disabled")
+	return nil
+}
+
+// envVars parses -e values, each KEY=VALUE.
+func envVars(values []string) (map[string]string, error) {
+	return pairs(values, "KEY=VALUE", func(v string) (string, string, bool) {
+		key, value, ok := strings.Cut(v, "=")
+		return key, value, ok && key != ""
+	})
+}
+
+// headers parses -H values, each in curl's form: the name, a colon, and
+// the value, with the spaces around it dropped.
+func headers(values []string) (map[string]string, error) {
+	return pairs(values, "Name: value", func(v string) (string, string, bool) {
+		name, value, ok := strings.Cut(v, ":")
+		return name, strings.TrimSpace(value), ok && name != "" && !strings.ContainsAny(name, " \t")
+	})
+}
+
+// pairs splits each of values into a key and its value with split, the
+// last value of a key winning. A value split rejects is not in the form
+// want.
+func pairs(values []string, want string, split func(string) (string, string, bool)) (map[string]string, error) {
+	m := make(map[string]string, len(values))
+	for _, v := range values {
+		key, value, ok := split(v)
+		if !ok {
+			return nil, fmt.Errorf("%q is not %s", v, want)
+		}
+		m[key] = value
+	}
+	return m, nil
 }
 
 // isHTTPURL reports whether s is an http(s) URL, taking the scheme in any

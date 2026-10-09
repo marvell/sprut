@@ -43,13 +43,14 @@ type Upstream struct {
 }
 
 // OAuth is how sprut logs in to an OAuth Upstream, where the Config says.
+// Its JSON is the Config's "oauth".
 type OAuth struct {
 	// A pre-registered client, in place of Dynamic Client Registration.
-	ClientID     string
-	ClientSecret string
+	ClientID     string `json:"clientId,omitempty"`
+	ClientSecret string `json:"clientSecret,omitempty"`
 	// The scopes to request, in place of those the Upstream asks for; nil
 	// when the Config has none.
-	Scopes []string
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // Warning is a problem in the Config that does not stop the Gateway.

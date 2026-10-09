@@ -1,0 +1,159 @@
+# sprut upstream add's flags set the rest of an entry's fields, writing
+# each value as typed.
+env XDG_CONFIG_HOME=$WORK/xdg
+env HOME=$WORK/home
+
+# -e sets a stdio Upstream's env; ${VAR} stays a reference.
+env TOKEN=set
+sprut upstream add -c env.json -e 'TOKEN=${TOKEN}' --env MODE=a=b -e EMPTY= -e LIST=a,b memory -- npx server-memory
+stdout '^added upstream "memory"$'
+cmp env.json env.golden
+
+# -H sets an HTTP Upstream's headers, in curl's form: the name, a colon,
+# and the value, with the spaces around it dropped.
+sprut upstream add -c headers.json -H 'Authorization: Bearer ${API_TOKEN}' --header 'X-Trace:a: b ' -H 'X-Empty:' api https://api.example/mcp
+stdout '^added upstream "api"$'
+stderr '^warning: upstream "api": unset variable API_TOKEN; upstream skipped$'
+cmp headers.json headers.golden
+
+# The OAuth flags set a pre-registered client and its scopes; "scopes" is
+# written only when some are given.
+env CLIENT_SECRET=set
+sprut upstream add -c oauth.json --oauth-client-id sprut-cli --oauth-client-secret '${CLIENT_SECRET}' --oauth-scope read --oauth-scope 'write:all' full https://full.example/mcp
+sprut upstream add -c oauth.json --oauth-client-id only-id id https://id.example/mcp
+sprut upstream add -c oauth.json --oauth-scope read scopes https://scopes.example/mcp
+cmp oauth.json oauth.golden
+
+# --disabled adds an Upstream switched off, for either Transport.
+sprut upstream add -c disabled.json --disabled -e 'KEY=${UNSET}' off -- cmd
+stdout '^added upstream "off"$'
+! stderr 'warning'
+sprut upstream add -c disabled.json --disabled off-too https://off.example/mcp
+cmp disabled.json disabled.golden
+
+# A flag that doesn't apply to the Transport, a malformed value, and a
+# client secret without a client ID are usage errors, and write nothing.
+cp oauth.json usage.json
+! sprut upstream add -c usage.json -e K=V web https://web.example/mcp
+status 2
+stderr '-e/--env applies only to a stdio upstream'
+! stdout .
+! sprut upstream add -c usage.json -H 'X-A: b' local -- cmd
+status 2
+stderr '-H/--header applies only to an HTTP upstream'
+! sprut upstream add -c usage.json --oauth-client-id id local -- cmd
+status 2
+stderr '--oauth-client-id applies only to an HTTP upstream'
+! sprut upstream add -c usage.json --oauth-client-secret s local -- cmd
+status 2
+stderr '--oauth-client-secret applies only to an HTTP upstream'
+! sprut upstream add -c usage.json --oauth-scope read local -- cmd
+status 2
+stderr '--oauth-scope applies only to an HTTP upstream'
+! sprut upstream add -c usage.json --oauth-client-secret s web https://web.example/mcp
+status 2
+stderr '--oauth-client-secret needs --oauth-client-id'
+! sprut upstream add -c usage.json --oauth-client-id '' --oauth-client-secret s web https://web.example/mcp
+status 2
+stderr '--oauth-client-secret needs --oauth-client-id'
+! sprut upstream add -c usage.json -e NOEQUALS local -- cmd
+status 2
+stderr '"NOEQUALS" is not KEY=VALUE'
+! sprut upstream add -c usage.json -e =value local -- cmd
+status 2
+stderr '"=value" is not KEY=VALUE'
+! sprut upstream add -c usage.json -H 'X-A b' web https://web.example/mcp
+status 2
+stderr '"X-A b" is not Name: value'
+! sprut upstream add -c usage.json -H ': b' web https://web.example/mcp
+status 2
+! sprut upstream add -c usage.json -H 'X A: b' web https://web.example/mcp
+status 2
+cmp usage.json oauth.golden
+! sprut upstream add -c new.json -e K=V web https://web.example/mcp
+status 2
+! exists new.json
+
+# --help shows how to keep a secret out of the Config and the shell's
+# history: a '${VAR}' in single quotes.
+sprut upstream add --help
+stdout '\-\-env string, -e string .*-e ''TOKEN=\$\{TOKEN\}'''
+stdout '\-\-header string, -H string .*-H ''Authorization: Bearer \$\{TOKEN\}'''
+stdout '\-\-oauth-client-secret string .*''\$\{CLIENT_SECRET\}'''
+
+-- env.golden --
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": [
+        "server-memory"
+      ],
+      "env": {
+        "EMPTY": "",
+        "LIST": "a,b",
+        "MODE": "a=b",
+        "TOKEN": "${TOKEN}"
+      }
+    }
+  }
+}
+-- headers.golden --
+{
+  "mcpServers": {
+    "api": {
+      "url": "https://api.example/mcp",
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}",
+        "X-Empty": "",
+        "X-Trace": "a: b"
+      }
+    }
+  }
+}
+-- oauth.golden --
+{
+  "mcpServers": {
+    "full": {
+      "url": "https://full.example/mcp",
+      "oauth": {
+        "clientId": "sprut-cli",
+        "clientSecret": "${CLIENT_SECRET}",
+        "scopes": [
+          "read",
+          "write:all"
+        ]
+      }
+    },
+    "id": {
+      "url": "https://id.example/mcp",
+      "oauth": {
+        "clientId": "only-id"
+      }
+    },
+    "scopes": {
+      "url": "https://scopes.example/mcp",
+      "oauth": {
+        "scopes": [
+          "read"
+        ]
+      }
+    }
+  }
+}
+-- disabled.golden --
+{
+  "mcpServers": {
+    "off": {
+      "command": "cmd",
+      "env": {
+        "KEY": "${UNSET}"
+      },
+      "disabled": true
+    },
+    "off-too": {
+      "url": "https://off.example/mcp",
+      "disabled": true
+    }
+  }
+}

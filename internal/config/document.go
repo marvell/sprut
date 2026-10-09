@@ -33,9 +33,15 @@ type member struct {
 // Definition is an Upstream as the user writes it into the Config, with
 // ${VAR} references left in. Its JSON is the entry as written.
 type Definition struct {
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	URL     string   `json:"url,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	OAuth   *OAuth            `json:"oauth,omitempty"`
+	// Disabled is written only when true: "disabled": false is the same as
+	// none.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // ErrExists is the error of adding an Upstream whose name is taken.
