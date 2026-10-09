@@ -102,7 +102,7 @@ func checkStates(ctx context.Context, entries []config.Entry, states []string, e
 	healthy := true
 	for j, h := range check(ctx, upstreams, env, startupTimeout) {
 		healthy = healthy && h.Err == nil
-		states[rows[j]] = health(h)
+		states[rows[j]] = healthState(h)
 	}
 	return healthy
 }
@@ -113,8 +113,8 @@ func check(ctx context.Context, upstreams []config.Upstream, env []string, start
 	return gateway.Check(ctx, upstreams, env, startupTimeout, version(), slog.New(slog.DiscardHandler))
 }
 
-// health is how h fared, as list --check shows it in STATE.
-func health(h gateway.Health) string {
+// healthState is how h fared, as list --check shows it in STATE.
+func healthState(h gateway.Health) string {
 	switch {
 	case h.Err == nil:
 		return fmt.Sprintf("ok (%d tools)", h.Tools)
@@ -150,13 +150,14 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name str
 		return
 	}
 	h := check(ctx, []config.Upstream{u}, env, cmd.Duration("startup-timeout"))[0]
+	state, hint := healthState(h), h.Hint()
 	switch {
 	case h.Err == nil:
-		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, health(h))
-	case h.Hint() != "":
-		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, health(h), h.Hint())
+		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, state)
+	case hint != "":
+		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, state, hint)
 	default:
-		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, health(h))
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, state)
 	}
 }
 
