@@ -25,8 +25,8 @@ func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			if err != nil {
 				return err
 			}
-			err = editConfig(cmd.String("config"), lookupEnv, stderr, name, func(doc *config.Document) error {
-				return doc.Remove(name)
+			err = editConfig(cmd.String("config"), lookupEnv, stderr, name, func(doc *config.Document) (bool, error) {
+				return true, doc.Remove(name)
 			})
 			if err != nil {
 				return err

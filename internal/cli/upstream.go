@@ -29,6 +29,8 @@ func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command
 		Commands: []*ucli.Command{
 			addCommand(args, env, stdout, stderr),
 			removeCommand(env, stdout, stderr),
+			switchCommand("enable", "switch a disabled Upstream back on; refused if its entry is invalid", false, env, stdout, stderr),
+			switchCommand("disable", "switch an Upstream off without removing it from the Config", true, env, stdout, stderr),
 			listCommand(env, stdout),
 			loginCommand(env, stderr),
 			logoutCommand(env, stdout, stderr),
@@ -164,8 +166,9 @@ func orDash(s string) string {
 // editConfig applies edit to the Config that flag and the environment
 // point at, and writes it back if the result parses, printing the
 // warnings about the Upstream name to stderr. It refuses to edit a Config
-// that already fails to parse. A missing Config is created.
-func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name string, edit func(*config.Document) error) error {
+// that already fails to parse. A missing Config is created. edit reports
+// whether it changed the Config; if not, the file is left as it is.
+func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name string, edit func(*config.Document) (bool, error)) error {
 	path, _, data, err := readConfig(flag, lookupEnv)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -181,7 +184,8 @@ func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name 
 	if err != nil {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
-	if err := edit(doc); err != nil {
+	edited, err := edit(doc)
+	if err != nil || !edited {
 		return err
 	}
 	out := doc.Bytes()

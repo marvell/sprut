@@ -1,0 +1,203 @@
+# sprut upstream disable switches an Upstream off without deleting it, and
+# sprut upstream enable switches it back on.
+env XDG_CONFIG_HOME=$WORK/xdg
+mkdir xdg/sprut
+cp config.json xdg/sprut/config.json
+chmod 0644 xdg/sprut/config.json
+
+# disable writes "disabled": true, keeping the rest of the Config as add
+# does: the order of entries, their unknown fields and ${VAR} references,
+# other keys, and the file's mode.
+sprut upstream disable memory
+stdout '^disabled upstream "memory"$'
+stderr 'running Agents see this change only after their sprut restarts'
+cmp xdg/sprut/config.json disabled.golden
+exec ls -l xdg/sprut/config.json
+stdout '^-rw-r--r--'
+
+# enable removes "disabled" rather than writing false, wherever it was in
+# the entry.
+sprut upstream enable memory
+stdout '^enabled upstream "memory"$'
+stderr 'running Agents see this change only after their sprut restarts'
+sprut upstream enable off
+stdout '^enabled upstream "off"$'
+cmp xdg/sprut/config.json enabled.golden
+
+# Switching an Upstream as it already is succeeds and leaves the file as it
+# was, even one sprut would lay out differently.
+cp unchanged.json unchanged.before
+sprut upstream enable -c unchanged.json on
+stdout '^upstream "on" is already enabled$'
+! stderr .
+sprut upstream enable -c unchanged.json false
+stdout '^upstream "false" is already enabled$'
+sprut upstream disable -c unchanged.json off
+stdout '^upstream "off" is already disabled$'
+! stderr .
+cmp unchanged.json unchanged.before
+
+# enable refuses an entry that is invalid, which a disabled one may be,
+# and changes nothing.
+cp xdg/sprut/config.json enabled.before
+! sprut upstream enable broken
+status 1
+stderr 'upstream "broken": has both "command" and "url"'
+! stdout .
+cmp xdg/sprut/config.json enabled.before
+
+# Enabling an entry whose variables are unset warns about it, as add does,
+# and enables it.
+sprut upstream disable memory
+sprut upstream enable memory
+stderr '^warning: upstream "memory": unset variable PKG; upstream skipped$'
+stdout '^enabled upstream "memory"$'
+
+# -c goes in any position, and SPRUT_CONFIG names the Config too.
+cp two.json a.json
+sprut -c a.json upstream disable a
+sprut upstream disable b -c a.json
+cmp a.json two-disabled.golden
+env SPRUT_CONFIG=$WORK/a.json
+sprut upstream enable a
+env SPRUT_CONFIG=
+sprut upstream enable -c a.json b
+cmp a.json two.golden
+
+# A name not in the Config fails, names it and changes nothing.
+cp two.json two.before
+! sprut upstream enable -c two.json nope
+status 1
+stderr 'upstream "nope": not in the config'
+! stdout .
+! sprut upstream disable -c two.json nope
+status 1
+stderr 'upstream "nope": not in the config'
+cmp two.json two.before
+
+# A missing Config fails the same way, and is not created.
+! sprut upstream enable -c missing/config.json nope
+status 1
+stderr 'upstream "nope": not in the config'
+! sprut upstream disable -c missing/config.json nope
+status 1
+stderr 'upstream "nope": not in the config'
+! exists missing
+
+# A Config that already fails to parse is not changed.
+cp bad.json bad.before
+! sprut upstream disable -c bad.json fine
+status 1
+stderr 'bad.json'
+stderr 'upstream "Bad_Name": invalid name'
+! sprut upstream enable -c bad.json fine
+status 1
+stderr 'upstream "Bad_Name": invalid name'
+cmp bad.json bad.before
+
+# No name, or more than one, is a usage error.
+! sprut upstream enable -c two.json
+status 2
+stderr 'sprut upstream enable'
+! stdout .
+! sprut upstream disable -c two.json a b
+status 2
+stderr 'unexpected argument "b"'
+! stdout .
+cmp two.json two.before
+
+-- config.json --
+{"$schema": "https://example.com/sprut.json", "mcpServers": {
+  "memory": {"command": "npx", "args": ["-y", "${PKG}"], "x-note": "kept"},
+  "off": {"disabled": true, "url": "https://mcp.example/mcp"},
+  "broken": {"disabled": true, "command": "x", "url": "https://mcp.example/mcp"}
+}, "x-editor": {"tabs": [2, 4]}}
+-- two.json --
+{"mcpServers": {"a": {"command": "a"}, "b": {"command": "b"}}}
+-- two.golden --
+{
+  "mcpServers": {
+    "a": {
+      "command": "a"
+    },
+    "b": {
+      "command": "b"
+    }
+  }
+}
+-- two-disabled.golden --
+{
+  "mcpServers": {
+    "a": {
+      "command": "a",
+      "disabled": true
+    },
+    "b": {
+      "command": "b",
+      "disabled": true
+    }
+  }
+}
+-- bad.json --
+{"mcpServers": {"Bad_Name": {"command": "x"}, "fine": {"command": "x"}}}
+-- unchanged.json --
+{"mcpServers": {"on": {"command": "x"}, "false": {"command": "x", "disabled": false},
+                "off": {"command": "x", "disabled": true}}}
+-- enabled.golden --
+{
+  "$schema": "https://example.com/sprut.json",
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "${PKG}"
+      ],
+      "x-note": "kept"
+    },
+    "off": {
+      "url": "https://mcp.example/mcp"
+    },
+    "broken": {
+      "disabled": true,
+      "command": "x",
+      "url": "https://mcp.example/mcp"
+    }
+  },
+  "x-editor": {
+    "tabs": [
+      2,
+      4
+    ]
+  }
+}
+-- disabled.golden --
+{
+  "$schema": "https://example.com/sprut.json",
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "${PKG}"
+      ],
+      "x-note": "kept",
+      "disabled": true
+    },
+    "off": {
+      "disabled": true,
+      "url": "https://mcp.example/mcp"
+    },
+    "broken": {
+      "disabled": true,
+      "command": "x",
+      "url": "https://mcp.example/mcp"
+    }
+  },
+  "x-editor": {
+    "tabs": [
+      2,
+      4
+    ]
+  }
+}

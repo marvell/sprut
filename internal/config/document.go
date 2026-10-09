@@ -113,6 +113,38 @@ func (d *Document) Remove(name string) error {
 	return nil
 }
 
+// SetDisabled switches the Upstream name off, writing "disabled": true, or
+// on, removing "disabled" rather than writing false. An Upstream already
+// switched as asked is left as it is, and SetDisabled reports whether it
+// changed the entry. It fails if there is no Upstream of that name, or its
+// entry is not a JSON object.
+func (d *Document) SetDisabled(name string, disabled bool) (bool, error) {
+	raw, ok := d.servers.entries[name]
+	if !ok {
+		return false, fmt.Errorf("upstream %q: %w", name, ErrNotFound)
+	}
+	// Read as the parser reads it.
+	var byKey map[string]json.RawMessage
+	was := false
+	if err := json.Unmarshal(raw, &byKey); err != nil || byKey == nil {
+		return false, fmt.Errorf("upstream %q: must be a JSON object", name)
+	}
+	if err := decodeField(byKey, "disabled", &was, "a boolean"); err != nil {
+		return false, fmt.Errorf("upstream %q: %w", name, err)
+	}
+	if was == disabled {
+		return false, nil
+	}
+	fields, _ := decodeObject(raw) // an object, as Unmarshal found
+	fields = slices.DeleteFunc(fields, func(f member) bool { return f.key == "disabled" })
+	if disabled {
+		fields = append(fields, member{"disabled", json.RawMessage("true")})
+	}
+	d.servers.entries[name] = object(fields)
+	d.setServers()
+	return true, nil
+}
+
 // setServers writes d.servers back into mcpServers, adding it after the
 // other keys if there is none.
 func (d *Document) setServers() {

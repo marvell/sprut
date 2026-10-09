@@ -115,6 +115,21 @@ note: running Agents see this change only after their sprut restarts
 
 It keeps the rest of the Config as [`add`](#add-an-upstream) does, and refuses to change a Config that already has errors. A name that is not in the Config, or a missing Config, exits 1 and creates no file. The Credentials are deleted only once the Config is saved.
 
+## Disable and enable an Upstream
+
+`sprut upstream disable` switches an Upstream off without removing it from the Config, by writing `"disabled": true` on its entry; `sprut upstream enable` switches it back on by removing that field:
+
+```console
+$ sprut upstream disable postgres
+disabled upstream "postgres"
+note: running Agents see this change only after their sprut restarts
+$ sprut upstream enable postgres
+enabled upstream "postgres"
+note: running Agents see this change only after their sprut restarts
+```
+
+sprut doesn't check a disabled entry, so it may be broken; `enable` checks it with the same parser `sprut serve` uses, and refuses one with errors, exiting 1 and leaving the file as it was. Switching an Upstream to the state it is already in succeeds and leaves the file alone. Both keep the rest of the Config as [`add`](#add-an-upstream) does, and refuse to change a Config that already has errors. A name that is not in the Config, or a missing Config, exits 1 and creates no file.
+
 ## List your Upstreams
 
 `sprut upstream list` shows every Upstream in the Config, in Config order:
@@ -281,7 +296,7 @@ In `$XDG_STATE_HOME/sprut/credentials/<upstream>.json` (`~/.local/state/sprut/cr
 | Code | Meaning |
 | --- | --- |
 | 0 | Clean exit: the Agent closed stdin, SIGINT or SIGTERM, or a successful dry run. |
-| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a `sprut upstream add` that would make the Config invalid or whose name is taken, a `sprut upstream remove` of an Upstream that is not in the Config, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, a `sprut upstream list --check` in which some enabled Upstream failed or needs a Login, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
+| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a `sprut upstream add` that would make the Config invalid or whose name is taken, a `sprut upstream remove`, `enable` or `disable` of an Upstream that is not in the Config, an `enable` of an invalid entry, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, a `sprut upstream list --check` in which some enabled Upstream failed or needs a Login, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
 | 2 | A usage error, such as an unknown flag or command, or a `sprut upstream add` flag that doesn't apply to the Upstream's Transport. Bare `sprut` exits 2 too, so it never starts the server by accident. |
 
 ## Upgrading from v0.2
