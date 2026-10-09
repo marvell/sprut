@@ -21,7 +21,7 @@ func Status(store *credentials.Store, u config.Upstream) (string, error) {
 		// either, and needs no Login.
 		return "no credentials", nil
 	case c.Dead():
-		return expired + "; " + loginHint(u.Name), nil
+		return expired + "; " + loginHint(u), nil
 	}
 	s := "logged in, access token "
 	switch {

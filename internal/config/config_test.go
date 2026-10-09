@@ -507,9 +507,11 @@ func TestPath(t *testing.T) {
 		flag string
 		env  map[string]string
 		want string
+		// whether the path was named rather than the default location
+		wantNamed bool
 	}{
-		{name: "-c wins", flag: "/flag.json", env: all, want: "/flag.json"},
-		{name: "then SPRUT_CONFIG", env: all, want: "/env/sprut.json"},
+		{name: "-c wins", flag: "/flag.json", env: all, want: "/flag.json", wantNamed: true},
+		{name: "then SPRUT_CONFIG", env: all, want: "/env/sprut.json", wantNamed: true},
 		{name: "then XDG_CONFIG_HOME", env: without("SPRUT_CONFIG"), want: "/xdg/sprut/config.json"},
 		{name: "then ~/.config", env: without("SPRUT_CONFIG", "XDG_CONFIG_HOME"), want: "/home/me/.config/sprut/config.json"},
 		{
@@ -522,17 +524,17 @@ func TestPath(t *testing.T) {
 			env:  map[string]string{"XDG_CONFIG_HOME": "xdg", "HOME": "/home/me"},
 			want: "/home/me/.config/sprut/config.json",
 		},
-		{name: "relative -c is kept as given", flag: "my.json", env: all, want: "my.json"},
+		{name: "relative -c is kept as given", flag: "my.json", env: all, want: "my.json", wantNamed: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := config.Path(tt.flag, lookup(tt.env))
+			got, named, err := config.Path(tt.flag, lookup(tt.env))
 			if err != nil {
 				t.Fatalf("Path: unexpected error: %v", err)
 			}
-			if got != tt.want {
-				t.Errorf("Path = %q, want %q", got, tt.want)
+			if got != tt.want || named != tt.wantNamed {
+				t.Errorf("Path = %q, named %v; want %q, named %v", got, named, tt.want, tt.wantNamed)
 			}
 		})
 	}
@@ -540,7 +542,7 @@ func TestPath(t *testing.T) {
 
 func TestPathWithNowhereToLook(t *testing.T) {
 	t.Parallel()
-	_, err := config.Path("", lookup(nil))
+	_, _, err := config.Path("", lookup(nil))
 	if err == nil || !strings.Contains(err.Error(), "HOME") {
 		t.Errorf("Path error = %v, want one mentioning HOME", err)
 	}

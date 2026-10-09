@@ -29,7 +29,7 @@ sprut --version
 
 sprut reads the first of these that is set:
 
-1. `-c PATH` (or `--config PATH`), which `sprut serve` and every `sprut auth` command take;
+1. `-c PATH` (or `--config PATH`), a global flag that goes before or after the command: `sprut -c PATH serve` or `sprut serve -c PATH`;
 2. `$SPRUT_CONFIG`;
 3. `$XDG_CONFIG_HOME/sprut/config.json`;
 4. `~/.config/sprut/config.json`.
@@ -174,7 +174,7 @@ linear: logged out
 
 `auth status` lists every HTTP Upstream that may use OAuth (no `Authorization` header, HTTPS or loopback), including one whose server never asks for it. It reads only the stored Credentials and contacts no server, so Credentials that the server has revoked still read as logged in until a request finds out. `auth logout` deletes the Credentials; every running `sprut serve` stops sending them at its next request. It does not revoke the tokens at the server.
 
-When Credentials die (the server rejects the refresh token, or there is none and the access token expired), the Upstream's tool calls return an error naming `sprut auth login <upstream>`, and an Upstream skipped at startup for that reason is listed in the Gateway's MCP `instructions`, so the Agent can tell you.
+When Credentials die (the server rejects the refresh token, or there is none and the access token expired), the Upstream's tool calls return an error naming `sprut auth login <upstream>` (with `-c` and the Config's absolute path, unless the Config is at the default location), and an Upstream skipped at startup for that reason is listed in the Gateway's MCP `instructions`, so the Agent can tell you.
 
 ### The `oauth` object
 

@@ -219,9 +219,9 @@ func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 
 	g := startGateway(t, config, env)
 	g.wantTools(t, "other__echo", "other__fail")
-	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="run: sprut auth login fake"`)
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="`+loginHint(config, "fake")+`"`)
 	instructions := g.Agent.InitializeResult().Instructions
-	if !strings.Contains(instructions, "- fake: ") || !strings.Contains(instructions, "run: sprut auth login fake") {
+	if !strings.Contains(instructions, "- fake: ") || !strings.Contains(instructions, loginHint(config, "fake")) {
 		t.Errorf("instructions do not list fake with the login hint:\n%s", instructions)
 	}
 	g.closeAgent(t)
@@ -229,6 +229,53 @@ func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 	code, _, stderr := runSprut(t, append([]string{envFakeUpstream + "=1"}, env...), "serve", "--dry-run", "-c", config)
 	if code != 1 {
 		t.Errorf("--dry-run exit code = %d, want 1\nstderr:\n%s", code, stderr)
+	}
+}
+
+// The Agent runs sprut with its own directory and environment, so the hint
+// names the Config by an absolute path, quoted for the shell, unless it is
+// where sprut looks by default.
+func TestTheLoginHintNamesTheConfigAsAShellElsewhereFindsIt(t *testing.T) {
+	t.Parallel()
+	u := startOAuthUpstream(t)
+	upstreams := map[string]any{"fake": map[string]any{"url": u.URL}}
+	state := "XDG_STATE_HOME=" + t.TempDir()
+
+	spaced := filepath.Join(t.TempDir(), "my configs", "config.json")
+	writeConfigAt(t, spaced, upstreams)
+	configHome := t.TempDir()
+	writeConfigAt(t, filepath.Join(configHome, "sprut", "config.json"), upstreams)
+	abs := writeConfig(t, upstreams)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		env  []string
+		args []string
+		want string
+	}{
+		{name: "default location", env: []string{"XDG_CONFIG_HOME=" + configHome}, want: "run: sprut auth login fake"},
+		{name: "relative -c", args: []string{"-c", rel}, want: loginHint(abs, "fake")},
+		{name: "SPRUT_CONFIG with a space", env: []string{"SPRUT_CONFIG=" + spaced}, want: loginHint("'"+spaced+"'", "fake")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := append([]string{"serve", "--dry-run"}, tc.args...)
+			code, _, stderr := runSprut(t, append(tc.env, state), args...)
+			if code != 1 {
+				t.Fatalf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
+			}
+			if !strings.Contains(stderr, `hint="`+tc.want+`"`) {
+				t.Errorf("stderr lacks the hint %q:\n%s", tc.want, stderr)
+			}
+		})
 	}
 }
 

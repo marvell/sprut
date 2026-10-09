@@ -101,7 +101,7 @@ func TestServeReportsInsufficientScopeWithALoginHintAndTheNextLoginKeepsTheGrant
 	// The Upstream now wants a scope it didn't grant, and says so in its 401s too.
 	u.RequireScope("write")
 	u.OfferScopes("write", nil)
-	wantLoginHint(t, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(context.Background(), t))
 	g.closeAgent(t)
 
 	mustLogin(t, u, l.env, l.config)
@@ -161,14 +161,15 @@ func TestServeUsesCredentialsOnlyForWhatTheyWereIssuedFor(t *testing.T) {
 				link = strings.Replace(link, "127.0.0.1", "localhost", 1)
 			}
 			before := len(u.MCPAuth())
-			g := startGateway(t, writeConfig(t, map[string]any{"fake": upstreamEntry(link, tt.serve)}), env)
+			serveConfig := writeConfig(t, map[string]any{"fake": upstreamEntry(link, tt.serve)})
+			g := startGateway(t, serveConfig, env)
 			if !tt.needLogin {
 				g.wantEcho(t)
 				g.closeAgent(t)
 				return
 			}
 			g.wantTools(t)
-			g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="run: sprut auth login fake"`)
+			g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="`+loginHint(serveConfig, "fake")+`"`)
 			g.closeAgent(t)
 			for i, got := range u.MCPAuth()[before:] {
 				if got != "" {

@@ -570,15 +570,25 @@ func fakeUpstreamEntry(t *testing.T, env ...string) map[string]any {
 // writeConfig writes a Config with the given Upstreams and returns its path.
 func writeConfig(t *testing.T, upstreams map[string]any) string {
 	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	writeConfigAt(t, path, upstreams)
+	return path
+}
+
+// writeConfigAt writes a Config with the given Upstreams at path, making
+// its directory.
+func writeConfigAt(t *testing.T, path string, upstreams map[string]any) {
+	t.Helper()
 	data, err := json.Marshal(map[string]any{"mcpServers": upstreams})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return path
 }
 
 // gateway is a running `sprut serve` driven in-process through cli.Run, with

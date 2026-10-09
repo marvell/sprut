@@ -218,7 +218,7 @@ func TestServePicksUpALoginWithoutARestart(t *testing.T) {
 
 	l.FailRefresh("invalid_grant")
 	l.RevokeAccessTokens()
-	wantLoginHint(t, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(context.Background(), t))
 
 	l.FailRefresh("")
 	mustLogin(t, l.oauthUpstream, l.env, l.config)
@@ -238,7 +238,7 @@ func TestServeDropsCredentialsWhoseFileIsDeleted(t *testing.T) {
 		if err := os.Remove(l.creds); err != nil {
 			t.Fatal(err)
 		}
-		wantLoginHint(t, g.echo(context.Background(), t))
+		wantLoginHint(t, l.config, g.echo(context.Background(), t))
 
 		for _, auth := range l.MCPAuth()[sent:] {
 			if auth != "" {
@@ -270,7 +270,7 @@ func TestServeDropsCredentialsWhoseFileIsDeleted(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("fake__echo: %v", r.err)
 		}
-		wantLoginHint(t, r.res)
+		wantLoginHint(t, l.config, r.res)
 		if n := len(l.Refreshes()); n != 0 {
 			t.Errorf("refreshes = %d, want none", n)
 		}

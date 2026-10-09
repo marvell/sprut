@@ -37,7 +37,6 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 			"without names, to every one in the Config whose Credentials are missing or dead",
 		Arguments: []ucli.Argument{&ucli.StringArgs{Name: "upstream", UsageText: "[upstream...]", Max: -1}},
 		Flags: []ucli.Flag{
-			configFlag(),
 			&ucli.BoolFlag{Name: "no-browser", Usage: "only print the authorization URL, without opening a browser"},
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level"},
 		},
@@ -117,7 +116,6 @@ func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 		Name:      "logout",
 		Usage:     "delete the Credentials of an OAuth Upstream",
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
-		Flags:     []ucli.Flag{configFlag()},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
 			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
@@ -162,7 +160,6 @@ func statusCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:  "status",
 		Usage: "list each OAuth Upstream with the state of its Credentials",
-		Flags: []ucli.Flag{configFlag()},
 		Action: func(_ context.Context, cmd *ucli.Command) error {
 			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
 			if err != nil {

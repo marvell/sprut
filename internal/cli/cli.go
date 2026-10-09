@@ -28,6 +28,7 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 		HideVersion: true,
 		Flags: []ucli.Flag{
 			&ucli.BoolFlag{Name: "version", Usage: "print the version", Local: true},
+			configFlag(),
 		},
 		// Before, not Action, so that --version wins over a subcommand too.
 		Before: func(ctx context.Context, cmd *ucli.Command) (context.Context, error) {

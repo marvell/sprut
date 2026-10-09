@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	ucli "github.com/urfave/cli/v3"
@@ -20,7 +21,6 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Name:  "serve",
 		Usage: "run the Gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
-			configFlag(),
 			&ucli.DurationFlag{
 				Name:  "startup-timeout",
 				Value: 30 * time.Second,
@@ -78,9 +78,12 @@ func newLogger(w io.Writer, verbose bool) *slog.Logger {
 }
 
 // loadConfig reads the Config that flag and the environment point at, logs
-// its warnings and returns the Upstreams to start.
+// its warnings and returns the Upstreams to start. Unless the Config is at
+// the default location, each Upstream carries its path as ConfigPath: the
+// Agent may run sprut with -c or $SPRUT_CONFIG that the user's shell lacks,
+// and in another directory.
 func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]config.Upstream, error) {
-	path, err := config.Path(flag, lookupEnv)
+	path, named, err := config.Path(flag, lookupEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +97,15 @@ func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]co
 	}
 	for _, w := range warnings {
 		log.Warn(w.Message, "upstream", w.Upstream)
+	}
+	if named {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("config %s: %w", path, err)
+		}
+		for i := range upstreams {
+			upstreams[i].ConfigPath = abs
+		}
 	}
 	return upstreams, nil
 }

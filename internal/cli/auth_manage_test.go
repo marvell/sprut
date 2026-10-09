@@ -66,7 +66,7 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	}
 	stamp := `\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\S*`
 	want := []string{
-		`^dead: the credentials expired and cannot be renewed; run: sprut auth login dead$`,
+		`^dead: the credentials expired and cannot be renewed; ` + regexp.QuoteMeta(loginHint(config, "dead")) + `$`,
 		`^none: no credentials$`,
 		`^stale: logged in, access token expired ` + stamp + `, renewable$`,
 		`^valid: logged in, access token expires ` + stamp + `, renewable$`,
@@ -83,6 +83,23 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	wantNoSecrets(t, "auth status stdout", stdout, fakeSecrets...)
 }
 
+func TestConfigFlagGoesBeforeOrAfterTheCommand(t *testing.T) {
+	t.Parallel()
+	config := writeConfig(t, map[string]any{"remote": map[string]any{"url": "https://remote.invalid/mcp"}})
+	env := []string{"XDG_STATE_HOME=" + t.TempDir()}
+
+	for _, args := range [][]string{
+		{"-c", config, "auth", "status"},
+		{"auth", "-c", config, "status"},
+		{"auth", "status", "-c", config},
+	} {
+		code, stdout, stderr := runSprut(t, env, args...)
+		if code != 0 || stdout != "remote: no credentials\n" {
+			t.Errorf("sprut %q: exit code = %d, stdout = %q, want 0 listing remote\nstderr:\n%s", args, code, stdout, stderr)
+		}
+	}
+}
+
 func TestAuthLogoutStopsARunningServeFromUsingTheCredentials(t *testing.T) {
 	t.Parallel()
 	l := logIn(t, 3600)
@@ -94,7 +111,7 @@ func TestAuthLogoutStopsARunningServeFromUsingTheCredentials(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, "fake: logged out") {
 		t.Fatalf("exit code = %d, stdout = %q, want 0 saying fake is logged out\nstderr:\n%s", code, stdout, stderr)
 	}
-	wantLoginHint(t, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(context.Background(), t))
 	for _, auth := range l.MCPAuth()[sent:] {
 		if auth != "" {
 			t.Errorf("a request after the logout carried Authorization %q, want none", auth)

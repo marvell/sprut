@@ -35,6 +35,11 @@ type Upstream struct {
 	URL     string
 	Headers map[string]string
 	OAuth   *OAuth // nil when the Config has no "oauth"
+
+	// ConfigPath is the absolute path of the Config file, which a command
+	// run from another shell needs with -c to find it, or "" when it is
+	// where sprut looks by default. Parse leaves it empty.
+	ConfigPath string
 }
 
 // OAuth is how sprut logs in to an OAuth Upstream, where the Config says.
@@ -73,18 +78,19 @@ func LookupIn(env []string) LookupEnv {
 
 // Path resolves which Config file to read: flag (from -c/--config), then
 // $SPRUT_CONFIG, then $XDG_CONFIG_HOME/sprut/config.json, then
-// ~/.config/sprut/config.json.
-func Path(flag string, lookupEnv LookupEnv) (string, error) {
+// ~/.config/sprut/config.json. It reports whether the path was named, by
+// flag or $SPRUT_CONFIG, rather than being the default location.
+func Path(flag string, lookupEnv LookupEnv) (path string, named bool, err error) {
 	if flag != "" {
-		return flag, nil
+		return flag, true, nil
 	}
 	if p, _ := lookupEnv("SPRUT_CONFIG"); p != "" {
-		return p, nil
+		return p, true, nil
 	}
 	if dir, ok := XDGDir(lookupEnv, "XDG_CONFIG_HOME", ".config"); ok {
-		return filepath.Join(dir, "sprut", "config.json"), nil
+		return filepath.Join(dir, "sprut", "config.json"), false, nil
 	}
-	return "", errors.New("cannot locate the config: HOME is not set; use -c PATH or SPRUT_CONFIG")
+	return "", false, errors.New("cannot locate the config: HOME is not set; use -c PATH or SPRUT_CONFIG")
 }
 
 // XDGDir returns the base directory that the XDG variable names, or the

@@ -72,11 +72,18 @@ func (g *gateway) echo(ctx context.Context, t *testing.T) *mcp.CallToolResult {
 	return res
 }
 
-// wantLoginHint checks that res is an isError result with the Login hint.
-func wantLoginHint(t *testing.T, res *mcp.CallToolResult) {
+// loginHint is the remedy that sprut gives for the Upstream name in the
+// Config at path, which tests always name with -c.
+func loginHint(path, name string) string {
+	return "run: sprut auth login -c " + path + " " + name
+}
+
+// wantLoginHint checks that res is an isError result with the Login hint of
+// fake in the Config at path.
+func wantLoginHint(t *testing.T, path string, res *mcp.CallToolResult) {
 	t.Helper()
 	text := resultText(t, res)
-	if !res.IsError || !strings.Contains(text, "run: sprut auth login fake") {
+	if !res.IsError || !strings.Contains(text, loginHint(path, "fake")) {
 		t.Errorf("fake__echo = %q (isError %v), want an isError result with the login hint", text, res.IsError)
 	}
 	wantNoSecrets(t, "tool result", text, leakySecrets...)
@@ -163,7 +170,7 @@ func TestServeReportsCredentialsTheAuthorizationServerRejectsWithALoginHint(t *t
 
 		l.FailRefresh("invalid_grant")
 		l.RevokeAccessTokens()
-		wantLoginHint(t, g.echo(context.Background(), t))
+		wantLoginHint(t, l.config, g.echo(context.Background(), t))
 
 		g.closeAgent(t)
 		wantNoSecrets(t, "serve stderr", g.stderr.String(), leakySecrets...)
@@ -176,7 +183,7 @@ func TestServeReportsCredentialsTheAuthorizationServerRejectsWithALoginHint(t *t
 		g := startGateway(t, l.config, l.env, "-v")
 
 		g.wantTools(t)
-		g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="run: sprut auth login fake"`)
+		g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="`+loginHint(l.config, "fake")+`"`)
 		g.closeAgent(t)
 		wantNoSecrets(t, "serve stderr", g.stderr.String(), leakySecrets...)
 	})
@@ -192,7 +199,7 @@ func TestServeSkipsAnUpstreamWhoseCredentialsExpiredWithoutARefreshToken(t *test
 	g := startGateway(t, l.config, l.env)
 
 	g.wantTools(t)
-	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="run: sprut auth login fake"`)
+	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", `hint="`+loginHint(l.config, "fake")+`"`)
 	if n := len(l.Refreshes()); n != 0 {
 		t.Errorf("refreshes = %d, want none", n)
 	}
@@ -309,7 +316,7 @@ func TestServeSendsNoRefreshWhenTheUpstreamNamesAnotherIssuer(t *testing.T) {
 
 	l.NameIssuer("https://other.example")
 	l.RevokeAccessTokens()
-	wantLoginHint(t, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(context.Background(), t))
 
 	if n := len(l.Refreshes()); n != 0 {
 		t.Errorf("refreshes = %d, want none", n)

@@ -71,8 +71,8 @@ func isLoopback(host string) bool {
 // needsLoginError is the error of an OAuth Upstream that has no Credentials
 // it can use.
 type needsLoginError struct {
-	upstream string
-	reason   string // why the Credentials it had can't be used, if it had any
+	hint   string // the Upstream's loginHint
+	reason string // why the Credentials it had can't be used, if it had any
 }
 
 func (e *needsLoginError) Error() string {
@@ -82,10 +82,24 @@ func (e *needsLoginError) Error() string {
 	return "needs a login"
 }
 
-func (e *needsLoginError) Hint() string { return loginHint(e.upstream) }
+func (e *needsLoginError) Hint() string { return e.hint }
 
 // loginHint is the remedy of an Upstream that needs a Login.
-func loginHint(upstream string) string { return "run: sprut auth login " + upstream }
+func loginHint(u config.Upstream) string {
+	cmd := "run: sprut auth login "
+	if u.ConfigPath != "" {
+		cmd += "-c " + shellQuote(u.ConfigPath) + " "
+	}
+	return cmd + u.Name // a valid name needs no quoting
+}
+
+// shellQuote quotes s for a POSIX shell, unless it needs no quoting.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:@%+=,") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // renewBefore is how long before its access token expires that the
 // Credentials are renewed, as oauth2.ReuseTokenSourceWithExpiry would.
@@ -562,7 +576,7 @@ const rejected = "the upstream rejected the credentials"
 
 // needsLogin is the error of the Upstream needing a Login, for reason.
 func (h *storedCredentials) needsLogin(reason string) error {
-	return &needsLoginError{upstream: h.upstream.Name, reason: reason}
+	return &needsLoginError{hint: loginHint(h.upstream), reason: reason}
 }
 
 // oauthClient is the HTTP client of requests to an Authorization Server
