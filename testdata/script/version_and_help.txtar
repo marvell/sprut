@@ -38,15 +38,22 @@ sprut upstream -h
 ! stdout $GLOSSARY
 sprut upstream add -h
 ! stdout $GLOSSARY
+! stderr .
 sprut upstream remove -h
 ! stdout $GLOSSARY
+! stderr .
 sprut upstream enable -h
 ! stdout $GLOSSARY
+! stderr .
 sprut upstream disable -h
 ! stdout $GLOSSARY
+! stderr .
 sprut upstream list -h
 ! stdout $GLOSSARY
+! stderr .
 sprut upstream login -h
 ! stdout $GLOSSARY
+! stderr .
 sprut upstream logout -h
 ! stdout $GLOSSARY
+! stderr .
