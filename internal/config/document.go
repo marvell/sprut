@@ -123,19 +123,18 @@ func (d *Document) SetDisabled(name string, disabled bool) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("upstream %q: %w", name, ErrNotFound)
 	}
-	// Read as the parser reads it.
-	var byKey map[string]json.RawMessage
-	was := false
-	if err := json.Unmarshal(raw, &byKey); err != nil || byKey == nil {
-		return false, fmt.Errorf("upstream %q: must be a JSON object", name)
+	byName, err := entryFields(raw)
+	wasDisabled := false
+	if err == nil {
+		err = decodeField(byName, "disabled", &wasDisabled, "a boolean")
 	}
-	if err := decodeField(byKey, "disabled", &was, "a boolean"); err != nil {
+	if err != nil {
 		return false, fmt.Errorf("upstream %q: %w", name, err)
 	}
-	if was == disabled {
+	if wasDisabled == disabled {
 		return false, nil
 	}
-	fields, _ := decodeObject(raw) // an object, as Unmarshal found
+	fields, _ := decodeObject(raw) // an object, as entryFields found
 	fields = slices.DeleteFunc(fields, func(f member) bool { return f.key == "disabled" })
 	if disabled {
 		fields = append(fields, member{"disabled", json.RawMessage("true")})

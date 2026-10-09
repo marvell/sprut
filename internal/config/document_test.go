@@ -230,3 +230,53 @@ func TestParseDocumentRefusesNonObject(t *testing.T) {
 		}
 	}
 }
+
+// An entry that repeats "disabled" is switched the way the parser reads it:
+// by its last "disabled".
+func TestDocumentSetDisabledRepeatedField(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, entry string
+		disabled    bool
+		wantChanged bool
+	}{
+		{"enable, last true", `{"command": "a", "disabled": false, "disabled": true}`, false, true},
+		{"enable, last false", `{"command": "a", "disabled": true, "disabled": false}`, false, false},
+		{"disable, last false", `{"command": "a", "disabled": true, "disabled": false}`, true, true},
+		{"disable, last true", `{"command": "a", "disabled": false, "disabled": true}`, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			doc, err := config.ParseDocument([]byte(`{"mcpServers": {"a": ` + tt.entry + `}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, err := doc.SetDisabled("a", tt.disabled)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed != tt.wantChanged {
+				t.Errorf("SetDisabled(%v) changed = %v, want %v", tt.disabled, changed, tt.wantChanged)
+			}
+			entries, _, err := config.ParseEntries(doc.Bytes(), lookup(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entries[0].Disabled != tt.disabled {
+				t.Errorf("after SetDisabled(%v) the parser reads disabled = %v", tt.disabled, entries[0].Disabled)
+			}
+		})
+	}
+}
+
+func TestDocumentSetDisabledNotFound(t *testing.T) {
+	t.Parallel()
+	doc, err := config.ParseDocument([]byte(`{"mcpServers": {"a": {"command": "a"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doc.SetDisabled("b", true); !errors.Is(err, config.ErrNotFound) {
+		t.Fatalf("SetDisabled of a missing name: %v, want ErrNotFound", err)
+	}
+}

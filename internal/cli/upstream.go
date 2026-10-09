@@ -29,8 +29,8 @@ func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command
 		Commands: []*ucli.Command{
 			addCommand(args, env, stdout, stderr),
 			removeCommand(env, stdout, stderr),
-			switchCommand("enable", "switch a disabled Upstream back on; refused if its entry is invalid", false, env, stdout, stderr),
-			switchCommand("disable", "switch an Upstream off without removing it from the Config", true, env, stdout, stderr),
+			switchCommand(false, env, stdout, stderr),
+			switchCommand(true, env, stdout, stderr),
 			listCommand(env, stdout),
 			loginCommand(env, stderr),
 			logoutCommand(env, stdout, stderr),

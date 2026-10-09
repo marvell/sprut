@@ -268,9 +268,9 @@ func resolveEntry(name string, raw json.RawMessage, lookupEnv LookupEnv) (Entry,
 	if !validName.MatchString(name) {
 		return Entry{}, nil, fmt.Errorf("invalid name, must match %s", validName)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
-		return Entry{}, nil, errors.New("must be a JSON object")
+	fields, err := entryFields(raw)
+	if err != nil {
+		return Entry{}, nil, err
 	}
 
 	u := Upstream{Name: name}
@@ -366,6 +366,16 @@ func resolveEntry(name string, raw json.RawMessage, lookupEnv LookupEnv) (Entry,
 	}
 	e.Upstream = &u
 	return e, warnings, nil
+}
+
+// entryFields decodes a Config entry into its fields. As when decoding into
+// a struct, a field given twice keeps its last value.
+func entryFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, errors.New("must be a JSON object")
+	}
+	return fields, nil
 }
 
 // parseOAuth parses the fields of "oauth", with warnings about the ones

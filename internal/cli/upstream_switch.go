@@ -10,9 +10,13 @@ import (
 	"github.com/marvell/sprut/internal/config"
 )
 
-// switchCommand returns the command name, which switches an Upstream off
-// when disabled is set, or on otherwise.
-func switchCommand(name, usage string, disabled bool, env []string, stdout, stderr io.Writer) *ucli.Command {
+// switchCommand returns disable, which switches an Upstream off, when
+// disabled is set, or else enable, which switches it on.
+func switchCommand(disabled bool, env []string, stdout, stderr io.Writer) *ucli.Command {
+	name, done, usage := "enable", "enabled", "switch a disabled Upstream back on; refused if its entry is invalid"
+	if disabled {
+		name, done, usage = "disable", "disabled", "switch an Upstream off without removing it from the Config"
+	}
 	return &ucli.Command{
 		Name:      name,
 		Usage:     usage,
@@ -29,10 +33,10 @@ func switchCommand(name, usage string, disabled bool, env []string, stdout, stde
 				return err
 			}
 			if !switched {
-				_, _ = fmt.Fprintf(stdout, "upstream %q is already %sd\n", upstream, name)
+				_, _ = fmt.Fprintf(stdout, "upstream %q is already %s\n", upstream, done)
 				return nil
 			}
-			changed(stdout, stderr, "%sd upstream %q", name, upstream)
+			changed(stdout, stderr, "%s upstream %q", done, upstream)
 			return nil
 		},
 	}
