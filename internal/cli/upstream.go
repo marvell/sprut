@@ -22,7 +22,7 @@ import (
 func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:  "upstream",
-		Usage: "manage the Upstreams in the Config",
+		Usage: "manage the upstreams in the config",
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			return usageError(ctx, cmd, nil)
 		},
@@ -41,10 +41,10 @@ func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command
 func listCommand(env []string, stdout io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name: "list",
-		Usage: "list every Upstream in the Config with its state and the state of its Credentials; " +
-			"starts no Upstream and contacts no server, unless --check",
+		Usage: "list every upstream in the config with its state and the state of its credentials; " +
+			"starts no upstream and contacts no server, unless --check",
 		Flags: []ucli.Flag{
-			&ucli.BoolFlag{Name: "check", Usage: "start every enabled Upstream, as serve would, and say whether it works; exit 1 if any does not"},
+			&ucli.BoolFlag{Name: "check", Usage: "start every enabled upstream, as serve would, and say whether it works; exit 1 if any does not"},
 			startupTimeoutFlag(),
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
@@ -127,7 +127,7 @@ func healthState(h gateway.Health) string {
 // noCheckFlag is the --no-check of the commands that check the Upstream
 // they write.
 func noCheckFlag() *ucli.BoolFlag {
-	return &ucli.BoolFlag{Name: "no-check", Usage: "don't start the Upstream to check that it works"}
+	return &ucli.BoolFlag{Name: "no-check", Usage: "don't start the upstream to check that it works"}
 }
 
 // checkWritten starts the Upstream called name, just written to the Config
@@ -253,7 +253,7 @@ func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name 
 // stderr that running Agents don't see it yet.
 func changed(stdout, stderr io.Writer, format string, a ...any) {
 	_, _ = fmt.Fprintf(stdout, format+"\n", a...)
-	_, _ = fmt.Fprintln(stderr, "note: running Agents see this change only after their sprut restarts")
+	_, _ = fmt.Fprintln(stderr, "note: running agents see this change only after their sprut restarts")
 }
 
 // findUpstream returns the Upstream called name.

@@ -19,11 +19,11 @@ import (
 func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:  "serve",
-		Usage: "run the Gateway as a stdio MCP server",
+		Usage: "run the gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
 			startupTimeoutFlag(),
-			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every Namespaced tool and tool call"},
-			&ucli.BoolFlag{Name: "dry-run", Usage: "start every Upstream as usual, then shut down; exit 1 if any failed"},
+			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call"},
+			&ucli.BoolFlag{Name: "dry-run", Usage: "start every upstream as usual, then shut down; exit 1 if any failed"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			startupTimeout := cmd.Duration("startup-timeout")
@@ -59,7 +59,7 @@ func startupTimeoutFlag() *ucli.DurationFlag {
 	return &ucli.DurationFlag{
 		Name:  "startup-timeout",
 		Value: 30 * time.Second,
-		Usage: "how long each Upstream may take to start",
+		Usage: "how long each upstream may take to start",
 		Validator: func(d time.Duration) error {
 			if d <= 0 {
 				return errors.New("must be positive")
@@ -70,7 +70,7 @@ func startupTimeoutFlag() *ucli.DurationFlag {
 }
 
 func configFlag() *ucli.StringFlag {
-	return &ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the Config file"}
+	return &ucli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "path to the config file"}
 }
 
 // newLogger logs logfmt to w at INFO, or at DEBUG when verbose.

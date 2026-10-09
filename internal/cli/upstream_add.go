@@ -18,7 +18,7 @@ import (
 func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:  "add",
-		Usage: "add an Upstream to the Config, creating the Config if there is none",
+		Usage: "add an upstream to the config, creating the config if there is none",
 		UsageText: "sprut upstream add [options] <name> -- <command> [args...]\n" +
 			"sprut upstream add [options] <name> <http(s) url>",
 		Arguments: []ucli.Argument{
@@ -27,18 +27,18 @@ func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 		},
 		Flags: []ucli.Flag{
 			&ucli.StringSliceFlag{
-				Name: "env", Aliases: []string{"e"}, Usage: "set an environment variable of a stdio Upstream, as KEY=VALUE, such as -e 'TOKEN=${TOKEN}'",
+				Name: "env", Aliases: []string{"e"}, Usage: "set an environment variable of a stdio upstream, as KEY=VALUE, such as -e 'TOKEN=${TOKEN}'",
 			},
 			&ucli.StringSliceFlag{
-				Name: "header", Aliases: []string{"H"}, Usage: "set a header of an HTTP Upstream, as 'Name: value', such as -H 'Authorization: Bearer ${TOKEN}'",
+				Name: "header", Aliases: []string{"H"}, Usage: "set a header of an HTTP upstream, as 'Name: value', such as -H 'Authorization: Bearer ${TOKEN}'",
 			},
-			&ucli.StringFlag{Name: "oauth-client-id", Usage: "log in to an HTTP Upstream as this pre-registered OAuth client"},
+			&ucli.StringFlag{Name: "oauth-client-id", Usage: "log in to an HTTP upstream as this pre-registered OAuth client"},
 			&ucli.StringFlag{
 				Name: "oauth-client-secret", Usage: "the secret of the --oauth-client-id client, such as '${CLIENT_SECRET}'",
 			},
-			&ucli.StringSliceFlag{Name: "oauth-scope", Usage: "request this OAuth scope in place of those the HTTP Upstream asks for"},
-			&ucli.BoolFlag{Name: "disabled", Usage: "add the Upstream switched off"},
-			&ucli.BoolFlag{Name: "force", Usage: "replace an Upstream of that name, keeping its place in the Config"},
+			&ucli.StringSliceFlag{Name: "oauth-scope", Usage: "request this OAuth scope in place of those the HTTP upstream asks for"},
+			&ucli.BoolFlag{Name: "disabled", Usage: "add the upstream switched off"},
+			&ucli.BoolFlag{Name: "force", Usage: "replace an upstream of that name, keeping its place in the config"},
 			noCheckFlag(),
 			startupTimeoutFlag(),
 		},

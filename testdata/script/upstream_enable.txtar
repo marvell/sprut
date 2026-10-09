@@ -12,7 +12,7 @@ chmod 0644 xdg/sprut/config.json
 # other keys, and the file's mode.
 sprut upstream disable memory
 stdout '^disabled upstream "memory"$'
-stderr 'running Agents see this change only after their sprut restarts'
+stderr 'running agents see this change only after their sprut restarts'
 cmp xdg/sprut/config.json disabled.golden
 exec ls -l xdg/sprut/config.json
 stdout '^-rw-r--r--'
@@ -21,7 +21,7 @@ stdout '^-rw-r--r--'
 # the entry.
 sprut upstream enable memory
 stdout '^enabled upstream "memory"$'
-stderr 'running Agents see this change only after their sprut restarts'
+stderr 'running agents see this change only after their sprut restarts'
 sprut upstream enable --no-check off
 stdout '^enabled upstream "off"$'
 cmp xdg/sprut/config.json enabled.golden

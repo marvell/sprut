@@ -9,7 +9,7 @@ env HOME=$WORK/home
 ! exists xdg
 sprut upstream add --no-check memory -- npx -y '@modelcontextprotocol/server-memory'
 stdout '^added upstream "memory"$'
-stderr 'running Agents see this change only after their sprut restarts'
+stderr 'running agents see this change only after their sprut restarts'
 cmp xdg/sprut/config.json created.golden
 exec ls -ld xdg/sprut xdg/sprut/config.json
 stdout '^drwx------.* xdg/sprut$'

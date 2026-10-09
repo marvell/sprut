@@ -14,7 +14,7 @@ import (
 func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:      "login",
-		Usage:     "log in to an OAuth Upstream and store its Credentials",
+		Usage:     "log in to an OAuth upstream and store its credentials",
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
 		Flags: []ucli.Flag{
 			&ucli.BoolFlag{Name: "no-browser", Usage: "only print the authorization URL, without opening a browser"},

@@ -15,7 +15,7 @@ import (
 func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:      "logout",
-		Usage:     "delete the Credentials of an OAuth Upstream",
+		Usage:     "delete the credentials of an OAuth upstream",
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")

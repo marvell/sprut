@@ -4,7 +4,7 @@ Judgement calls for review. Anything mechanical lives in `.golangci.yml` instead
 
 ## Wording
 
-- **Glossary terms** (`GLOSSARY.md`): capitalised in comments, docs and test names ("the Upstream", "the Config"); lowercase in error strings and log messages, like any other word there ("upstream skipped", "reading config: ...").
+- **Glossary terms** (`GLOSSARY.md`): capitalised in comments, docs and test names ("the Upstream", "the Config"); lowercase in error strings, log messages, other output and help text, like any other word there ("upstream skipped", "reading config: ...").
 
 ## Process boundary
 

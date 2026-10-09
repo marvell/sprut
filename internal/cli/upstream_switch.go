@@ -13,10 +13,10 @@ import (
 // switchCommand returns disable, which switches an Upstream off, when
 // disabled is set, or else enable, which switches it on.
 func switchCommand(disabled bool, env []string, stdout, stderr io.Writer) *ucli.Command {
-	name, done, usage := "disable", "disabled", "switch an Upstream off without removing it from the Config"
+	name, done, usage := "disable", "disabled", "switch an upstream off without removing it from the config"
 	var flags []ucli.Flag
 	if !disabled {
-		name, done, usage = "enable", "enabled", "switch a disabled Upstream back on; refused if its entry is invalid"
+		name, done, usage = "enable", "enabled", "switch a disabled upstream back on; refused if its entry is invalid"
 		flags = []ucli.Flag{noCheckFlag(), startupTimeoutFlag()}
 	}
 	return &ucli.Command{

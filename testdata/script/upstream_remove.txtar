@@ -10,7 +10,7 @@ chmod 0644 xdg/sprut/config.json
 # fields and ${VAR} references, other keys, and the file's mode.
 sprut upstream remove memory
 stdout '^removed upstream "memory"$'
-stderr 'running Agents see this change only after their sprut restarts'
+stderr 'running agents see this change only after their sprut restarts'
 cmp xdg/sprut/config.json removed.golden
 exec ls -l xdg/sprut/config.json
 stdout '^-rw-r--r--'
@@ -23,15 +23,15 @@ mkdir state/sprut/credentials
 cp creds.json state/sprut/credentials/linear.json
 cp creds.json state/sprut/credentials/notion.json
 sprut upstream remove linear
-stdout '^removed upstream "linear" and deleted its Credentials$'
-stderr 'running Agents see this change only after their sprut restarts'
+stdout '^removed upstream "linear" and deleted its credentials$'
+stderr 'running agents see this change only after their sprut restarts'
 ! exists state/sprut/credentials/linear.json
 exists state/sprut/credentials/notion.json
 cmp xdg/sprut/config.json linear.golden
 
 # Removing the last Upstream leaves an empty mcpServers.
 sprut upstream remove notion
-stdout 'deleted its Credentials'
+stdout 'deleted its credentials'
 sprut upstream remove off
 cmp xdg/sprut/config.json empty.golden
 

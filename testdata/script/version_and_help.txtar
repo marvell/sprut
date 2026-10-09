@@ -8,10 +8,14 @@ sprut --version serve
 stdout '^sprut version \S+\n$'
 ! stderr .
 
-# Help goes to stdout and exits 0.
+# Help goes to stdout and exits 0, and writes glossary terms lowercase, like
+# any other message.
+env GLOSSARY='\b(Gateway|Upstreams?|Transports?|Agents?|Config|Namespaced|Logins?|Credentials)\b'
+
 sprut -h
 stdout 'serve'
 stdout '--version'
+! stdout $GLOSSARY
 ! stderr .
 
 sprut --help
@@ -23,8 +27,26 @@ stdout '--config'
 stdout '--startup-timeout'
 stdout '--verbose'
 stdout '--dry-run'
+! stdout $GLOSSARY
 ! stderr .
 
 sprut serve --help
 stdout '--dry-run'
 ! stderr .
+
+sprut upstream -h
+! stdout $GLOSSARY
+sprut upstream add -h
+! stdout $GLOSSARY
+sprut upstream remove -h
+! stdout $GLOSSARY
+sprut upstream enable -h
+! stdout $GLOSSARY
+sprut upstream disable -h
+! stdout $GLOSSARY
+sprut upstream list -h
+! stdout $GLOSSARY
+sprut upstream login -h
+! stdout $GLOSSARY
+sprut upstream logout -h
+! stdout $GLOSSARY

@@ -74,11 +74,11 @@ Each key under `mcpServers` names an Upstream. It must match `^[a-z0-9-]+$`, and
 ```console
 $ sprut upstream add memory -- npx -y @modelcontextprotocol/server-memory
 added upstream "memory"
-note: running Agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts
 upstream "memory": ok (9 tools)
 $ sprut upstream add linear https://mcp.linear.app/mcp
 added upstream "linear"
-note: running Agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts
 upstream "linear": needs login; run: sprut upstream login linear
 ```
 
@@ -119,8 +119,8 @@ Only the Upstream just written is checked, and only if `sprut serve` would start
 
 ```console
 $ sprut upstream remove linear
-removed upstream "linear" and deleted its Credentials
-note: running Agents see this change only after their sprut restarts
+removed upstream "linear" and deleted its credentials
+note: running agents see this change only after their sprut restarts
 ```
 
 It keeps the rest of the Config as [`add`](#add-an-upstream) does, and refuses to change a Config that already has errors. A name that is not in the Config, or a missing Config, exits 1 and creates no file. The Credentials are deleted only once the Config is saved.
@@ -132,10 +132,10 @@ It keeps the rest of the Config as [`add`](#add-an-upstream) does, and refuses t
 ```console
 $ sprut upstream disable postgres
 disabled upstream "postgres"
-note: running Agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts
 $ sprut upstream enable postgres
 enabled upstream "postgres"
-note: running Agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts
 upstream "postgres": ok (18 tools)
 ```
 

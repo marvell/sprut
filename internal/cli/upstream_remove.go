@@ -14,7 +14,7 @@ import (
 func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:      "remove",
-		Usage:     "remove an Upstream from the Config, and delete its Credentials",
+		Usage:     "remove an upstream from the config, and delete its credentials",
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "name", UsageText: "<name>", Required: true}},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("name")
@@ -36,7 +36,7 @@ func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			had, err := store.Delete(ctx, name)
 			format := "removed upstream %q"
 			if had {
-				format += " and deleted its Credentials"
+				format += " and deleted its credentials"
 			}
 			changed(stdout, stderr, format, name)
 			if err != nil {
