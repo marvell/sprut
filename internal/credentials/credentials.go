@@ -172,7 +172,9 @@ func (s *Store) Save(ctx context.Context, upstream string, c *Credentials) error
 
 // Delete deletes the Credentials of upstream under its lock, and reports
 // whether there were any. The lock file stays. When there are none, it
-// takes no lock, so that it creates no lock file.
+// takes no lock, so that it creates no lock file: a Save that is writing
+// them meanwhile would have outlived a locked Delete just as well, had it
+// taken the lock a moment later.
 func (s *Store) Delete(ctx context.Context, upstream string) (bool, error) {
 	path := s.path(upstream, ".json")
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {

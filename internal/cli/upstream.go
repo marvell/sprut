@@ -161,6 +161,52 @@ func orDash(s string) string {
 	return s
 }
 
+// editConfig applies edit to the Config that flag and the environment
+// point at, and writes it back if the result parses, printing the
+// warnings about the Upstream name to stderr. It refuses to edit a Config
+// that already fails to parse. A missing Config is created.
+func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name string, edit func(*config.Document) error) error {
+	path, _, data, err := readConfig(flag, lookupEnv)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		data = []byte("{}")
+	case err != nil:
+		return err
+	default:
+		if _, _, err := config.ParseEntries(data, lookupEnv); err != nil {
+			return fmt.Errorf("config %s: %w", path, err)
+		}
+	}
+	doc, err := config.ParseDocument(data)
+	if err != nil {
+		return fmt.Errorf("config %s: %w", path, err)
+	}
+	if err := edit(doc); err != nil {
+		return err
+	}
+	out := doc.Bytes()
+	_, warnings, err := config.ParseEntries(out, lookupEnv)
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		if w.Upstream == name {
+			_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, w.Message)
+		}
+	}
+	if err := config.WriteFile(path, out); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	return nil
+}
+
+// changed reports a change to the Config: what changed on stdout, and on
+// stderr that running Agents don't see it yet.
+func changed(stdout, stderr io.Writer, format string, a ...any) {
+	_, _ = fmt.Fprintf(stdout, format+"\n", a...)
+	_, _ = fmt.Fprintln(stderr, "note: running Agents see this change only after their sprut restarts")
+}
+
 // findUpstream returns the Upstream called name.
 func findUpstream(upstreams []config.Upstream, name string) (config.Upstream, error) {
 	i := slices.IndexFunc(upstreams, func(u config.Upstream) bool { return u.Name == name })

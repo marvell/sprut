@@ -34,11 +34,11 @@ func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			// Only once the Config is saved, so that a Config that can't be
 			// saved keeps an Upstream with its Credentials.
 			had, err := store.Delete(ctx, name)
-			result := "removed upstream %q"
+			format := "removed upstream %q"
 			if had {
-				result += " and deleted its Credentials"
+				format += " and deleted its Credentials"
 			}
-			changed(stdout, stderr, result, name)
+			changed(stdout, stderr, format, name)
 			if err != nil {
 				return fmt.Errorf("upstream %q: %w", name, err)
 			}
