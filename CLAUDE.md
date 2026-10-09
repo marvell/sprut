@@ -2,9 +2,9 @@
 
 Commit only after `make check` exits 0 on the exact tree being committed: it runs exactly what CI runs. Gate the commit on that exit code (`make check && git commit ...`, or a separate run you read first). Any failure blocks the commit until fixed, a flaky test included.
 
-Only `main` touches `os.Args`, env, std streams and `os.Exit`; tests live only in `internal/cli` and `internal/config`. `make lint` enforces both (`.golangci.yml`).
+Only `main` touches `os.Args`, env, std streams and `os.Exit`; tests may live in any package but are black-box only, in an external `_test` package (ADR-0004). `make lint` enforces both (`.golangci.yml`).
 
-Test seams come pre-agreed from the spec's Testing Decisions; confirm with the user only a seam the spec doesn't name.
+Test seams come pre-agreed from the spec's Testing Decisions, as amended by ADR-0004; confirm with the user only a seam neither names.
 
 ## Review
 

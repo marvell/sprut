@@ -1,13 +1,14 @@
-# Mechanical checks for the seam rules of the Sprut v0.1 spec (the Linear
-# project description; see docs/agents/issue-tracker.md). Run with `make lint`.
+# Mechanical checks for the process boundary (seam 1 of the Sprut v0.1 spec,
+# the Linear project description; see docs/agents/issue-tracker.md) and for
+# black-box tests (ADR-0004). Run with `make lint`.
 version: "2"
 
 linters:
   default: standard
   enable:
-    - depguard
     - forbidigo
     - revive
+    - testpackage
 
   settings:
     revive:
@@ -23,33 +24,10 @@ linters:
           pkg: ^os$
           msg: "seam 1 owns the process boundary: only main may touch it; take args, env and streams as parameters of cli.Run instead"
 
-    depguard:
-      rules:
-        tests-at-the-seams:
-          # Strict: anything not allowed is a breach, so a new internal
-          # package is covered too.
-          list-mode: strict
-          files:
-            - $test
-          allow:
-            - $gostd
-            - github.com/modelcontextprotocol/go-sdk
-            - github.com/marvell/sprut/internal/cli
-            - github.com/marvell/sprut/internal/config
-          deny:
-            # Already blocked by strict mode; listed for the explanatory message.
-            - pkg: github.com/marvell/sprut/internal/gateway
-              desc: "tests live at the two seams: of this module, import only internal/cli and internal/config, never internal/gateway"
-        tests-only-in-seam-packages:
-          # A white-box test inside another package needs no import to reach
-          # its internals, so catch it by its import of testing instead.
-          files:
-            - $test
-            - "!**/internal/cli/**"
-            - "!**/internal/config/**"
-          deny:
-            - pkg: testing
-              desc: "tests live at the two seams: test files belong in internal/cli or internal/config only"
+    testpackage:
+      # No exceptions, not even export_test.go: a test reaches its package
+      # through the exported API alone (ADR-0004).
+      skip-regexp: ^$
 
   exclusions:
     rules:
