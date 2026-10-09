@@ -952,3 +952,50 @@ func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
 	wantNoSecrets(t, "instructions", instructions, "url-secret", "header-secret", "env-secret")
 	g.closeAgent(t)
 }
+
+// The Upstream is on localhost, so that it has subdomains. Other origins
+// are reached through a proxy, which stands in for them all; only an Upstream
+// that sprut can't trust a certificate of would let the test start on
+// HTTPS, so the scheme changes the other way.
+func TestServeRefusesARedirectToAnotherOriginWithoutSendingTheToken(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		target func(port string) string
+	}{
+		{"another host", func(string) string { return "http://elsewhere.invalid/mcp" }},
+		{"a subdomain", func(port string) string { return "http://sub.localhost:" + port + "/mcp-moved" }},
+		{"another scheme", func(port string) string { return "https://localhost:" + port + "/mcp-moved" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			u := mcptest.StartOAuthOn(t, "localhost")
+			l := logInTo(t, u, 3600)
+			proxy := mcptest.StartHTTP(t, "")
+			u.RedirectMCP(tc.target(strings.TrimPrefix(u.Base, "http://localhost:")))
+			env := append([]string{"HTTP_PROXY=" + proxy.URL, "HTTPS_PROXY=" + proxy.URL}, l.env...)
+
+			g := startGateway(t, l.config, env, "-v")
+
+			g.wantTools(t)
+			g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", "redirect")
+			g.closeAgent(t)
+			for _, h := range proxy.Headers() {
+				t.Errorf("the redirect reached the proxy (Authorization %q), want it refused before", h.Get("Authorization"))
+			}
+			wantNoSecrets(t, "serve stderr", g.stderr.String(), mcptest.Secrets...)
+		})
+	}
+}
+
+func TestServeFollowsARedirectWithinTheUpstreamsOrigin(t *testing.T) {
+	t.Parallel()
+	l := logIn(t, 3600)
+	l.RedirectMCP(l.Base + "/mcp-moved")
+
+	g := startGateway(t, l.config, l.env)
+
+	g.wantTools(t, "fake__echo", "fake__fail")
+	g.wantEcho(t)
+	g.closeAgent(t)
+}

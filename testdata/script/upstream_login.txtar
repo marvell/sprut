@@ -1,0 +1,54 @@
+# sprut upstream login and logout name the Upstream at fault and exit 1
+# when they can't act on it, without touching the Credentials.
+env XDG_STATE_HOME=$WORK/state
+
+# SPRUT_CONFIG names the Config: only it knows local, and that it is stdio.
+env SPRUT_CONFIG=$WORK/config.json
+! sprut upstream login local
+status 1
+stderr 'OAuth is only for HTTP upstreams'
+env SPRUT_CONFIG=
+
+# -c goes in any position.
+! sprut upstream login nope -c config.json
+status 1
+stderr '"nope"'
+! sprut -c config.json upstream login nope
+status 1
+stderr '"nope"'
+! sprut upstream -c config.json logout nope
+status 1
+stderr '"nope"'
+
+! sprut upstream login static -c config.json --no-browser
+status 1
+stderr 'Authorization header'
+
+! sprut upstream logout local -c config.json
+status 1
+stderr '"local"'
+
+! sprut upstream logout nope -c config.json
+status 1
+stderr '"nope"'
+
+! exists state/sprut
+
+# The state of the Credentials is in upstream list, which reads only the
+# stored Credentials: it contacts no server.
+sprut upstream list -c config.json
+cmp stdout list.golden
+! stderr .
+! exists state/sprut
+
+-- config.json --
+{"mcpServers": {
+  "local": {"command": "fake-upstream"},
+  "remote": {"url": "https://remote.invalid/mcp"},
+  "static": {"url": "https://static.invalid/mcp", "headers": {"Authorization": "Bearer x"}}
+}}
+-- list.golden --
+NAME    TRANSPORT  TARGET                      STATE    AUTH
+local   stdio      fake-upstream               enabled  -
+remote  http       https://remote.invalid/mcp  enabled  no credentials
+static  http       https://static.invalid/mcp  enabled  -

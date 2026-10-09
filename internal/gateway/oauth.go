@@ -78,7 +78,7 @@ func (e *needsLoginError) Hint() string { return e.hint }
 
 // loginHint is the remedy of an Upstream that needs a Login.
 func loginHint(u config.Upstream) string {
-	cmd := "run: sprut auth login "
+	cmd := "run: sprut upstream login "
 	if u.ConfigPath != "" {
 		cmd += "-c " + shellQuote(u.ConfigPath) + " "
 	}

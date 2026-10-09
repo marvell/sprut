@@ -89,7 +89,7 @@ NAME    TRANSPORT  TARGET                                        STATE          
 memory  stdio      npx -y @modelcontextprotocol/server-memory    enabled                                  -
 linear  http       https://linear.invalid/mcp                    enabled                                  logged in, access token expires 2099-01-01T00:00:00Z, renewable
 notion  http       https://notion.invalid/mcp                    enabled                                  no credentials
-dead    http       https://dead.invalid/mcp                      enabled                                  the credentials expired and cannot be renewed; run: sprut auth login dead
+dead    http       https://dead.invalid/mcp                      enabled                                  the credentials expired and cannot be renewed; run: sprut upstream login dead
 static  http       https://static.invalid/mcp                    enabled                                  -
 plain   http       http://plain.invalid/mcp                      enabled                                  -
 paused  http       https://paused.invalid/mcp                    disabled                                 logged in, access token does not expire, not renewable

@@ -143,7 +143,7 @@ func TestServeKeepsCredentialsWhenRenewalFailsOnTheWay(t *testing.T) {
 				t.Errorf("fake__echo = %v, %v; want an isError result", res, err)
 			case how != "hang":
 				text := resultText(t, res)
-				if strings.Contains(text, "sprut auth login") {
+				if strings.Contains(text, "sprut upstream login") {
 					t.Errorf("fake__echo = %q, want no login hint", text)
 				}
 				wantNoSecrets(t, "tool result", text, leakySecrets...)

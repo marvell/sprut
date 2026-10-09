@@ -20,12 +20,12 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 			config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 
 			code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + t.TempDir()},
-				"auth", "login", "fake", "--no-browser", "-v", "-c", config)
+				"upstream", "login", "fake", "--no-browser", "-v", "-c", config)
 
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
-			wantNoSecrets(t, "auth login stderr", stderr, leakySecrets...)
+			wantNoSecrets(t, "upstream login stderr", stderr, leakySecrets...)
 		})
 		t.Run("code exchange, "+how, func(t *testing.T) {
 			t.Parallel()
@@ -38,7 +38,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
-			wantNoSecrets(t, "auth login stderr", stderr, leakySecrets...)
+			wantNoSecrets(t, "upstream login stderr", stderr, leakySecrets...)
 		})
 	}
 	for _, how := range []string{"5xx", "text", "invalid_grant"} {

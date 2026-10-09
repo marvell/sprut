@@ -13,9 +13,10 @@ import (
 
 	"github.com/marvell/sprut/internal/config"
 	"github.com/marvell/sprut/internal/credentials"
+	"github.com/marvell/sprut/internal/gateway"
 )
 
-func upstreamCommand(env []string, stdout io.Writer) *ucli.Command {
+func upstreamCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:  "upstream",
 		Usage: "manage the Upstreams in the Config",
@@ -24,6 +25,8 @@ func upstreamCommand(env []string, stdout io.Writer) *ucli.Command {
 		},
 		Commands: []*ucli.Command{
 			listCommand(env, stdout),
+			loginCommand(env, stderr),
+			logoutCommand(env, stdout, stderr),
 		},
 	}
 }
@@ -83,15 +86,12 @@ func state(e config.Entry) string {
 // URL to bind Credentials to. Credentials that can't be read are one
 // entry's problem, so they don't fail the list.
 func authState(store *credentials.Store, e config.Entry) string {
-	if e.Upstream == nil {
+	if e.Upstream == nil || gateway.CheckOAuthUpstream(*e.Upstream) != nil {
 		return "-"
 	}
-	status, ok, err := oauthStatus(store, *e.Upstream)
-	switch {
-	case err != nil:
+	status, err := gateway.Status(store, *e.Upstream)
+	if err != nil {
 		return "error: " + err.Error()
-	case !ok:
-		return "-"
 	}
 	return status
 }

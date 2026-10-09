@@ -9,7 +9,7 @@ import (
 	"github.com/marvell/sprut/internal/mcptest"
 )
 
-func TestAuthLoginWithAPreRegisteredClientAndServeRenewingWithTheSecretFromTheConfig(t *testing.T) {
+func TestUpstreamLoginWithAPreRegisteredClientAndServeRenewingWithTheSecretFromTheConfig(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{
@@ -42,7 +42,7 @@ func TestAuthLoginWithAPreRegisteredClientAndServeRenewingWithTheSecretFromTheCo
 	wantNoSecrets(t, "Credentials file", creds.readCreds(t), mcptest.ClientSecret, rotated)
 }
 
-func TestAuthLoginRequestsScopes(t *testing.T) {
+func TestUpstreamLoginRequestsScopes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name      string

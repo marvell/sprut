@@ -35,7 +35,7 @@ func loginAs(t *testing.T, u *mcptest.OAuthUpstream, state, config, name string)
 	}
 	code, _ := login(t, u, l.env, name, "--no-browser", "-c", config)
 	if code != 0 {
-		t.Fatalf("auth login %s exit code = %d, want 0", name, code)
+		t.Fatalf("upstream login %s exit code = %d, want 0", name, code)
 	}
 	return l
 }
@@ -53,25 +53,6 @@ func (l *loggedIn) makeDead(t *testing.T) {
 	t.Helper()
 	l.makeStale(t)
 	l.rewriteCreds(t, func(f map[string]any) { delete(f, "refresh_token") })
-}
-
-// playLogins waits for l to exit, opening each authorization URL of the
-// Authorization Server of u that it prints, as the user would. It returns
-// sprut's exit code and stderr.
-func (l *loginRun) playLogins(t *testing.T, u *mcptest.OAuthUpstream) (code int, stderr string) {
-	t.Helper()
-	pattern := authURLPattern(u.Base)
-	for opened := 0; ; opened++ {
-		var links []string
-		eventually(func() bool {
-			links = pattern.FindAllString(l.stderr.String(), -1)
-			return len(links) > opened || l.exited()
-		})
-		if len(links) <= opened {
-			return l.wait(t)
-		}
-		l.do(t, http.MethodGet, links[opened])
-	}
 }
 
 // wantMode checks that the file at path exists with mode want.
@@ -103,7 +84,7 @@ func authURLPattern(base string) *regexp.Regexp {
 	return regexp.MustCompile(regexp.QuoteMeta(base+"/authorize?") + `\S+`)
 }
 
-// login runs `sprut auth login` with args (after "auth login") and env, and
+// login runs `sprut upstream login` with args (after "upstream login") and env, and
 // plays the user: it waits for the authorization URL on stderr and opens it,
 // following the Authorization Server's redirect to sprut's callback. It
 // returns sprut's exit code and stderr.
@@ -124,12 +105,12 @@ func mustLogin(t *testing.T, u *mcptest.OAuthUpstream, env []string, config stri
 	t.Helper()
 	code, stderr := login(t, u, env, append([]string{"fake", "--no-browser", "-c", config}, args...)...)
 	if code != 0 {
-		t.Fatalf("auth login exit code = %d, want 0", code)
+		t.Fatalf("upstream login exit code = %d, want 0", code)
 	}
 	return stderr
 }
 
-// loginRun is a `sprut auth login` running in the background.
+// loginRun is a `sprut upstream login` running in the background.
 type loginRun struct {
 	ctx      context.Context
 	deadline time.Time
@@ -137,7 +118,7 @@ type loginRun struct {
 	exit     chan int
 }
 
-// startLogin starts `sprut auth login` with args (after "auth login") and
+// startLogin starts `sprut upstream login` with args (after "upstream login") and
 // env, which must exit within timeout.
 func startLogin(t *testing.T, timeout time.Duration, env []string, args ...string) *loginRun {
 	t.Helper()
@@ -145,8 +126,8 @@ func startLogin(t *testing.T, timeout time.Duration, env []string, args ...strin
 	t.Cleanup(cancel)
 	l := &loginRun{ctx: ctx, deadline: time.Now().Add(timeout), stderr: &syncBuffer{}, exit: make(chan int, 1)}
 	go func() {
-		l.exit <- cli.Run(ctx, append([]string{"sprut", "auth", "login"}, args...), env,
-			strings.NewReader(""), io.Discard, io.MultiWriter(l.stderr, testLog(t, "sprut auth login")))
+		l.exit <- cli.Run(ctx, append([]string{"sprut", "upstream", "login"}, args...), env,
+			strings.NewReader(""), io.Discard, io.MultiWriter(l.stderr, testLog(t, "sprut upstream login")))
 	}()
 	return l
 }
@@ -183,7 +164,7 @@ func (l *loginRun) mustAuthURL(t *testing.T, u *mcptest.OAuthUpstream) *url.URL 
 	link := l.authURL(t, u)
 	if link == nil {
 		code, _ := l.wait(t)
-		t.Fatalf("auth login exited %d before printing the authorization URL", code)
+		t.Fatalf("upstream login exited %d before printing the authorization URL", code)
 	}
 	return link
 }
@@ -221,12 +202,12 @@ func (l *loginRun) wait(t *testing.T) (code int, stderr string) {
 	select {
 	case code = <-l.exit:
 	case <-time.After(time.Until(l.deadline) + 10*time.Second):
-		t.Fatalf("sprut auth login did not exit")
+		t.Fatalf("sprut upstream login did not exit")
 	}
 	return code, l.stderr.String()
 }
 
-// loggedIn is an OAuth Upstream, "fake", that `sprut auth login` has stored
+// loggedIn is an OAuth Upstream, "fake", that `sprut upstream login` has stored
 // Credentials for.
 type loggedIn struct {
 	*mcptest.OAuthUpstream
@@ -274,7 +255,7 @@ var leakySecrets = append(slices.Clone(mcptest.Secrets), "of client")
 // loginHint is the remedy that sprut gives for the Upstream name in the
 // Config at path, which tests always name with -c.
 func loginHint(path, name string) string {
-	return "run: sprut auth login -c " + path + " " + name
+	return "run: sprut upstream login -c " + path + " " + name
 }
 
 // wantLoginHint checks that res is an isError result with the Login hint of
