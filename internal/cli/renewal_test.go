@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"context"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -10,95 +9,7 @@ import (
 	"time"
 
 	"github.com/marvell/sprut/internal/mcptest"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-// loggedIn is an OAuth Upstream, "fake", that `sprut auth login` has stored
-// Credentials for.
-type loggedIn struct {
-	*mcptest.OAuthUpstream
-	config string
-	env    []string
-	creds  string // the path of the Credentials file
-}
-
-// logIn starts a fake OAuth Upstream whose access tokens live for expiresIn
-// seconds, and logs in to it.
-func logIn(t *testing.T, expiresIn int) *loggedIn {
-	t.Helper()
-	return logInTo(t, mcptest.StartOAuth(t), expiresIn)
-}
-
-// logInTo logs in to u, whose access tokens live for expiresIn seconds.
-func logInTo(t *testing.T, u *mcptest.OAuthUpstream, expiresIn int) *loggedIn {
-	t.Helper()
-	u.ExpireIn(expiresIn)
-	return loginAs(t, u, t.TempDir(), writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}}), "fake")
-}
-
-// readCreds returns the content of the Credentials file.
-func (l *loggedIn) readCreds(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile(l.creds)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
-
-// wantCredsUnchanged checks that the Credentials file still holds before.
-func (l *loggedIn) wantCredsUnchanged(t *testing.T, before string) {
-	t.Helper()
-	if got := l.readCreds(t); got != before {
-		t.Errorf("Credentials changed:\nbefore: %s\nafter:  %s", before, got)
-	}
-}
-
-// leakySecrets are mcptest.Secrets and what the fake Authorization Server says
-// around them in an error_description.
-var leakySecrets = append(slices.Clone(mcptest.Secrets), "of client")
-
-// callEcho calls fake__echo under ctx.
-func (g *gateway) callEcho(ctx context.Context) (*mcp.CallToolResult, error) {
-	return g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "hi"}})
-}
-
-// echo calls fake__echo and returns its result.
-func (g *gateway) echo(ctx context.Context, t *testing.T) *mcp.CallToolResult {
-	t.Helper()
-	res, err := g.callEcho(ctx)
-	if err != nil {
-		t.Fatalf("calling fake__echo: %v", err)
-	}
-	return res
-}
-
-// loginHint is the remedy that sprut gives for the Upstream name in the
-// Config at path, which tests always name with -c.
-func loginHint(path, name string) string {
-	return "run: sprut auth login -c " + path + " " + name
-}
-
-// wantLoginHint checks that res is an isError result with the Login hint of
-// fake in the Config at path.
-func wantLoginHint(t *testing.T, path string, res *mcp.CallToolResult) {
-	t.Helper()
-	text := resultText(t, res)
-	if !res.IsError || !strings.Contains(text, loginHint(path, "fake")) {
-		t.Errorf("fake__echo = %q (isError %v), want an isError result with the login hint", text, res.IsError)
-	}
-	wantNoSecrets(t, "tool result", text, leakySecrets...)
-}
-
-// wantEcho checks that a call to fake__echo succeeds.
-func (g *gateway) wantEcho(t *testing.T) {
-	t.Helper()
-	res := g.echo(context.Background(), t)
-	if res.IsError || resultText(t, res) != "echo: hi" {
-		t.Fatalf("fake__echo = %v, want it to echo\nstderr:\n%s", toJSON(t, res), g.stderr)
-	}
-}
 
 func TestServeRenewsCredentialsWhenTheUpstreamAnswers401(t *testing.T) {
 	t.Parallel()

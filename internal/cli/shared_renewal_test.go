@@ -2,44 +2,11 @@ package cli_test
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/marvell/sprut/internal/mcptest"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-// wantOneRefreshPerRotation checks that no refresh token was sent to the
-// Authorization Server twice: a second refresh with one would mean that
-// two processes renewed the same Credentials.
-func wantOneRefreshPerRotation(t *testing.T, u *mcptest.OAuthUpstream) {
-	t.Helper()
-	seen := map[string]bool{}
-	for _, form := range u.Refreshes() {
-		token := form.Get("refresh_token")
-		if seen[token] {
-			t.Errorf("refresh token %q was sent more than once", token)
-		}
-		seen[token] = true
-	}
-}
-
-// wantEchoed checks that a call to fake__echo that returned res and err
-// succeeded.
-func wantEchoed(t *testing.T, res *mcp.CallToolResult, err error) {
-	t.Helper()
-	if err != nil || res.IsError {
-		t.Errorf("fake__echo = %v, %v; want it to echo", res, err)
-	}
-}
 
 // callAll calls fake__echo through every g at once, and checks that each
 // call echoes.
@@ -77,66 +44,6 @@ func TestServeProcessesSharingCredentialsRenewThemOnce(t *testing.T) {
 	b.wantEcho(t)
 	a.closeAgent(t)
 	b.closeAgent(t)
-}
-
-// rewriteCreds replaces the Credentials file with a new one, as a write by
-// sprut would, after edit changes its JSON fields. It takes no lock.
-func (l *loggedIn) rewriteCreds(t *testing.T, edit func(fields map[string]any)) {
-	t.Helper()
-	var fields map[string]any
-	if err := json.Unmarshal([]byte(l.readCreds(t)), &fields); err != nil {
-		t.Fatal(err)
-	}
-	edit(fields)
-	data, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmp := l.creds + ".test"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(tmp, l.creds); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// lockCreds takes the lock that sprut renews the Credentials under, as
-// another sprut process would, and returns what releases it.
-func (l *loggedIn) lockCreds(t *testing.T) (unlock func()) {
-	t.Helper()
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(l.creds), "fake.lock"), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
-	unlock = func() { _ = f.Close() }
-	t.Cleanup(unlock)
-	return unlock
-}
-
-// startEcho calls fake__echo through g in the background, once the Upstream
-// rejects the current access token, and returns where its result arrives
-// once the call has been rejected.
-func (l *loggedIn) startEcho(t *testing.T, g *gateway) <-chan *callOutcome {
-	t.Helper()
-	rejected := l.Rejected()
-	done := make(chan *callOutcome, 1)
-	go func() {
-		res, err := g.callEcho(context.Background())
-		done <- &callOutcome{res, err}
-	}()
-	if !eventually(func() bool { return l.Rejected() > rejected }) {
-		t.Fatalf("the call was not rejected\nstderr:\n%s", g.stderr)
-	}
-	return done
-}
-
-type callOutcome struct {
-	res *mcp.CallToolResult
-	err error
 }
 
 // A rename that replaces the Credentials file while one process renews
@@ -279,14 +186,6 @@ func TestServeDropsCredentialsWhoseFileIsDeleted(t *testing.T) {
 		g.closeAgent(t)
 		wantNoCreds(t, l)
 	})
-}
-
-// wantNoCreds checks that the Credentials file does not exist.
-func wantNoCreds(t *testing.T, l *loggedIn) {
-	t.Helper()
-	if _, err := os.Stat(l.creds); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("the Credentials file exists (%v), want it gone", err)
-	}
 }
 
 func TestServeGivesUpWaitingForTheLockWithTheCall(t *testing.T) {

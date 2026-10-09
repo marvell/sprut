@@ -187,29 +187,6 @@ func TestAuthLoginWithoutACallbackTimesOutWithExit1(t *testing.T) {
 	}
 }
 
-// wantMode checks that the file at path exists with mode want.
-func wantMode(t *testing.T, path string, want os.FileMode) {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Errorf("%s: %v", path, err)
-		return
-	}
-	if got := info.Mode() & (os.ModeDir | os.ModePerm); got != want {
-		t.Errorf("%s: mode = %v, want %v", path, got, want)
-	}
-}
-
-// wantNoSecrets checks that out, named what, holds none of secrets.
-func wantNoSecrets(t *testing.T, what, out string, secrets ...string) {
-	t.Helper()
-	for _, secret := range secrets {
-		if strings.Contains(out, secret) {
-			t.Errorf("%s contains the secret %q:\n%s", what, secret, out)
-		}
-	}
-}
-
 func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)

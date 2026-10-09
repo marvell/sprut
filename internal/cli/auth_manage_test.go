@@ -14,38 +14,6 @@ import (
 	"github.com/marvell/sprut/internal/mcptest"
 )
 
-// loginAs logs in to u as the Upstream name of config, with its
-// Credentials under state, and returns them.
-func loginAs(t *testing.T, u *mcptest.OAuthUpstream, state, config, name string) *loggedIn {
-	t.Helper()
-	l := &loggedIn{
-		OAuthUpstream: u,
-		config:        config,
-		env:           []string{"XDG_STATE_HOME=" + state},
-		creds:         filepath.Join(state, "sprut", "credentials", name+".json"),
-	}
-	code, stderr := login(t, u, l.env, name, "--no-browser", "-c", config)
-	if code != 0 {
-		t.Fatalf("auth login %s exit code = %d, want 0\nstderr:\n%s", name, code, stderr)
-	}
-	return l
-}
-
-// makeStale makes the access token of l's Credentials expired, though they
-// can still be renewed.
-func (l *loggedIn) makeStale(t *testing.T) {
-	t.Helper()
-	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
-	l.rewriteCreds(t, func(f map[string]any) { f["expiry"] = past })
-}
-
-// makeDead makes l's Credentials expired, without a refresh token.
-func (l *loggedIn) makeDead(t *testing.T) {
-	t.Helper()
-	l.makeStale(t)
-	l.rewriteCreds(t, func(f map[string]any) { delete(f, "refresh_token") })
-}
-
 func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)
@@ -141,25 +109,6 @@ func TestAuthLogoutExits1ForAnUpstreamThatIsNotAnOAuthUpstreamInTheConfig(t *tes
 	}
 	if _, err := os.Stat(filepath.Join(state, "sprut")); err == nil {
 		t.Error("logout made the state directory")
-	}
-}
-
-// playLogins waits for l to exit, opening each authorization URL of the
-// Authorization Server of u that it prints, as the user would. It returns
-// sprut's exit code and stderr.
-func (l *loginRun) playLogins(t *testing.T, u *mcptest.OAuthUpstream) (code int, stderr string) {
-	t.Helper()
-	pattern := authURLPattern(u.Base)
-	for opened := 0; ; opened++ {
-		var links []string
-		eventually(func() bool {
-			links = pattern.FindAllString(l.stderr.String(), -1)
-			return len(links) > opened || l.exited()
-		})
-		if len(links) <= opened {
-			return l.wait(t)
-		}
-		l.do(t, http.MethodGet, links[opened])
 	}
 }
 
