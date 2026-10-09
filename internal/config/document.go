@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/marvell/sprut/internal/atomicfile"
@@ -46,6 +47,9 @@ type Definition struct {
 
 // ErrExists is the error of adding an Upstream whose name is taken.
 var ErrExists = errors.New("already in the config")
+
+// ErrNotFound is the error of naming an Upstream the Config doesn't have.
+var ErrNotFound = errors.New("not in the config")
 
 // ParseDocument parses Config bytes into a Document. It fails where
 // ParseEntries would on the Config's shape, but checks no entry.
@@ -93,7 +97,25 @@ func (d *Document) Add(name string, def Definition, replace bool) error {
 		d.servers.names = append(d.servers.names, name)
 	}
 	d.servers.entries[name] = entry
+	d.setServers()
+	return nil
+}
 
+// Remove removes the Upstream name, keeping the others in their order.
+// It fails if there is no Upstream of that name.
+func (d *Document) Remove(name string) error {
+	if _, ok := d.servers.entries[name]; !ok {
+		return fmt.Errorf("upstream %q: %w", name, ErrNotFound)
+	}
+	delete(d.servers.entries, name)
+	d.servers.names = slices.DeleteFunc(d.servers.names, func(n string) bool { return n == name })
+	d.setServers()
+	return nil
+}
+
+// setServers writes d.servers back into mcpServers, adding it after the
+// other keys if there is none.
+func (d *Document) setServers() {
 	entries := make([]member, len(d.servers.names))
 	for i, n := range d.servers.names {
 		entries[i] = member{n, d.servers.entries[n]}
@@ -103,7 +125,6 @@ func (d *Document) Add(name string, def Definition, replace bool) error {
 		d.serversAt = len(d.members) - 1
 	}
 	d.members[d.serversAt].value = object(entries)
-	return nil
 }
 
 // Bytes returns the Config as JSON indented by two spaces, ending in a

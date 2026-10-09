@@ -28,6 +28,7 @@ func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command
 		},
 		Commands: []*ucli.Command{
 			addCommand(args, env, stdout, stderr),
+			removeCommand(env, stdout, stderr),
 			listCommand(env, stdout),
 			loginCommand(env, stderr),
 			logoutCommand(env, stdout, stderr),
@@ -164,7 +165,7 @@ func orDash(s string) string {
 func findUpstream(upstreams []config.Upstream, name string) (config.Upstream, error) {
 	i := slices.IndexFunc(upstreams, func(u config.Upstream) bool { return u.Name == name })
 	if i < 0 {
-		return config.Upstream{}, fmt.Errorf("no upstream %q in the config", name)
+		return config.Upstream{}, fmt.Errorf("upstream %q: %w", name, config.ErrNotFound)
 	}
 	return upstreams[i], nil
 }

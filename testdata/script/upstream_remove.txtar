@@ -1,0 +1,158 @@
+# sprut upstream remove deletes an Upstream from the Config and, with it,
+# the Credentials stored for it.
+env XDG_CONFIG_HOME=$WORK/xdg
+env XDG_STATE_HOME=$WORK/state
+mkdir xdg/sprut
+cp config.json xdg/sprut/config.json
+chmod 0644 xdg/sprut/config.json
+
+# The rest of the Config is kept: the order of entries, their unknown
+# fields and ${VAR} references, other keys, and the file's mode.
+sprut upstream remove memory
+stdout '^removed upstream "memory"$'
+stderr 'running Agents see this change only after their sprut restarts'
+cmp xdg/sprut/config.json removed.golden
+exec ls -l xdg/sprut/config.json
+stdout '^-rw-r--r--'
+
+# An Upstream without Credentials leaves the Credentials directory alone.
+! exists state/sprut
+
+# Its Credentials go with it; another Upstream's stay.
+mkdir state/sprut/credentials
+cp creds.json state/sprut/credentials/linear.json
+cp creds.json state/sprut/credentials/notion.json
+sprut upstream remove linear
+stdout '^removed upstream "linear" and deleted its Credentials$'
+stderr 'running Agents see this change only after their sprut restarts'
+! exists state/sprut/credentials/linear.json
+exists state/sprut/credentials/notion.json
+cmp xdg/sprut/config.json linear.golden
+
+# Removing the last Upstream leaves an empty mcpServers.
+sprut upstream remove notion
+stdout 'deleted its Credentials'
+sprut upstream remove off
+cmp xdg/sprut/config.json empty.golden
+
+# -c goes in any position, and SPRUT_CONFIG names the Config too.
+cp two.json a.json
+sprut -c a.json upstream remove a
+sprut upstream remove b -c a.json
+cmp a.json empty-servers.golden
+cp two.json c.json
+env SPRUT_CONFIG=$WORK/c.json
+sprut upstream remove a
+env SPRUT_CONFIG=
+grep '"b"' c.json
+! grep '"a"' c.json
+
+# A name not in the Config fails, names it and changes nothing.
+cp two.json two.before
+! sprut upstream remove -c two.json nope
+status 1
+stderr 'upstream "nope": not in the config'
+! stdout .
+cmp two.json two.before
+
+# A missing Config fails the same way, and is not created.
+! sprut upstream remove -c missing/config.json nope
+status 1
+stderr 'upstream "nope": not in the config'
+! exists missing
+
+# A Config that already fails to parse is not changed.
+cp broken.json broken.before
+! sprut upstream remove -c broken.json fine
+status 1
+stderr 'broken.json'
+stderr 'upstream "Bad_Name": invalid name'
+cmp broken.json broken.before
+
+# No name, or more than one, is a usage error.
+! sprut upstream remove -c two.json
+status 2
+stderr 'sprut upstream remove'
+! stdout .
+! sprut upstream remove -c two.json a b
+status 2
+stderr 'unexpected argument "b"'
+! stdout .
+cmp two.json two.before
+
+-- config.json --
+{"$schema": "https://example.com/sprut.json", "mcpServers": {
+  "memory": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]},
+  "linear": {"url": "https://mcp.linear.app/mcp", "x-note": "kept"},
+  "notion": {"url": "https://mcp.notion.com/mcp", "headers": {"X-Team": "${TEAM}"}},
+  "off": {"command": "${UNSET}", "disabled": true}
+}, "x-editor": {"tabs": [2, 4]}}
+-- removed.golden --
+{
+  "$schema": "https://example.com/sprut.json",
+  "mcpServers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "x-note": "kept"
+    },
+    "notion": {
+      "url": "https://mcp.notion.com/mcp",
+      "headers": {
+        "X-Team": "${TEAM}"
+      }
+    },
+    "off": {
+      "command": "${UNSET}",
+      "disabled": true
+    }
+  },
+  "x-editor": {
+    "tabs": [
+      2,
+      4
+    ]
+  }
+}
+-- linear.golden --
+{
+  "$schema": "https://example.com/sprut.json",
+  "mcpServers": {
+    "notion": {
+      "url": "https://mcp.notion.com/mcp",
+      "headers": {
+        "X-Team": "${TEAM}"
+      }
+    },
+    "off": {
+      "command": "${UNSET}",
+      "disabled": true
+    }
+  },
+  "x-editor": {
+    "tabs": [
+      2,
+      4
+    ]
+  }
+}
+-- empty.golden --
+{
+  "$schema": "https://example.com/sprut.json",
+  "mcpServers": {},
+  "x-editor": {
+    "tabs": [
+      2,
+      4
+    ]
+  }
+}
+-- empty-servers.golden --
+{
+  "mcpServers": {}
+}
+-- two.json --
+{"mcpServers": {"a": {"command": "a"}, "b": {"command": "b"}}}
+-- creds.json --
+{"access_token": "secret", "token_url": "https://auth.example/token", "resource": "https://mcp.example/mcp", "issuer": "https://auth.example", "config": {"url": "https://mcp.example/mcp", "scopes": null}}
+-- broken.json --
+{"mcpServers": {"Bad_Name": {"command": "x"}, "fine": {"command": "x"}}}
