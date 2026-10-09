@@ -14,12 +14,13 @@ import (
 	"golang.org/x/net/http/httpproxy"
 
 	"github.com/marvell/sprut/internal/config"
+	"github.com/marvell/sprut/internal/credentials"
 )
 
 // connectHTTP connects to u over Streamable HTTP and lists its tools. env
-// is where the proxy and the Credentials' directory come from.
-func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*ready, error) {
-	session, err := dialHTTP(ctx, client, u, env, log)
+// is where the proxy comes from, and store holds the Credentials.
+func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, store *credentials.Store, log *slog.Logger) (*ready, error) {
+	session, err := dialHTTP(ctx, client, u, env, store, log)
 	if err != nil {
 		return nil, err
 	}
@@ -28,12 +29,12 @@ func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env
 
 // dialHTTP connects to u over Streamable HTTP, with its stored Credentials
 // if it is an OAuth Upstream.
-func dialHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, log *slog.Logger) (*mcp.ClientSession, error) {
+func dialHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, store *credentials.Store, log *slog.Logger) (*mcp.ClientSession, error) {
 	t, err := newHTTPTransport(u, env)
 	if err != nil {
 		return nil, err
 	}
-	h := newStoredCredentials(u, env, t.HTTPClient.Transport, log)
+	h := newStoredCredentials(u, store, t.HTTPClient.Transport, log)
 	if h != nil {
 		t.OAuthHandler = h
 		t.HTTPClient.Transport = h.wrap(t.HTTPClient.Transport)

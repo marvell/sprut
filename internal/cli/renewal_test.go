@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -255,8 +256,49 @@ func TestServeCountsRenewalAtStartupTowardTheStartupTimeout(t *testing.T) {
 
 	g.wantTools(t)
 	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=fake", "startup timed out")
+	// The Gateway waits for the renewal before it exits.
+	l.Release()
 	g.closeAgent(t)
 	l.wantCredsUnchanged(t, before)
+}
+
+// A renewal can't be dropped once it has begun: the Authorization Server
+// may already have rotated the refresh token, and only the Credentials
+// file keeps the new one past the process. One that an Upstream abandoned
+// at startup began has no session left to wait for it.
+func TestServeSavesARenewalInProgressBeforeItExits(t *testing.T) {
+	t.Parallel()
+	l := logIn(t, 60) // renewed at startup
+	refreshing := make(chan struct{})
+	var once sync.Once
+	l.OnRefresh(func() {
+		once.Do(func() { close(refreshing) })
+		<-l.release // until Release, which the fake's cleanup also calls
+	})
+
+	g := startGateway(t, l.config, l.env, "--startup-timeout", "1s")
+	g.wantTools(t)
+	select {
+	case <-refreshing:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no refresh request\nstderr:\n%s", g.stderr)
+	}
+
+	// Closing the Agent's side returns only once the Gateway has exited.
+	go func() { _ = g.Agent.Close() }()
+	// Without the wait, the Gateway still exits only after the SDK's 5s for
+	// the notifications/cancelled of the abandoned start; an exit later
+	// than this wait goes undetected.
+	select {
+	case <-g.exit:
+		t.Fatalf("Gateway exited with a renewal in progress\nstderr:\n%s", g.stderr)
+	case <-time.After(7 * time.Second):
+	}
+	l.Release()
+	g.wantCleanExit(t, "EOF on stdin")
+	if creds := l.readCreds(t); !strings.Contains(creds, `"refresh_token":"`+fakeRefreshToken+`-2"`) {
+		t.Errorf("Credentials = %s, want the rotated refresh token", creds)
+	}
 }
 
 func TestServeSendsNoRefreshWhenTheUpstreamNamesAnotherIssuer(t *testing.T) {

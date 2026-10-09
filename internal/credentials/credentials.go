@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -70,16 +71,27 @@ func (b Binding) equal(o Binding) bool {
 }
 
 // Store is the directory holding the Credentials of every Upstream.
-type Store struct{ dir string }
+type Store struct {
+	dir string
+
+	mu       sync.Mutex
+	idle     sync.Cond // signalled when renewing drops to 0
+	renewing int       // Renew calls in progress
+}
 
 // NewStore returns the Store under $XDG_STATE_HOME/sprut/credentials, or
 // ~/.local/state/sprut/credentials.
 func NewStore(lookupEnv config.LookupEnv) (*Store, error) {
 	if dir, ok := config.XDGDir(lookupEnv, "XDG_STATE_HOME", filepath.Join(".local", "state")); ok {
-		return &Store{dir: filepath.Join(dir, "sprut", "credentials")}, nil
+		s := &Store{dir: filepath.Join(dir, "sprut", "credentials")}
+		s.idle.L = &s.mu
+		return s, nil
 	}
-	return nil, errors.New("cannot locate the credentials: HOME is not set")
+	return nil, ErrNoHome
 }
+
+// ErrNoHome is why NewStore can't return a Store.
+var ErrNoHome = errors.New("cannot locate the credentials: HOME is not set")
 
 // lockTimeout bounds the wait for another process to release the lock.
 const lockTimeout = 30 * time.Second
@@ -149,22 +161,22 @@ func (s *Store) Changed(upstream string, v Version) bool {
 
 // Save replaces the Credentials of upstream with c, under its lock.
 func (s *Store) Save(ctx context.Context, upstream string, c *Credentials) error {
-	l, err := s.Lock(ctx, upstream)
+	l, err := s.lock(ctx, upstream)
 	if err != nil {
 		return err
 	}
-	defer l.Unlock()
-	return l.Save(c)
+	defer l.unlock()
+	return l.save(c)
 }
 
 // Delete deletes the Credentials of upstream under its lock, and reports
 // whether there were any. The lock file stays.
 func (s *Store) Delete(ctx context.Context, upstream string) (bool, error) {
-	l, err := s.Lock(ctx, upstream)
+	l, err := s.lock(ctx, upstream)
 	if err != nil {
 		return false, err
 	}
-	defer l.Unlock()
+	defer l.unlock()
 	err = os.Remove(s.path(upstream, ".json"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -175,21 +187,91 @@ func (s *Store) Delete(ctx context.Context, upstream string) (bool, error) {
 	return true, nil
 }
 
-// Lock is the exclusive lock of one Upstream's Credentials, held by one
+// ErrRefreshRejected is what the refresh function given to Renew returns
+// when the Authorization Server rejects the refresh token (invalid_grant).
+var ErrRefreshRejected = errors.New("the authorization server rejected the refresh token")
+
+// Renew renews the Credentials of u whose access token is stale with
+// refresh, under their lock, so that only one process renews them at a
+// time, and returns them. It reads them again first: if another process
+// has already renewed them, those are returned without a refresh; if they
+// are gone, or no longer issued for u as its Config is now, it returns nil.
+// When refresh returns ErrRefreshRejected, the Credentials are read again,
+// and those are returned if another process that did not wait for the lock
+// has rotated the refresh token meanwhile; otherwise the error is. Any
+// other error from refresh is returned as it is.
+//
+// When the renewed Credentials can't be saved, Renew returns them all the
+// same, still good for this process, with the error.
+func (s *Store) Renew(ctx context.Context, u config.Upstream, stale string, refresh func(context.Context, *Credentials) (*Credentials, error)) (*Credentials, error) {
+	l, err := s.lock(ctx, u.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer l.unlock()
+	// Only once it holds the lock: nothing is rotated while it waits.
+	s.mu.Lock()
+	s.renewing++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.renewing--; s.renewing == 0 {
+			s.idle.Broadcast()
+		}
+		s.mu.Unlock()
+	}()
+	c, err := s.Load(u)
+	if err != nil || c == nil || c.AccessToken != stale {
+		return c, err
+	}
+	renewed, err := refresh(ctx, c)
+	if errors.Is(err, ErrRefreshRejected) {
+		again, lerr := s.Load(u)
+		if lerr != nil {
+			// Unknown, so they are kept.
+			return nil, lerr
+		}
+		if again != nil && again.RefreshToken != c.RefreshToken {
+			return again, nil
+		}
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	return renewed, l.save(renewed)
+}
+
+// Wait waits until no Renew that holds the lock is in progress, so that
+// Credentials that an Authorization Server has rotated are saved before the
+// process exits. A Renew that takes the lock once Wait has returned is not
+// waited for. A nil Store has none.
+func (s *Store) Wait() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.renewing > 0 {
+		s.idle.Wait()
+	}
+}
+
+// lock is the exclusive lock of one Upstream's Credentials, held by one
 // process at a time.
-type Lock struct {
+type lock struct {
 	s        *Store
 	upstream string
 	f        *os.File
 }
 
-// Lock takes the exclusive lock of upstream, waiting for another process to
+// lock takes the exclusive lock of upstream, waiting for another process to
 // release it no longer than lockTimeout and ctx allow.
 //
 // The lock is on a file of its own, never renamed or deleted, because a
 // lock on the Credentials file would stay on the inode that a write
 // replaces.
-func (s *Store) Lock(ctx context.Context, upstream string) (*Lock, error) {
+func (s *Store) lock(ctx context.Context, upstream string) (*lock, error) {
 	if err := s.mkdir(); err != nil {
 		return nil, fmt.Errorf("locking credentials: %w", err)
 	}
@@ -203,7 +285,7 @@ func (s *Store) Lock(ctx context.Context, upstream string) (*Lock, error) {
 	for wait := time.Millisecond; ; wait = min(2*wait, 50*time.Millisecond) {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return &Lock{s: s, upstream: upstream, f: f}, nil
+			return &lock{s: s, upstream: upstream, f: f}, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			_ = f.Close()
@@ -218,14 +300,14 @@ func (s *Store) Lock(ctx context.Context, upstream string) (*Lock, error) {
 	}
 }
 
-// Unlock releases l.
-func (l *Lock) Unlock() {
+// unlock releases l.
+func (l *lock) unlock() {
 	_ = l.f.Close() // which releases the flock
 }
 
-// Save replaces the Credentials of l's Upstream with c. It writes a new file
+// save replaces the Credentials of l's Upstream with c. It writes a new file
 // in place of the old one, so that a reader sees either whole.
-func (l *Lock) Save(c *Credentials) error {
+func (l *lock) save(c *Credentials) error {
 	data, err := json.Marshal(c)
 	if err != nil {
 		return err

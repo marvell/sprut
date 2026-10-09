@@ -201,7 +201,10 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 func NeedsLogin(ctx context.Context, u config.Upstream, env []string, version string, log *slog.Logger) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, oauthTimeout)
 	defer cancel()
-	session, err := dialHTTP(ctx, newClient(version), u, env, log)
+	store := openStore(env)
+	// A renewal outlives a probe that gives up on it.
+	defer store.Wait()
+	session, err := dialHTTP(ctx, newClient(version), u, env, store, log)
 	if errors.As(err, new(*needsLoginError)) {
 		return true, nil
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/marvell/sprut/internal/config"
+	"github.com/marvell/sprut/internal/credentials"
 )
 
 // separator joins an Upstream's name and a tool's name into a Namespaced tool.
@@ -53,6 +54,7 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 		upstreams: &upstreams{
 			client:  newClient(version),
 			env:     env,
+			store:   openStore(env),
 			timeout: startupTimeout,
 			log:     log,
 		},
@@ -161,10 +163,11 @@ type ready struct {
 // upstreams starts the Upstreams and stops them again. Each gets timeout
 // to connect and list its tools. env is the environment sprut was given: a
 // stdio Upstream's process inherits it, and an HTTP Upstream's proxy comes
-// from it.
+// from it. store holds the Credentials of every OAuth Upstream.
 type upstreams struct {
 	client  *mcp.Client
 	env     []string
+	store   *credentials.Store
 	timeout time.Duration
 	log     *slog.Logger
 
@@ -252,8 +255,9 @@ func (s *upstreams) startOne(ctx context.Context, u config.Upstream) (*ready, er
 	return res.r, res.err
 }
 
-// close stops every started Upstream at once, and waits for those still
-// being stopped after failing to start.
+// close stops every started Upstream at once, waits for those still being
+// stopped after failing to start, and then for the renewals of Credentials
+// in progress, which closing a session may itself start.
 func (s *upstreams) close() {
 	var wg sync.WaitGroup
 	for _, session := range s.sessions {
@@ -261,6 +265,7 @@ func (s *upstreams) close() {
 	}
 	wg.Wait()
 	s.starting.Wait()
+	s.store.Wait()
 }
 
 // connect connects to u over its Transport and lists its tools.
@@ -269,7 +274,7 @@ func (s *upstreams) connect(ctx context.Context, u config.Upstream) (*ready, err
 	case config.Stdio:
 		return connectStdio(ctx, s.client, u, s.env, s.log)
 	case config.HTTP:
-		return connectHTTP(ctx, s.client, u, s.env, s.log)
+		return connectHTTP(ctx, s.client, u, s.env, s.store, s.log)
 	}
 	return nil, fmt.Errorf("unknown transport %q", u.Transport)
 }
