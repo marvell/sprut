@@ -1,0 +1,203 @@
+# sprut upstream add writes a new Upstream into the Config: a stdio one
+# from -- and a command, an HTTP one from an http(s) URL.
+env XDG_CONFIG_HOME=$WORK/xdg
+env HOME=$WORK/home
+
+# A missing Config is created where serve reads it, private to the user.
+! exists xdg
+sprut upstream add memory -- npx -y '@modelcontextprotocol/server-memory'
+stdout '^added upstream "memory"$'
+stderr 'running Agents see this change only after their sprut restarts'
+cmp xdg/sprut/config.json created.golden
+exec ls -ld xdg/sprut xdg/sprut/config.json
+stdout '^drwx------.* xdg/sprut$'
+stdout '^-rw-------.* xdg/sprut/config.json$'
+
+# An HTTP Upstream from its URL, with ${VAR} written as typed. An unset
+# variable is a warning, and the Upstream is added anyway.
+sprut upstream add linear 'https://mcp.linear.app/mcp?team=${TEAM}'
+stdout '^added upstream "linear"$'
+stderr '^warning: upstream "linear": unset variable TEAM; upstream skipped$'
+sprut upstream add plain http://127.0.0.1:8080/mcp
+sprut upstream add args-only -- fake-upstream
+cmp xdg/sprut/config.json both.golden
+
+# An existing name fails; --force replaces it in place.
+! sprut upstream add linear https://elsewhere.example/mcp
+status 1
+stderr 'upstream "linear": already in the config; use --force to replace it'
+! stdout .
+cmp xdg/sprut/config.json both.golden
+sprut upstream add --force linear -- linear-mcp --stdio
+stdout '^added upstream "linear"$'
+cmp xdg/sprut/config.json forced.golden
+
+# Another file's mode is kept, and unknown fields, ${VAR} references, other
+# keys and the order of entries survive the rewrite.
+chmod 0644 keep.json
+sprut upstream add -c keep.json new https://new.example/mcp
+! stderr 'warning'
+cmp keep.json keep.golden
+exec ls -l keep.json
+stdout '^-rw-r--r--'
+
+# -c goes in any position, and SPRUT_CONFIG names the Config too.
+sprut -c dir/a.json upstream add a -- a
+exists dir/a.json
+sprut upstream -c dir/b.json add b -- b
+exists dir/b.json
+env SPRUT_CONFIG=$WORK/dir/c.json
+sprut upstream add c -- c
+exists dir/c.json
+env SPRUT_CONFIG=
+
+# The new entry is checked by serve's parser: an error exits 1 and leaves
+# the file as it was.
+cp keep.golden before.json
+! sprut upstream add -c keep.json My_Server -- x
+status 1
+stderr 'upstream "My_Server": invalid name'
+! stdout .
+cmp keep.json before.json
+
+# A missing Config is not created for an add that fails.
+! sprut upstream add -c new/config.json Bad_Name -- x
+status 1
+! exists new
+
+# A Config that already fails to parse is not changed.
+cp broken.json broken.before
+! sprut upstream add -c broken.json fine -- x
+status 1
+stderr 'broken.json'
+stderr 'upstream "Bad_Name": invalid name'
+cmp broken.json broken.before
+! sprut upstream add -c malformed.json fine -- x
+status 1
+stderr 'malformed.json'
+cmp malformed.json malformed.before
+
+# Neither form is a usage error, and writes nothing.
+! sprut upstream add -c usage.json
+status 2
+stderr 'sprut upstream add'
+! stdout .
+! sprut upstream add -c usage.json name
+status 2
+stderr 'sprut upstream add'
+! sprut upstream add -c usage.json name word
+status 2
+stderr 'neither -- and a command nor an http\(s\) URL'
+! sprut upstream add -c usage.json name ftp://host/mcp
+status 2
+! sprut upstream add -c usage.json name https://a.example extra
+status 2
+! sprut upstream add -c usage.json name https://a.example -- cmd
+status 2
+! sprut upstream add -c usage.json name --
+status 2
+! sprut upstream add -c usage.json -- name cmd
+status 2
+! sprut upstream add -c usage.json --bogus name -- cmd
+status 2
+! exists usage.json
+
+-- created.golden --
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    }
+  }
+}
+-- both.golden --
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    },
+    "linear": {
+      "url": "https://mcp.linear.app/mcp?team=${TEAM}"
+    },
+    "plain": {
+      "url": "http://127.0.0.1:8080/mcp"
+    },
+    "args-only": {
+      "command": "fake-upstream"
+    }
+  }
+}
+-- forced.golden --
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    },
+    "linear": {
+      "command": "linear-mcp",
+      "args": [
+        "--stdio"
+      ]
+    },
+    "plain": {
+      "url": "http://127.0.0.1:8080/mcp"
+    },
+    "args-only": {
+      "command": "fake-upstream"
+    }
+  }
+}
+-- keep.json --
+{"$schema": "https://example.com/sprut.json", "mcpServers": {
+  "zeta": {"command": "z", "x-note": "kept", "env": {"TOKEN": "${TOKEN}"}},
+  "alpha": {"type": "sse", "url": "https://legacy.example/sse"},
+  "off": {"command": "${UNSET_TOO}", "disabled": true}
+}, "x-editor": {"tabs": [2, 4]}}
+-- keep.golden --
+{
+  "$schema": "https://example.com/sprut.json",
+  "mcpServers": {
+    "zeta": {
+      "command": "z",
+      "x-note": "kept",
+      "env": {
+        "TOKEN": "${TOKEN}"
+      }
+    },
+    "alpha": {
+      "type": "sse",
+      "url": "https://legacy.example/sse"
+    },
+    "off": {
+      "command": "${UNSET_TOO}",
+      "disabled": true
+    },
+    "new": {
+      "url": "https://new.example/mcp"
+    }
+  },
+  "x-editor": {
+    "tabs": [
+      2,
+      4
+    ]
+  }
+}
+-- broken.json --
+{"mcpServers": {"Bad_Name": {"command": "x"}}}
+-- malformed.json --
+{"mcpServers": {
+-- malformed.before --
+{"mcpServers": {

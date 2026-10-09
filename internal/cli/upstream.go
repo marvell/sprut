@@ -17,7 +17,7 @@ import (
 	"github.com/marvell/sprut/internal/gateway"
 )
 
-func upstreamCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
+func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 	return &ucli.Command{
 		Name:  "upstream",
 		Usage: "manage the Upstreams in the Config",
@@ -25,6 +25,7 @@ func upstreamCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			return usageError(ctx, cmd, nil)
 		},
 		Commands: []*ucli.Command{
+			addCommand(args, env, stdout, stderr),
 			listCommand(env, stdout),
 			loginCommand(env, stderr),
 			logoutCommand(env, stdout, stderr),

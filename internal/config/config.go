@@ -157,20 +157,17 @@ type Entry struct {
 // order, plus warnings about the Config. Like Parse, it fails on an invalid
 // entry unless the entry is disabled, and it warns about no disabled entry.
 func ParseEntries(data []byte, lookupEnv LookupEnv) ([]Entry, []Warning, error) {
-	var f struct {
-		MCPServers servers `json:"mcpServers"`
+	doc, err := ParseDocument(data)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, nil, jsonError(data, err)
-	}
-
 	var (
 		entries  []Entry
 		warnings []Warning
 		errs     []error
 	)
-	for _, name := range f.MCPServers.names {
-		e, msgs, err := parseEntry(name, f.MCPServers.entries[name], lookupEnv)
+	for _, name := range doc.servers.names {
+		e, msgs, err := parseEntry(name, doc.servers.entries[name], lookupEnv)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("upstream %q: %w", name, err))
 			continue
@@ -188,41 +185,55 @@ func ParseEntries(data []byte, lookupEnv LookupEnv) ([]Entry, []Warning, error) 
 
 // servers are the entries of mcpServers, keeping the order of their names.
 // As when decoding into a map, a name given twice keeps its last entry; it
-// keeps its first place. Unlike decoding into a map, which merges, a repeated
-// mcpServers key replaces the servers given before it.
+// keeps its first place.
 type servers struct {
 	names   []string
 	entries map[string]json.RawMessage
 }
 
-func (s *servers) UnmarshalJSON(data []byte) error {
-	*s = servers{}
-	if string(data) == "null" {
-		return nil
+// parseServers parses the value of mcpServers, valid JSON.
+func parseServers(data []byte) (servers, error) {
+	members, err := decodeObject(data)
+	if err != nil {
+		return servers{}, errors.New("mcpServers must be a JSON object")
 	}
-	// json.Unmarshal has checked the syntax before calling this, so only
-	// the shape can be wrong.
+	s := servers{entries: map[string]json.RawMessage{}}
+	for _, m := range members {
+		if _, ok := s.entries[m.key]; !ok {
+			s.names = append(s.names, m.key)
+		}
+		s.entries[m.key] = m.value
+	}
+	return s, nil
+}
+
+// errNotObject is the error of decoding JSON other than an object or null.
+var errNotObject = errors.New("not a JSON object")
+
+// decodeObject decodes the valid JSON data, an object or null, into its
+// members in order, repeated keys included.
+func decodeObject(data []byte) ([]member, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
-	if tok, _ := dec.Token(); tok != json.Delim('{') {
-		return errors.New("mcpServers must be a JSON object")
+	switch tok, _ := dec.Token(); tok {
+	case nil:
+		return nil, nil
+	case json.Delim('{'):
+	default:
+		return nil, errNotObject
 	}
-	s.entries = map[string]json.RawMessage{}
+	var members []member
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return err
+			return nil, err
 		}
-		name := tok.(string)
-		var entry json.RawMessage
-		if err := dec.Decode(&entry); err != nil {
-			return err
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
 		}
-		if _, ok := s.entries[name]; !ok {
-			s.names = append(s.names, name)
-		}
-		s.entries[name] = entry
+		members = append(members, member{tok.(string), value})
 	}
-	return nil
+	return members, nil
 }
 
 // parseEntry parses one Config entry, with warnings about it.

@@ -44,7 +44,7 @@ func Run(ctx context.Context, args, env []string, stdin io.Reader, stdout, stder
 		},
 		Commands: []*ucli.Command{
 			serveCommand(env, stdin, stdout, stderr),
-			upstreamCommand(env, stdout, stderr),
+			upstreamCommand(args, env, stdout, stderr),
 		},
 	}
 	// An unknown help topic (sprut help bogus) can only be reported from a

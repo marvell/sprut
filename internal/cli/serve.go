@@ -92,6 +92,22 @@ func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]co
 	return config.Started(entries), path, nil
 }
 
+// readConfig reads the Config that flag and the environment point at, and
+// returns its path, whether flag or $SPRUT_CONFIG named it, and its bytes.
+// Reading a missing Config fails with an fs.ErrNotExist, and still returns
+// the path.
+func readConfig(flag string, lookupEnv config.LookupEnv) (path string, named bool, data []byte, err error) {
+	path, named, err = config.Path(flag, lookupEnv)
+	if err != nil {
+		return "", false, nil, err
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		return path, named, nil, fmt.Errorf("reading config: %w", err)
+	}
+	return path, named, data, nil
+}
+
 // loadEntries reads the Config that flag and the environment point at, and
 // returns all of its entries, its warnings and its absolute path. Reading a
 // missing Config fails with an fs.ErrNotExist. Unless the Config is at the
@@ -99,13 +115,9 @@ func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]co
 // the Agent may run sprut with -c or $SPRUT_CONFIG that the user's shell
 // lacks, and in another directory.
 func loadEntries(flag string, lookupEnv config.LookupEnv) ([]config.Entry, []config.Warning, string, error) {
-	path, named, err := config.Path(flag, lookupEnv)
+	path, named, data, err := readConfig(flag, lookupEnv)
 	if err != nil {
 		return nil, nil, "", err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("reading config: %w", err)
 	}
 	entries, warnings, err := config.ParseEntries(data, lookupEnv)
 	if err != nil {

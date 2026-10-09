@@ -67,6 +67,25 @@ Each key under `mcpServers` names an Upstream. It must match `^[a-z0-9-]+$`, and
 
 `${VAR}` in `args`, `env`, `url`, `headers` and the `oauth` fields is replaced from sprut's environment, so secrets stay out of the file. If a variable is unset, sprut skips that Upstream with a warning instead of substituting an empty string. Any other field is ignored with a warning.
 
+## Add an Upstream
+
+`sprut upstream add` writes an Upstream into the Config, so you don't edit JSON by hand. A stdio Upstream is its command after `--`; an HTTP one is its `http://` or `https://` URL:
+
+```console
+$ sprut upstream add memory -- npx -y @modelcontextprotocol/server-memory
+added upstream "memory"
+note: running Agents see this change only after their sprut restarts
+$ sprut upstream add linear https://mcp.linear.app/mcp
+added upstream "linear"
+note: running Agents see this change only after their sprut restarts
+```
+
+Write a secret as a `'${VAR}'` reference, in single quotes so that your shell leaves it alone: it goes into the Config as typed and is replaced from sprut's environment when it runs.
+
+If there is no Config, `add` creates it where `sprut serve` reads it, readable only by you (file `0600`, directory `0700`). Before writing, it checks the result with the same parser `sprut serve` uses: a mistake such as an invalid name exits 1 and leaves the file as it was, while a warning such as an unset variable is printed and the Upstream is added anyway. It refuses to change a Config that already has errors. A name that is already in the Config fails; `--force` replaces that Upstream, keeping its place. The rest of the Config is kept as you wrote it, including fields and keys sprut doesn't know, but re-indented with two spaces. The file is replaced atomically, so an interrupted `add` never leaves it half-written; a Config that is a symlink is written at its target.
+
+Running `sprut serve` processes read the Config only when they start, so restart your Agents (or their MCP servers) to see the change.
+
 ## List your Upstreams
 
 `sprut upstream list` shows every Upstream in the Config, in Config order:
@@ -220,7 +239,7 @@ In `$XDG_STATE_HOME/sprut/credentials/<upstream>.json` (`~/.local/state/sprut/cr
 | Code | Meaning |
 | --- | --- |
 | 0 | Clean exit: the Agent closed stdin, SIGINT or SIGTERM, or a successful dry run. |
-| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
+| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a `sprut upstream add` that would make the Config invalid or whose name is taken, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
 | 2 | A usage error, such as an unknown flag or command. Bare `sprut` exits 2 too, so it never starts the server by accident. |
 
 ## Upgrading from v0.2

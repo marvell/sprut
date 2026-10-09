@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/marvell/sprut/internal/atomicfile"
 	"github.com/marvell/sprut/internal/config"
 )
 
@@ -308,23 +309,7 @@ func (l *lock) save(c *Credentials) error {
 	if err != nil {
 		return err
 	}
-	// CreateTemp makes the file 0600.
-	tmp, err := os.CreateTemp(l.s.dir, l.upstream+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("writing credentials: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // fails once renamed, as it should
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), l.s.path(l.upstream, ".json"))
-	}
-	if err != nil {
+	if err := atomicfile.Write(l.s.path(l.upstream, ".json"), data, 0o600); err != nil {
 		return fmt.Errorf("writing credentials: %w", err)
 	}
 	return nil

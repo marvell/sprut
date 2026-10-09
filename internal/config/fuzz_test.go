@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/marvell/sprut/internal/config"
 )
@@ -15,7 +16,9 @@ import (
 // FuzzParse checks what Parse promises of any input, not only of the
 // Configs the other tests think of: it never panics, gives the same answer
 // twice, fails with nothing else, and otherwise returns only Upstreams that
-// can be started, with every set variable substituted.
+// can be started, with every set variable substituted. It also checks that
+// a Config that parses is written back as a Document that parses the same,
+// and still does with an Upstream added.
 func FuzzParse(f *testing.F) {
 	example, err := os.ReadFile("../../examples/config.json")
 	if err != nil {
@@ -29,6 +32,9 @@ func FuzzParse(f *testing.F) {
 		`{"mcpServers": {"x": {"type": "sse", "url": "https://e.example"}, "y": {"command": "c", "disabled": true}}}`,
 		`{"mcpServers": {"a": {"command": "x"}}, "mcpServers": null}`,
 		`{"mcpServers": {"u": {"url": "${EMPTY}"}, "v": {"command": "c", "args": ["${UNSET}"]}}}`,
+		`{"MCPServers": {"a": {"command": "x"}}, "x": [1, {"y": "<&>"}], "mcpServers": {"b": {"url": "u"}, "b": {"command": "c"}}}`,
+		`null`,
+		`{"mcpſervers": {"a": {"command": "x"}}}`,
 	} {
 		f.Add([]byte(seed))
 	}
@@ -47,6 +53,8 @@ func FuzzParse(f *testing.F) {
 			}
 			return
 		}
+
+		checkRewrite(t, data, env)
 
 		seen := map[string]bool{}
 		for _, u := range upstreams {
@@ -85,4 +93,44 @@ func interpolated(u config.Upstream) []string {
 		out = append(out, u.OAuth.Scopes...)
 	}
 	return out
+}
+
+// checkRewrite checks that the Config data, which parses, is written back
+// as a Document that parses the same, and that adding an Upstream to it
+// adds just that one after the others.
+func checkRewrite(t *testing.T, data []byte, env config.LookupEnv) {
+	t.Helper()
+	want, wantWarnings, err := config.ParseEntries(data, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := config.ParseDocument(data)
+	if err != nil {
+		t.Fatalf("ParseDocument failed on a Config that parses: %v", err)
+	}
+	got, warnings, err := config.ParseEntries(doc.Bytes(), env)
+	if err != nil {
+		t.Fatalf("the Config written back fails to parse: %v\n%s", err, doc.Bytes())
+	}
+	if diff := cmp.Diff(want, got); diff != "" || !slices.Equal(warnings, wantWarnings) {
+		t.Fatalf("the Config written back parses differently (-want +got):\n%s\n%s", diff, doc.Bytes())
+	}
+
+	const name = "fuzz-added"
+	if slices.ContainsFunc(want, func(e config.Entry) bool { return e.Name == name }) {
+		return
+	}
+	if err := doc.Add(name, config.Definition{Command: "c"}, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = config.ParseEntries(doc.Bytes(), env)
+	if err != nil {
+		t.Fatalf("the Config with an Upstream added fails to parse: %v\n%s", err, doc.Bytes())
+	}
+	if len(got) != len(want)+1 || got[len(want)].Name != name {
+		t.Fatalf("adding %q gave entries %v", name, got)
+	}
+	if diff := cmp.Diff(want, got[:len(want)], cmpopts.EquateEmpty()); diff != "" {
+		t.Fatalf("adding an Upstream changed the others (-want +got):\n%s", diff)
+	}
 }
