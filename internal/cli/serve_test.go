@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/marvell/sprut/internal/mcptest"
@@ -50,8 +50,8 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 			"inputSchema": map[string]any{"type": "object"},
 		}),
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("tools/list:\n got %v\nwant %v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("tools/list (-want +got):\n%s", diff)
 	}
 }
 
@@ -84,8 +84,8 @@ func TestServeRoutesToolCallsToUpstreamAndReturnsResultUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tools/call: %v", err)
 			}
-			if got, want := callResult(t, res), toJSON(t, tt.want); !reflect.DeepEqual(got, want) {
-				t.Errorf("result:\n got %v\nwant %v", got, want)
+			if diff := cmp.Diff(toJSON(t, tt.want), callResult(t, res)); diff != "" {
+				t.Errorf("result (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -99,8 +99,8 @@ func TestServeIdentifiesAsSprutAndAdvertisesOnlyTools(t *testing.T) {
 	if init.ServerInfo == nil || init.ServerInfo.Name != "sprut" || init.ServerInfo.Version == "" {
 		t.Errorf("serverInfo = %+v, want name sprut with a version", init.ServerInfo)
 	}
-	if got, want := toJSON(t, init.Capabilities), toJSON(t, map[string]any{"tools": map[string]any{}}); !reflect.DeepEqual(got, want) {
-		t.Errorf("capabilities = %v, want %v", got, want)
+	if diff := cmp.Diff(toJSON(t, map[string]any{"tools": map[string]any{}}), toJSON(t, init.Capabilities)); diff != "" {
+		t.Errorf("capabilities (-want +got):\n%s", diff)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestServeInterpolatesVariablesIntoUpstreamEnvironmentOverInheritedOne(t *te
 		"SPRUT_TEST_OVERRIDE":  "from-config",
 		"SPRUT_TEST_INHERITED": "yes",
 	} {
-		if !reflect.DeepEqual(got[k], []string{want}) {
+		if !slices.Equal(got[k], []string{want}) {
 			t.Errorf("Upstream environment %s = %q, want [%q]", k, got[k], want)
 		}
 	}
@@ -422,8 +422,8 @@ func TestServeDryRunLogsExactlyWhatANormalStartupLogs(t *testing.T) {
 		t.Fatalf("normal run logged no startup summary:\n%s", normal)
 	}
 
-	if got, want := withoutTimes(dryRun), withoutTimes(normal); !slices.Equal(got, want) {
-		t.Errorf("dry run log:\n%s\nwant the normal startup log:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	if diff := cmp.Diff(withoutTimes(normal), withoutTimes(dryRun)); diff != "" {
+		t.Errorf("dry run log, against the normal startup log (-normal +dry run):\n%s", diff)
 	}
 }
 
@@ -735,8 +735,8 @@ func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
 				if err != nil {
 					t.Fatalf("tools/call: %v", err)
 				}
-				if got, want := callResult(t, res), toJSON(t, mcptest.EchoResult("hi")); !reflect.DeepEqual(got, want) {
-					t.Errorf("result:\n got %v\nwant %v", got, want)
+				if diff := cmp.Diff(toJSON(t, mcptest.EchoResult("hi")), callResult(t, res)); diff != "" {
+					t.Errorf("result (-want +got):\n%s", diff)
 				}
 			})
 		}
@@ -780,8 +780,8 @@ func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tools/call: %v", err)
 			}
-			if got, want := callResult(t, res), toJSON(t, mcptest.EchoResult("hi")); !reflect.DeepEqual(got, want) {
-				t.Errorf("result:\n got %v\nwant %v", got, want)
+			if diff := cmp.Diff(toJSON(t, mcptest.EchoResult("hi")), callResult(t, res)); diff != "" {
+				t.Errorf("result (-want +got):\n%s", diff)
 			}
 			g.closeAgent(t)
 		})

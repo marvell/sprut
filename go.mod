@@ -3,6 +3,7 @@ module github.com/marvell/sprut
 go 1.27.1
 
 require (
+	github.com/google/go-cmp v0.7.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/net v0.59.0

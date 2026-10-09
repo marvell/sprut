@@ -2,9 +2,10 @@ package config_test
 
 import (
 	"maps"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/marvell/sprut/internal/config"
 )
@@ -307,11 +308,11 @@ func TestParse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse: unexpected error: %v", err)
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Upstreams:\n got %+v\nwant %+v", got, tt.want)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Upstreams (-want +got):\n%s", diff)
 			}
-			if !reflect.DeepEqual(warnings, tt.warnings) {
-				t.Errorf("warnings:\n got %+v\nwant %+v", warnings, tt.warnings)
+			if diff := cmp.Diff(tt.warnings, warnings); diff != "" {
+				t.Errorf("warnings (-want +got):\n%s", diff)
 			}
 		})
 	}
