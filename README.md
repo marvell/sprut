@@ -101,6 +101,19 @@ postgres  stdio      uvx postgres-mcp                            disabled       
 
 `TARGET` is the command and its args, or the URL, as the Config writes them, with `${VAR}` references left in. `STATE` says whether `sprut serve` starts the Upstream: `enabled`, `disabled`, or `skipped` and why. `AUTH` is the state of an [OAuth](#oauth) Upstream's Credentials, and `-` for an Upstream that does not use OAuth, or one skipped before sprut can tell; Credentials that can't be read show the error there. It is offline: it starts no Upstream and contacts no server, so Credentials that the server has revoked still read as logged in until a request finds out. An empty or missing Config lists nothing.
 
+`--check` also starts every enabled Upstream at once, as `sprut serve` would, lists its tools and stops it again. In `STATE`, `enabled` becomes `ok (N tools)`, `needs login` (an [OAuth](#oauth) Upstream without Credentials it can use: none, dead ones, or ones the server rejects), or `failed:` and the error; disabled and skipped Upstreams are not started. Each Upstream gets `--startup-timeout` (default `30s`) to start. It exits 1 if any enabled Upstream failed or needs a Login, and 0 otherwise, so it works in scripts:
+
+```console
+$ sprut upstream list --check
+NAME      TRANSPORT  TARGET                                      STATE                                AUTH
+memory    stdio      npx -y @modelcontextprotocol/server-memory  ok (9 tools)                         -
+github    http       https://api.githubcopilot.com/mcp/          skipped: unset variable GITHUB_TOKEN  -
+linear    http       https://mcp.linear.app/mcp                  needs login                          no credentials
+postgres  stdio      uvx postgres-mcp                            disabled                             -
+```
+
+The Upstreams' own logs are not shown; [`sprut serve --dry-run`](#check-your-config) shows them.
+
 ## Add sprut to your Agents
 
 Each Agent runs `sprut serve` as a stdio MCP server. To give one Agent a different set of Upstreams, add `-c PATH` to its `args`.
@@ -239,7 +252,7 @@ In `$XDG_STATE_HOME/sprut/credentials/<upstream>.json` (`~/.local/state/sprut/cr
 | Code | Meaning |
 | --- | --- |
 | 0 | Clean exit: the Agent closed stdin, SIGINT or SIGTERM, or a successful dry run. |
-| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a `sprut upstream add` that would make the Config invalid or whose name is taken, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
+| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a `sprut upstream add` that would make the Config invalid or whose name is taken, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, a `sprut upstream list --check` in which some enabled Upstream failed or needs a Login, or a `sprut upstream login` or `logout` that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
 | 2 | A usage error, such as an unknown flag or command. Bare `sprut` exits 2 too, so it never starts the server by accident. |
 
 ## Upgrading from v0.2

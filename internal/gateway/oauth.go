@@ -76,6 +76,9 @@ type needsLoginError struct {
 
 func (e *needsLoginError) Hint() string { return e.hint }
 
+// Unwrap lets errors.As find the *credentials.LoginNeededError in e.
+func (e *needsLoginError) Unwrap() error { return &e.LoginNeededError }
+
 // loginHint is the remedy of an Upstream that needs a Login.
 func loginHint(u config.Upstream) string {
 	cmd := "run: sprut upstream login "

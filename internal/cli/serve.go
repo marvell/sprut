@@ -21,17 +21,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Name:  "serve",
 		Usage: "run the Gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
-			&ucli.DurationFlag{
-				Name:  "startup-timeout",
-				Value: 30 * time.Second,
-				Usage: "how long each Upstream may take to start",
-				Validator: func(d time.Duration) error {
-					if d <= 0 {
-						return errors.New("must be positive")
-					}
-					return nil
-				},
-			},
+			startupTimeoutFlag(),
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every Namespaced tool and tool call"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every Upstream as usual, then shut down; exit 1 if any failed"},
 		},
@@ -59,6 +49,20 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			// session; anything else, such as a failed read, is not.
 			if err := gw.Serve(ctx, stdin, stdout); err != nil && ctx.Err() == nil {
 				return fmt.Errorf("serving the agent: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+func startupTimeoutFlag() *ucli.DurationFlag {
+	return &ucli.DurationFlag{
+		Name:  "startup-timeout",
+		Value: 30 * time.Second,
+		Usage: "how long each Upstream may take to start",
+		Validator: func(d time.Duration) error {
+			if d <= 0 {
+				return errors.New("must be positive")
 			}
 			return nil
 		},

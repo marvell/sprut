@@ -126,12 +126,16 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 func Started(entries []Entry) []Upstream {
 	var upstreams []Upstream
 	for _, e := range entries {
-		if !e.Disabled && e.Upstream != nil {
+		if e.Starts() {
 			upstreams = append(upstreams, *e.Upstream)
 		}
 	}
 	return upstreams
 }
+
+// Starts reports whether the Gateway starts the entry: it is neither
+// disabled nor skipped.
+func (e Entry) Starts() bool { return !e.Disabled && e.Upstream != nil }
 
 // Entry is one entry of the Config, whether or not the Gateway starts it.
 type Entry struct {

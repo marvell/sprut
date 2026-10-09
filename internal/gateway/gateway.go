@@ -51,17 +51,21 @@ type skippedUpstream struct {
 // listed in the instructions the Agent gets.
 func Start(ctx context.Context, configured []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
 	g := &Gateway{
-		upstreams: &upstreams{
-			client:  newClient(version),
-			env:     env,
-			store:   openStore(env),
-			timeout: startupTimeout,
-			log:     log,
-		},
-		tools: map[string]bool{},
-		log:   log,
+		upstreams: newUpstreams(env, startupTimeout, version, log),
+		tools:     map[string]bool{},
+		log:       log,
 	}
-	started, skips := g.upstreams.start(ctx, configured)
+	// In Config order, so the log and the instructions don't depend on
+	// which Upstream was quickest. (The SDK lists tools by name anyway.)
+	var running []*ready
+	var skips []skippedUpstream
+	for i, res := range g.upstreams.start(ctx, configured) {
+		if res.err != nil {
+			skips = append(skips, skippedUpstream{name: configured[i].Name, err: res.err})
+			continue
+		}
+		running = append(running, res.r)
+	}
 	g.skipped = skips
 
 	// The server takes its instructions when it is made, so it is made once
@@ -74,13 +78,13 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, star
 	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.logAgentConnected)
 
 	tools := 0
-	for _, r := range started {
+	for _, r := range running {
 		added := g.addTools(r)
 		log.Info("upstream ready", "upstream", r.name, "tools", added,
 			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
 	}
-	log.Info("gateway started", "ready", len(started), "failed", len(skips), "tools", tools)
+	log.Info("gateway started", "ready", len(running), "failed", len(skips), "tools", tools)
 	return g
 }
 
@@ -175,14 +179,18 @@ type upstreams struct {
 	starting sync.WaitGroup       // Upstream starts, including abandoned ones
 }
 
-// start starts every Upstream in configured concurrently, and returns those
-// that started and those that failed or ran out of time, each in Config
-// order. A skipped one is logged.
-func (s *upstreams) start(ctx context.Context, configured []config.Upstream) ([]*ready, []skippedUpstream) {
-	results := make([]struct {
-		r   *ready
-		err error
-	}, len(configured))
+// started is how one Upstream fared at startup: ready, or the error it
+// failed with.
+type started struct {
+	r   *ready
+	err error
+}
+
+// start starts every Upstream in configured concurrently, and returns how
+// each fared, in Config order. A failed one is logged. The ready ones are
+// stopped by close.
+func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []started {
+	results := make([]started, len(configured))
 	var wg sync.WaitGroup
 	for i, u := range configured {
 		wg.Go(func() {
@@ -202,20 +210,18 @@ func (s *upstreams) start(ctx context.Context, configured []config.Upstream) ([]
 		})
 	}
 	wg.Wait()
-
-	// In Config order, so the log and the instructions don't depend on
-	// which Upstream was quickest. (The SDK lists tools by name anyway.)
-	var started []*ready
-	var skips []skippedUpstream
-	for i, res := range results {
-		if res.err != nil {
-			skips = append(skips, skippedUpstream{name: configured[i].Name, err: res.err})
-			continue
+	for _, res := range results {
+		if res.r != nil {
+			s.sessions = append(s.sessions, res.r.session)
 		}
-		started = append(started, res.r)
-		s.sessions = append(s.sessions, res.r.session)
 	}
-	return started, skips
+	return results
+}
+
+// newUpstreams returns the starter of Upstreams for a sprut of version,
+// whose environment is env.
+func newUpstreams(env []string, timeout time.Duration, version string, log *slog.Logger) *upstreams {
+	return &upstreams{client: newClient(version), env: env, store: openStore(env), timeout: timeout, log: log}
 }
 
 // startOne starts u, giving up on it once the timeout runs out.

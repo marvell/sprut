@@ -1,0 +1,62 @@
+# sprut upstream list --check starts every enabled Upstream, as serve would,
+# and says in STATE whether each works. Disabled and skipped ones are not
+# started and keep their offline STATE.
+env XDG_CONFIG_HOME=$WORK/xdg
+env XDG_STATE_HOME=$WORK/state
+
+sprut upstream list --check -c healthy.json
+cmp stdout healthy.golden
+! stderr .
+
+# One failing Upstream fails the check, and a hanging one is given up on
+# at --startup-timeout; each is reported in its own row.
+! sprut upstream list --check --startup-timeout 1s -c broken.json
+status 1
+stdout '^NAME +TRANSPORT +TARGET +STATE +AUTH$'
+stdout '^ok +stdio +fake-upstream +ok \(2 tools\) +-$'
+stdout '^failing +stdio +fake-upstream +failed: \S.* +-$'
+stdout '^hanging +stdio +fake-upstream +failed: startup timed out after 1s +-$'
+stdout '^unset +stdio +fake-upstream +skipped: unset variable SPRUT_TEST_UNSET +-$'
+stdout '^disabled +stdio +fake-upstream +disabled +-$'
+! stderr .
+
+# Without --check, list stays offline: nothing is started.
+sprut upstream list -c broken.json
+stdout '^failing +stdio +fake-upstream +enabled +-$'
+stdout '^hanging +stdio +fake-upstream +enabled +-$'
+
+# Disabled and skipped Upstreams don't fail the check, and an empty or
+# missing Config checks nothing.
+sprut upstream list --check -c idle.json
+stdout '^unset +stdio +fake-upstream +skipped: unset variable SPRUT_TEST_UNSET +-$'
+stdout '^disabled +stdio +fake-upstream +disabled +-$'
+sprut upstream list --check -c missing.json
+! stdout .
+! stderr .
+
+# A --startup-timeout that is not positive is a usage error.
+! sprut upstream list --check --startup-timeout 0s -c healthy.json
+status 2
+
+-- healthy.json --
+{"mcpServers": {
+  "one": {"command": "fake-upstream"},
+  "two": {"command": "fake-upstream", "args": ["--flag"]}
+}}
+-- healthy.golden --
+NAME  TRANSPORT  TARGET                STATE         AUTH
+one   stdio      fake-upstream         ok (2 tools)  -
+two   stdio      fake-upstream --flag  ok (2 tools)  -
+-- broken.json --
+{"mcpServers": {
+  "ok": {"command": "fake-upstream"},
+  "failing": {"command": "fake-upstream", "env": {"SPRUT_TEST_FAKE_UPSTREAM": "{\"Startup\": \"fail\"}"}},
+  "hanging": {"command": "fake-upstream", "env": {"SPRUT_TEST_FAKE_UPSTREAM": "{\"Startup\": \"hang\"}"}},
+  "unset": {"command": "fake-upstream", "env": {"TOKEN": "${SPRUT_TEST_UNSET}"}},
+  "disabled": {"command": "fake-upstream", "disabled": true}
+}}
+-- idle.json --
+{"mcpServers": {
+  "unset": {"command": "fake-upstream", "env": {"TOKEN": "${SPRUT_TEST_UNSET}"}},
+  "disabled": {"command": "fake-upstream", "disabled": true}
+}}
