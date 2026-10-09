@@ -42,3 +42,9 @@ func Check(ctx context.Context, configured []config.Upstream, env []string, star
 	}
 	return health
 }
+
+// Hint is the remedy of the Upstream's failure, such as the command that
+// logs in to it, or "" if there is none.
+func (h Health) Hint() string {
+	return hint(h.Err)
+}

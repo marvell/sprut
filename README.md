@@ -75,9 +75,11 @@ Each key under `mcpServers` names an Upstream. It must match `^[a-z0-9-]+$`, and
 $ sprut upstream add memory -- npx -y @modelcontextprotocol/server-memory
 added upstream "memory"
 note: running Agents see this change only after their sprut restarts
+upstream "memory": ok (9 tools)
 $ sprut upstream add linear https://mcp.linear.app/mcp
 added upstream "linear"
 note: running Agents see this change only after their sprut restarts
+upstream "linear": needs login; run: sprut upstream login linear
 ```
 
 Flags set the rest of the Upstream's fields:
@@ -89,6 +91,8 @@ Flags set the rest of the Upstream's fields:
 | `--oauth-client-id`, `--oauth-client-secret` | `oauth.clientId` and `oauth.clientSecret` of an HTTP Upstream: a pre-registered [OAuth](#oauth) client. A secret needs a client ID. |
 | `--oauth-scope` | `oauth.scopes` of an HTTP Upstream. Repeat it for each scope; without it, `scopes` is not written. |
 | `--disabled` | `"disabled": true`: the Upstream is added switched off. |
+
+Two more flags shape the [check](#the-check-after-add-and-enable) that follows the write: `--no-check` skips it, and `--startup-timeout` (default `30s`) bounds it.
 
 A flag that doesn't apply to the Upstream's Transport, such as `-H` on a stdio Upstream, is a usage error rather than a field `sprut serve` would ignore.
 
@@ -102,6 +106,12 @@ $ sprut upstream add postgres -e 'DATABASE_URI=${DATABASE_URI}' -- uvx postgres-
 If there is no Config, `add` creates it where `sprut serve` reads it, readable only by you (file `0600`, directory `0700`); an existing Config keeps its mode. Before writing, it checks the result with the same parser `sprut serve` uses: a mistake such as an invalid name exits 1 and leaves the file as it was, while a warning such as an unset variable is printed and the Upstream is added anyway. It refuses to change a Config that already has errors. A name that is already in the Config fails; `--force` replaces that Upstream, keeping its place. The rest of the Config is kept as you wrote it, including fields and keys sprut doesn't know, but re-indented with two spaces. The file is replaced atomically, so an interrupted `add` never leaves it half-written; a Config that is a symlink is written at its target.
 
 Running `sprut serve` processes read the Config only when they start, so restart your Agents (or their MCP servers) to see the change.
+
+### The check after add and enable
+
+Once the Config is written, `add` starts the new Upstream as [`sprut upstream list --check`](#list-your-upstreams) would, lists its tools and stops it again, so you learn at once whether it works. `ok (N tools)` goes to stdout. An [OAuth](#oauth) Upstream without Credentials it can use gets `needs login` and the command that [logs in](#log-in) on stderr; `add` never starts a Login itself. Any other failure is a warning on stderr. None of them undoes the write or changes the exit status, which stays 0: an Upstream whose variables are set only where your Agents run can still be added.
+
+Only the Upstream just written is checked, and only if `sprut serve` would start it: not one added with `--disabled` or skipped for an unset variable. Each check gets `--startup-timeout` (default `30s`). `--no-check` skips it, to add Upstreams offline or in bulk. [`enable`](#disable-and-enable-an-upstream) checks the Upstream it switches on the same way, and takes the same two flags.
 
 ## Remove an Upstream
 
@@ -126,9 +136,10 @@ note: running Agents see this change only after their sprut restarts
 $ sprut upstream enable postgres
 enabled upstream "postgres"
 note: running Agents see this change only after their sprut restarts
+upstream "postgres": ok (18 tools)
 ```
 
-sprut doesn't check a disabled entry, so it may be broken; `enable` checks it with the same parser `sprut serve` uses, and refuses one with errors, exiting 1 and leaving the file as it was. Switching an Upstream to the state it is already in succeeds and leaves the file alone. Both keep the rest of the Config as [`add`](#add-an-upstream) does, and refuse to change a Config that already has errors. A name that is not in the Config, or a missing Config, exits 1 and creates no file.
+sprut doesn't check a disabled entry, so it may be broken; `enable` checks it with the same parser `sprut serve` uses, and refuses one with errors, exiting 1 and leaving the file as it was. Once it is switched on, `enable` [checks the Upstream](#the-check-after-add-and-enable) as `add` does, unless `--no-check`. Switching an Upstream to the state it is already in succeeds, leaves the file alone and checks nothing. Both keep the rest of the Config as [`add`](#add-an-upstream) does, and refuse to change a Config that already has errors. A name that is not in the Config, or a missing Config, exits 1 and creates no file.
 
 ## List your Upstreams
 

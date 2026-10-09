@@ -39,6 +39,8 @@ func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 			&ucli.StringSliceFlag{Name: "oauth-scope", Usage: "request this OAuth scope in place of those the HTTP Upstream asks for"},
 			&ucli.BoolFlag{Name: "disabled", Usage: "add the Upstream switched off"},
 			&ucli.BoolFlag{Name: "force", Usage: "replace an Upstream of that name, keeping its place in the Config"},
+			noCheckFlag(),
+			startupTimeoutFlag(),
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("name")
@@ -59,6 +61,7 @@ func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 				return err
 			}
 			changed(stdout, stderr, "added upstream %q", name)
+			checkWritten(ctx, cmd, env, name, stdout, stderr)
 			return nil
 		},
 	}

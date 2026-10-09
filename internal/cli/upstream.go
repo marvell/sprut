@@ -99,21 +99,65 @@ func checkStates(ctx context.Context, entries []config.Entry, states []string, e
 			rows = append(rows, i)
 		}
 	}
-	quiet := slog.New(slog.DiscardHandler)
 	healthy := true
-	for j, h := range gateway.Check(ctx, upstreams, env, startupTimeout, version(), quiet) {
-		i := rows[j]
+	for j, h := range check(ctx, upstreams, env, startupTimeout) {
 		healthy = healthy && h.Err == nil
-		switch {
-		case h.Err == nil:
-			states[i] = fmt.Sprintf("ok (%d tools)", h.Tools)
-		case h.NeedsLogin():
-			states[i] = "needs login"
-		default:
-			states[i] = "failed: " + oneLine(h.Err.Error())
-		}
+		states[rows[j]] = health(h)
 	}
 	return healthy
+}
+
+// check is gateway.Check with its failures not logged: the caller reports
+// them.
+func check(ctx context.Context, upstreams []config.Upstream, env []string, startupTimeout time.Duration) []gateway.Health {
+	return gateway.Check(ctx, upstreams, env, startupTimeout, version(), slog.New(slog.DiscardHandler))
+}
+
+// health is how h fared, as list --check shows it in STATE.
+func health(h gateway.Health) string {
+	switch {
+	case h.Err == nil:
+		return fmt.Sprintf("ok (%d tools)", h.Tools)
+	case h.NeedsLogin():
+		return "needs login"
+	}
+	return "failed: " + oneLine(h.Err.Error())
+}
+
+// noCheckFlag is the --no-check of the commands that check the Upstream
+// they write.
+func noCheckFlag() *ucli.BoolFlag {
+	return &ucli.BoolFlag{Name: "no-check", Usage: "don't start the Upstream to check that it works"}
+}
+
+// checkWritten starts the Upstream called name, just written to the Config
+// that cmd's --config and env point at, as list --check would, unless
+// --no-check, and says how it fared: on stdout if it works, else on stderr
+// with the remedy, if any. It checks nothing the Gateway wouldn't start.
+// Whatever it finds, the Config stays written, so nothing it finds is an
+// error.
+func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name string, stdout, stderr io.Writer) {
+	if cmd.Bool("no-check") {
+		return
+	}
+	entries, _, _, err := loadEntries(cmd.String("config"), config.LookupIn(env))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
+		return
+	}
+	u, err := findUpstream(config.Started(entries), name)
+	if err != nil {
+		return
+	}
+	h := check(ctx, []config.Upstream{u}, env, cmd.Duration("startup-timeout"))[0]
+	switch {
+	case h.Err == nil:
+		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, health(h))
+	case h.Hint() != "":
+		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, health(h), h.Hint())
+	default:
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, health(h))
+	}
 }
 
 // oneLine is s with every run of whitespace, line breaks included, made

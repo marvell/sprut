@@ -1,11 +1,12 @@
 # sprut upstream add's flags set the rest of an entry's fields, writing
-# each value as typed.
+# each value as typed. --no-check keeps the runs that write a startable
+# Upstream offline.
 env XDG_CONFIG_HOME=$WORK/xdg
 env HOME=$WORK/home
 
 # -e sets a stdio Upstream's env; ${VAR} stays a reference.
 env TOKEN=set
-sprut upstream add -c env.json -e 'TOKEN=${TOKEN}' --env MODE=a=b -e EMPTY= -e LIST=a,b memory -- npx server-memory
+sprut upstream add --no-check -c env.json -e 'TOKEN=${TOKEN}' --env MODE=a=b -e EMPTY= -e LIST=a,b memory -- npx server-memory
 stdout '^added upstream "memory"$'
 cmp env.json env.golden
 
@@ -19,9 +20,9 @@ cmp headers.json headers.golden
 # The OAuth flags set a pre-registered client and its scopes; "scopes" is
 # written only when some are given.
 env CLIENT_SECRET=set
-sprut upstream add -c oauth.json --oauth-client-id sprut-cli --oauth-client-secret '${CLIENT_SECRET}' --oauth-scope read --oauth-scope 'write:all' full https://full.example/mcp
-sprut upstream add -c oauth.json --oauth-client-id only-id id https://id.example/mcp
-sprut upstream add -c oauth.json --oauth-scope read scopes https://scopes.example/mcp
+sprut upstream add --no-check -c oauth.json --oauth-client-id sprut-cli --oauth-client-secret '${CLIENT_SECRET}' --oauth-scope read --oauth-scope 'write:all' full https://full.example/mcp
+sprut upstream add --no-check -c oauth.json --oauth-client-id only-id id https://id.example/mcp
+sprut upstream add --no-check -c oauth.json --oauth-scope read scopes https://scopes.example/mcp
 cmp oauth.json oauth.golden
 
 # --disabled adds an Upstream switched off, for either Transport.

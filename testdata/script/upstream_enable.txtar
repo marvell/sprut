@@ -1,5 +1,7 @@
 # sprut upstream disable switches an Upstream off without deleting it, and
-# sprut upstream enable switches it back on.
+# sprut upstream enable switches it back on. --no-check keeps the runs
+# that switch on a startable Upstream offline;
+# upstream_check_after_write.txtar covers the check.
 env XDG_CONFIG_HOME=$WORK/xdg
 mkdir xdg/sprut
 cp config.json xdg/sprut/config.json
@@ -20,7 +22,7 @@ stdout '^-rw-r--r--'
 sprut upstream enable memory
 stdout '^enabled upstream "memory"$'
 stderr 'running Agents see this change only after their sprut restarts'
-sprut upstream enable off
+sprut upstream enable --no-check off
 stdout '^enabled upstream "off"$'
 cmp xdg/sprut/config.json enabled.golden
 
@@ -59,9 +61,9 @@ sprut -c a.json upstream disable a
 sprut upstream disable b -c a.json
 cmp a.json two-disabled.golden
 env SPRUT_CONFIG=$WORK/a.json
-sprut upstream enable a
+sprut upstream enable --no-check a
 env SPRUT_CONFIG=
-sprut upstream enable -c a.json b
+sprut upstream enable --no-check -c a.json b
 cmp a.json two.golden
 
 # A name not in the Config fails, names it and changes nothing.

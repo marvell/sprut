@@ -1,11 +1,13 @@
 # sprut upstream add writes a new Upstream into the Config: a stdio one
-# from -- and a command, an HTTP one from an http(s) URL.
+# from -- and a command, an HTTP one from an http(s) URL. --no-check
+# keeps the runs that write a startable Upstream offline;
+# upstream_check_after_write.txtar covers the check.
 env XDG_CONFIG_HOME=$WORK/xdg
 env HOME=$WORK/home
 
 # A missing Config is created where serve reads it, private to the user.
 ! exists xdg
-sprut upstream add memory -- npx -y '@modelcontextprotocol/server-memory'
+sprut upstream add --no-check memory -- npx -y '@modelcontextprotocol/server-memory'
 stdout '^added upstream "memory"$'
 stderr 'running Agents see this change only after their sprut restarts'
 cmp xdg/sprut/config.json created.golden
@@ -18,8 +20,8 @@ stdout '^-rw-------.* xdg/sprut/config.json$'
 sprut upstream add linear 'https://mcp.linear.app/mcp?team=${TEAM}'
 stdout '^added upstream "linear"$'
 stderr '^warning: upstream "linear": unset variable TEAM; upstream skipped$'
-sprut upstream add plain http://127.0.0.1:8080/mcp
-sprut upstream add args-only -- fake-upstream
+sprut upstream add --no-check plain http://127.0.0.1:8080/mcp
+sprut upstream add --no-check args-only -- fake-upstream
 cmp xdg/sprut/config.json both.golden
 
 # An existing name fails; --force replaces it in place.
@@ -28,14 +30,14 @@ status 1
 stderr 'upstream "linear": already in the config; use --force to replace it'
 ! stdout .
 cmp xdg/sprut/config.json both.golden
-sprut upstream add --force linear -- linear-mcp --stdio
+sprut upstream add --no-check --force linear -- linear-mcp --stdio
 stdout '^added upstream "linear"$'
 cmp xdg/sprut/config.json forced.golden
 
 # Another file's mode is kept, and unknown fields, ${VAR} references, other
 # keys and the order of entries survive the rewrite.
 chmod 0644 keep.json
-sprut upstream add -c keep.json new https://new.example/mcp
+sprut upstream add --no-check -c keep.json new https://new.example/mcp
 ! stderr 'warning'
 cmp keep.json keep.golden
 exec ls -l keep.json
@@ -47,7 +49,7 @@ exec ls -a . xdg/sprut
 ! stdout '\.json\..*\.tmp'
 mkdir shared
 chmod 0755 shared
-sprut upstream add -c shared/config.json a -- a
+sprut upstream add --no-check -c shared/config.json a -- a
 exec ls -ld shared
 stdout '^drwxr-xr-x'
 
@@ -55,20 +57,20 @@ stdout '^drwxr-xr-x'
 # its target, even one that doesn't exist yet.
 mkdir dotfiles
 symlink linked.json -> dotfiles/config.json
-sprut upstream add -c linked.json a -- a
+sprut upstream add --no-check -c linked.json a -- a
 exists dotfiles/config.json
-sprut upstream add -c linked.json b -- b
+sprut upstream add --no-check -c linked.json b -- b
 grep '"b"' dotfiles/config.json
 exec ls -l linked.json
 stdout '^l'
 
 # -c goes in any position, and SPRUT_CONFIG names the Config too.
-sprut -c dir/a.json upstream add a -- a
+sprut -c dir/a.json upstream add --no-check a -- a
 exists dir/a.json
-sprut upstream -c dir/b.json add b -- b
+sprut upstream -c dir/b.json add --no-check b -- b
 exists dir/b.json
 env SPRUT_CONFIG=$WORK/dir/c.json
-sprut upstream add c -- c
+sprut upstream add --no-check c -- c
 exists dir/c.json
 env SPRUT_CONFIG=
 

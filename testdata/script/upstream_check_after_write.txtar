@@ -1,0 +1,67 @@
+# sprut upstream add and enable check the Upstream they just wrote, as
+# list --check would, and say whether it works. What the check finds never
+# changes the exit status or undoes the write.
+env XDG_CONFIG_HOME=$WORK/xdg
+env XDG_STATE_HOME=$WORK/state
+
+# A working Upstream is reported on stdout, after the result line.
+sprut upstream add -c ok.json one -- fake-upstream
+cmp stdout ok.golden
+! stderr 'warning'
+
+# Only the Upstream just written is checked, not the one already in
+# the Config.
+sprut upstream add -c ok.json two -- fake-upstream --flag
+stdout '^upstream "two": ok \(2 tools\)$'
+! stdout '"one"'
+! stderr 'warning'
+
+# A failing Upstream is a warning, but it stays in the Config and add
+# exits 0.
+sprut upstream add -c ok.json -e 'SPRUT_TEST_FAKE_UPSTREAM={"Startup": "fail"}' failing -- fake-upstream
+stdout '^added upstream "failing"$'
+stderr '^warning: upstream "failing": failed: \S'
+! stdout 'ok \('
+sprut upstream list -c ok.json
+stdout '^failing +stdio +fake-upstream +enabled +-$'
+
+# The check is bounded by --startup-timeout.
+sprut upstream add -c ok.json --startup-timeout 1s -e 'SPRUT_TEST_FAKE_UPSTREAM={"Startup": "hang"}' hanging -- fake-upstream
+stderr '^warning: upstream "hanging": failed: startup timed out after 1s$'
+
+# --no-check skips it.
+sprut upstream add -c ok.json --no-check -e 'SPRUT_TEST_FAKE_UPSTREAM={"Startup": "fail"}' unchecked -- fake-upstream
+stdout '^added upstream "unchecked"$'
+! stdout 'upstream "unchecked":'
+! stderr 'upstream "unchecked":'
+
+# Nothing is checked that serve would not start: a disabled Upstream, or
+# one skipped for an unset variable.
+sprut upstream add -c ok.json --disabled off -- fake-upstream
+! stdout 'upstream "off":'
+sprut upstream add -c ok.json -e 'TOKEN=${SPRUT_TEST_UNSET}' unset -- fake-upstream
+stderr '^warning: upstream "unset": unset variable SPRUT_TEST_UNSET; upstream skipped$'
+! stdout 'upstream "unset":'
+! stderr 'failed'
+
+# enable checks the Upstream it switches on, the same way.
+sprut upstream enable -c ok.json off
+stdout '^enabled upstream "off"$'
+stdout '^upstream "off": ok \(2 tools\)$'
+sprut upstream disable -c ok.json failing
+! stdout 'upstream "failing":'
+sprut upstream enable -c ok.json failing
+stdout '^enabled upstream "failing"$'
+stderr '^warning: upstream "failing": failed: \S'
+sprut upstream disable -c ok.json one
+sprut upstream enable -c ok.json --no-check one
+! stdout 'upstream "one":'
+
+# enable on an enabled Upstream writes nothing, so it checks nothing.
+sprut upstream enable -c ok.json failing
+stdout '^upstream "failing" is already enabled$'
+! stderr .
+
+-- ok.golden --
+added upstream "one"
+upstream "one": ok (2 tools)
