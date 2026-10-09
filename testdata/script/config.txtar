@@ -1,0 +1,56 @@
+# sprut reads the first Config that is set: -c, $SPRUT_CONFIG,
+# $XDG_CONFIG_HOME/sprut/config.json, ~/.config/sprut/config.json. It logs
+# where, as an absolute path.
+
+# -c, relative, goes before or after the command.
+sprut serve --dry-run -c fake.json
+stderr 'level=INFO msg="config loaded" path=\Q'$WORK'\E/fake.json upstreams=1'
+sprut -c fake.json serve --dry-run
+stderr 'msg="config loaded" path=\Q'$WORK'\E/fake.json '
+
+env SPRUT_CONFIG=$WORK/fake.json
+sprut serve --dry-run
+stderr 'msg="config loaded" path=\Q'$WORK'\E/fake.json '
+env SPRUT_CONFIG=
+
+env XDG_CONFIG_HOME=$WORK/xdg
+sprut serve --dry-run
+stderr 'msg="config loaded" path=\Q'$WORK'\E/xdg/sprut/config.json '
+env XDG_CONFIG_HOME=
+
+# A Config error exits 1 and points at the mistake.
+! sprut serve -c missing.json
+status 1
+stderr 'reading config: open missing.json: no such file or directory'
+! stdout .
+
+env SPRUT_CONFIG=$WORK/missing.json
+! sprut serve
+status 1
+stderr '\Q'$WORK'\E/missing.json'
+env SPRUT_CONFIG=
+
+env HOME=$WORK/home
+! sprut serve
+status 1
+stderr '\Q'$WORK'\E/home/.config/sprut/config.json'
+
+! sprut serve -c malformed.json
+status 1
+stderr 'malformed.json'
+stderr 'unexpected end of JSON input'
+! stdout .
+
+! sprut serve -c bad-name.json
+status 1
+stderr 'My_Server'
+! stdout .
+
+-- fake.json --
+{"mcpServers": {"fake": {"command": "fake-upstream"}}}
+-- xdg/sprut/config.json --
+{"mcpServers": {"fake": {"command": "fake-upstream"}}}
+-- malformed.json --
+{"mcpServers": {
+-- bad-name.json --
+{"mcpServers": {"My_Server": {"command": "x"}}}

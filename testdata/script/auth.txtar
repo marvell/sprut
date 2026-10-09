@@ -1,0 +1,49 @@
+# sprut auth names the Upstream at fault and exits 1 when it can't act on
+# it, without touching the Credentials.
+env XDG_STATE_HOME=$WORK/state
+
+# status lists every HTTP Upstream that may use OAuth, and reads only the
+# stored Credentials: it contacts no server.
+sprut auth status -c config.json
+cmp stdout status.golden
+! stderr .
+
+# -c goes before or after the command.
+sprut -c config.json auth status
+cmp stdout status.golden
+sprut auth -c config.json status
+cmp stdout status.golden
+
+# SPRUT_CONFIG names the Config: only it knows local, and that it is stdio.
+env SPRUT_CONFIG=$WORK/config.json
+! sprut auth login local
+status 1
+stderr 'OAuth is only for HTTP upstreams'
+env SPRUT_CONFIG=
+
+! sprut auth login nope -c config.json
+status 1
+stderr '"nope"'
+
+! sprut auth login static -c config.json --no-browser
+status 1
+stderr 'Authorization header'
+
+! sprut auth logout local -c config.json
+status 1
+stderr '"local"'
+
+! sprut auth logout nope -c config.json
+status 1
+stderr '"nope"'
+
+! exists state/sprut
+
+-- config.json --
+{"mcpServers": {
+  "local": {"command": "fake-upstream"},
+  "remote": {"url": "https://remote.invalid/mcp"},
+  "static": {"url": "https://static.invalid/mcp", "headers": {"Authorization": "Bearer x"}}
+}}
+-- status.golden --
+remote: no credentials

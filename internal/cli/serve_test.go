@@ -175,57 +175,6 @@ func TestServeSkipsUpstreamWithUnsetVariableAndServesTheOthers(t *testing.T) {
 	g.wantLogLine(t, "WARN", "upstream=broken", "SPRUT_TEST_UNSET")
 }
 
-func TestServeConfigErrorsExit1(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	write := func(name, content string) string {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	missing := filepath.Join(dir, "missing.json")
-	malformed := write("malformed.json", `{"mcpServers": {`)
-	badName := write("bad-name.json", `{"mcpServers": {"My_Server": {"command": "x"}}}`)
-
-	tests := []struct {
-		name string
-		env  []string
-		args []string
-		// wantStderr is what stderr must contain to point the user at the mistake.
-		wantStderr []string
-	}{
-		{name: "missing file from -c", args: []string{"serve", "-c", missing}, wantStderr: []string{missing}},
-		{name: "missing file from SPRUT_CONFIG", env: []string{"SPRUT_CONFIG=" + missing}, args: []string{"serve"}, wantStderr: []string{missing}},
-		{
-			name:       "missing default file",
-			env:        []string{"HOME=" + dir},
-			args:       []string{"serve"},
-			wantStderr: []string{filepath.Join(dir, ".config", "sprut", "config.json")},
-		},
-		{name: "malformed JSON", args: []string{"serve", "-c", malformed}, wantStderr: []string{malformed, "unexpected end of JSON input"}},
-		{name: "invalid Upstream name", args: []string{"serve", "-c", badName}, wantStderr: []string{"My_Server"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			code, stdout, stderr := runSprut(t, tt.env, tt.args...)
-			if code != 1 {
-				t.Errorf("exit code = %d, want 1", code)
-			}
-			for _, want := range tt.wantStderr {
-				if !strings.Contains(stderr, want) {
-					t.Errorf("stderr does not contain %q:\n%s", want, stderr)
-				}
-			}
-			if stdout != "" {
-				t.Errorf("stdout = %q, want empty", stdout)
-			}
-		})
-	}
-}
-
 func TestServeExits1WhenReadingFromTheAgentFails(t *testing.T) {
 	t.Parallel()
 	code, _, stderr := runSprutOn(t, failingReader{}, nil, "serve", "-c", writeConfig(t, map[string]any{}))
@@ -1002,45 +951,4 @@ func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
 	}
 	wantNoSecrets(t, "instructions", instructions, "url-secret", "header-secret", "env-secret")
 	g.closeAgent(t)
-}
-
-// serve logs the absolute path of the Config it reads, wherever it found
-// it, so that the user can tell which file an Agent's sprut uses.
-func TestServeLogsWhereItReadsTheConfig(t *testing.T) {
-	t.Parallel()
-	upstreams := map[string]any{"fake": mcptest.Stdio{}.Entry(t)}
-	configHome := t.TempDir()
-	atDefault := filepath.Join(configHome, "sprut", "config.json")
-	writeConfigAt(t, atDefault, upstreams)
-	abs := writeConfig(t, upstreams)
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	rel, err := filepath.Rel(wd, abs)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, tc := range []struct {
-		name string
-		env  []string
-		args []string
-		want string
-	}{
-		{name: "default location", env: []string{"XDG_CONFIG_HOME=" + configHome}, want: atDefault},
-		{name: "relative -c", args: []string{"-c", rel}, want: abs},
-		{name: "SPRUT_CONFIG", env: []string{"SPRUT_CONFIG=" + abs}, want: abs},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			code, _, stderr := runSprut(t, tc.env, append([]string{"serve", "--dry-run"}, tc.args...)...)
-			if code != 0 {
-				t.Fatalf("exit code = %d, want 0", code)
-			}
-			if !regexp.MustCompile(`level=INFO msg="config loaded" path=` + regexp.QuoteMeta(tc.want) + `( |$)`).MatchString(stderr) {
-				t.Errorf("no INFO line saying the config was loaded from %s", tc.want)
-			}
-		})
-	}
 }

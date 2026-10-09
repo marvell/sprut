@@ -26,8 +26,10 @@ linters:
 
     testpackage:
       # No exceptions, not even export_test.go: a test reaches its package
-      # through the exported API alone (ADR-0004).
+      # through the exported API alone (ADR-0004). main's test is in main
+      # only to run main itself, as a process of its own.
       skip-regexp: ^$
+      allow-packages: [main]
 
   exclusions:
     rules:

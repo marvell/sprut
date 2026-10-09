@@ -1,0 +1,29 @@
+# --dry-run starts every Upstream as a real run would, logs the same, and
+# exits 0 only if every enabled one started. stdout stays empty.
+sprut serve --dry-run -c healthy.json
+stderr 'msg="upstream ready" upstream=one tools=2 '
+stderr 'msg="upstream ready" upstream=two tools=2 '
+stderr 'msg="gateway started" ready=2 failed=0 tools=4'
+! stdout .
+
+! sprut serve --dry-run --startup-timeout 1s -c broken.json
+status 1
+stderr 'level=WARN .*upstream=failing'
+stderr 'level=WARN .*upstream=unset'
+stderr 'unset variable SPRUT_TEST_UNSET; upstream skipped'
+stderr 'msg="gateway started" ready=1 failed=1 tools=2'
+! stderr 'upstream=disabled'
+! stdout .
+
+-- healthy.json --
+{"mcpServers": {
+  "one": {"command": "fake-upstream"},
+  "two": {"command": "fake-upstream"}
+}}
+-- broken.json --
+{"mcpServers": {
+  "fake": {"command": "fake-upstream"},
+  "failing": {"command": "fake-upstream", "env": {"SPRUT_TEST_FAKE_UPSTREAM": "{\"Startup\": \"fail\"}"}},
+  "unset": {"command": "fake-upstream", "env": {"TOKEN": "${SPRUT_TEST_UNSET}"}},
+  "disabled": {"command": "fake-upstream", "disabled": true}
+}}

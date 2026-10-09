@@ -1,0 +1,30 @@
+# --version prints the version to stdout, and wins over a command, so a
+# version query never starts the server.
+sprut --version
+stdout '^sprut version \S+\n$'
+! stderr .
+
+sprut --version serve
+stdout '^sprut version \S+\n$'
+! stderr .
+
+# Help goes to stdout and exits 0.
+sprut -h
+stdout 'serve'
+stdout '--version'
+! stderr .
+
+sprut --help
+stdout 'serve'
+! stderr .
+
+sprut serve -h
+stdout '--config'
+stdout '--startup-timeout'
+stdout '--verbose'
+stdout '--dry-run'
+! stderr .
+
+sprut serve --help
+stdout '--dry-run'
+! stderr .

@@ -1,0 +1,93 @@
+# A usage error exits 2 with the usage of the command at fault on stderr,
+# never on stdout, which carries serve's MCP traffic.
+
+# Bare sprut is a usage error too, so that it never starts the server.
+! sprut
+status 2
+stderr 'sprut \[global options\]'
+! stdout .
+
+! sprut --bogus
+status 2
+stderr 'bogus'
+stderr 'sprut \[global options\]'
+! stdout .
+
+! sprut --bogus serve
+status 2
+stderr 'bogus'
+! stdout .
+
+! sprut bogus
+status 2
+stderr 'unknown command "bogus"'
+stderr 'sprut \[global options\]'
+! stdout .
+
+! sprut help bogus
+status 2
+stderr 'unknown command "bogus"'
+! stdout .
+
+! sprut -h bogus
+status 2
+stderr 'unknown command "bogus"'
+! stdout .
+
+! sprut serve --bogus
+status 2
+stderr 'bogus'
+stderr 'sprut serve \[options\]'
+! stdout .
+
+! sprut serve bogus
+status 2
+stderr 'unexpected argument "bogus"'
+stderr 'sprut serve \[options\]'
+! stdout .
+
+! sprut serve --help bogus
+status 2
+stderr 'unexpected argument "bogus"'
+! stdout .
+
+! sprut serve --startup-timeout soon
+status 2
+stderr 'soon'
+stderr 'sprut serve \[options\]'
+! stdout .
+
+! sprut serve --startup-timeout 0s
+status 2
+stderr 'startup-timeout'
+! stdout .
+
+! sprut serve --startup-timeout -1s
+status 2
+stderr 'startup-timeout'
+! stdout .
+
+# auth and its commands.
+! sprut auth
+status 2
+! stdout .
+
+! sprut auth bogus
+status 2
+! stdout .
+
+! sprut auth login --bogus a
+status 2
+! stdout .
+
+! sprut auth logout
+status 2
+! stdout .
+
+! sprut auth logout a b
+status 2
+! stdout .
+
+! sprut auth status a
+status 2
+! stdout .

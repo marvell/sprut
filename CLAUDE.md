@@ -6,6 +6,15 @@ Only `main` touches `os.Args`, env, std streams and `os.Exit`; tests may live in
 
 Test seams come pre-agreed from the spec's Testing Decisions, as amended by ADR-0004; confirm with the user only a seam neither names.
 
+## Tests
+
+Put a test at the highest layer that can check it deterministically:
+
+- `testdata/script/*.txtar` (run by `main_test.go`, testscript): what a user sees of the real binary: args, env, exit status, stdout and stderr.
+- `internal/cli`: scenarios through `cli.Run` with an Agent connected: MCP traffic, Upstream processes, Logins, renewal.
+- A package's own API (`internal/credentials`, `internal/config`): protocols and edge cases that need control a scenario can't give, such as holding a refresh mid-flight.
+- Fakes shared by all of them live in `internal/mcptest`.
+
 ## Review
 
 Judgement-call standards: `docs/CODING_STANDARDS.md`.

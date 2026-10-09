@@ -132,14 +132,21 @@ func (s Stdio) Entry(t testing.TB, env ...string) map[string]any {
 // MainIfFake runs the fake stdio Upstream and exits, if Entry launched this
 // process; otherwise it returns. Call it first thing in TestMain.
 func MainIfFake() {
-	v, ok := os.LookupEnv(envStdio)
-	if !ok {
-		return
+	if _, ok := os.LookupEnv(envStdio); ok {
+		Main()
 	}
+}
+
+// Main runs the fake stdio Upstream that SPRUT_TEST_FAKE_UPSTREAM describes
+// as a Stdio in JSON, or a well-behaved one if it is unset, and exits. It
+// is the command that a testscript Config launches.
+func Main() {
 	var s Stdio
-	if err := json.Unmarshal([]byte(v), &s); err != nil {
-		fmt.Fprintln(os.Stderr, "fake upstream:", err)
-		os.Exit(1)
+	if v := os.Getenv(envStdio); v != "" {
+		if err := json.Unmarshal([]byte(v), &s); err != nil {
+			fmt.Fprintln(os.Stderr, "fake upstream:", err)
+			os.Exit(1)
+		}
 	}
 	os.Exit(s.run())
 }

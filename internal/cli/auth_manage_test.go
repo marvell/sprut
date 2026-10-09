@@ -3,7 +3,6 @@ package cli_test
 import (
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -52,23 +51,6 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	wantNoSecrets(t, "auth status stdout", stdout, mcptest.Secrets...)
 }
 
-func TestConfigFlagGoesBeforeOrAfterTheCommand(t *testing.T) {
-	t.Parallel()
-	config := writeConfig(t, map[string]any{"remote": map[string]any{"url": "https://remote.invalid/mcp"}})
-	env := []string{"XDG_STATE_HOME=" + t.TempDir()}
-
-	for _, args := range [][]string{
-		{"-c", config, "auth", "status"},
-		{"auth", "-c", config, "status"},
-		{"auth", "status", "-c", config},
-	} {
-		code, stdout, _ := runSprut(t, env, args...)
-		if code != 0 || stdout != "remote: no credentials\n" {
-			t.Errorf("sprut %q: exit code = %d, stdout = %q, want 0 listing remote", args, code, stdout)
-		}
-	}
-}
-
 func TestAuthLogoutStopsARunningServeFromUsingTheCredentials(t *testing.T) {
 	t.Parallel()
 	l := logIn(t, 3600)
@@ -93,21 +75,6 @@ func TestAuthLogoutStopsARunningServeFromUsingTheCredentials(t *testing.T) {
 	code, stdout, _ = runSprut(t, l.env, "auth", "logout", "fake", "-c", l.config)
 	if code != 0 || !strings.Contains(stdout, "fake: no credentials") {
 		t.Errorf("second logout: exit code = %d, stdout = %q, want 0 saying there are no credentials", code, stdout)
-	}
-}
-
-func TestAuthLogoutExits1ForAnUpstreamThatIsNotAnOAuthUpstreamInTheConfig(t *testing.T) {
-	t.Parallel()
-	config := writeConfig(t, map[string]any{"local": mcptest.Stdio{}.Entry(t)})
-	state := t.TempDir()
-	for _, name := range []string{"local", "nope"} {
-		code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "auth", "logout", name, "-c", config)
-		if code != 1 || !strings.Contains(stderr, `"`+name+`"`) {
-			t.Errorf("logout %s: exit code = %d, want 1 naming it", name, code)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(state, "sprut")); err == nil {
-		t.Error("logout made the state directory")
 	}
 }
 
