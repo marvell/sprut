@@ -179,9 +179,9 @@ type upstreams struct {
 	starting sync.WaitGroup       // Upstream starts, including abandoned ones
 }
 
-// started is how one Upstream fared at startup: ready, or the error it
+// startResult is how one Upstream fared at startup: ready, or the error it
 // failed with.
-type started struct {
+type startResult struct {
 	r   *ready
 	err error
 }
@@ -189,8 +189,8 @@ type started struct {
 // start starts every Upstream in configured concurrently, and returns how
 // each fared, in Config order. A failed one is logged. The ready ones are
 // stopped by close.
-func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []started {
-	results := make([]started, len(configured))
+func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []startResult {
+	results := make([]startResult, len(configured))
 	var wg sync.WaitGroup
 	for i, u := range configured {
 		wg.Go(func() {

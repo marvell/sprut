@@ -66,7 +66,7 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 			}
 			healthy := true
 			if cmd.Bool("check") {
-				healthy = check(ctx, entries, states, env, cmd.Duration("startup-timeout"))
+				healthy = checkStates(ctx, entries, states, env, cmd.Duration("startup-timeout"))
 			}
 			w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "NAME\tTRANSPORT\tTARGET\tSTATE\tAUTH")
@@ -84,9 +84,10 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 	}
 }
 
-// check starts every enabled entry of entries, as serve would, sets its
-// state in states to how it fared, and reports whether all of them work.
-func check(ctx context.Context, entries []config.Entry, states []string, env []string, startupTimeout time.Duration) bool {
+// checkStates starts every enabled entry of entries, as serve would, sets
+// its state in states to how it fared, and reports whether all of them
+// work.
+func checkStates(ctx context.Context, entries []config.Entry, states []string, env []string, startupTimeout time.Duration) bool {
 	var upstreams []config.Upstream
 	var rows []int // the index in entries of each of upstreams
 	for i, e := range entries {

@@ -133,10 +133,6 @@ func Started(entries []Entry) []Upstream {
 	return upstreams
 }
 
-// Starts reports whether the Gateway starts the entry: it is neither
-// disabled nor skipped.
-func (e Entry) Starts() bool { return !e.Disabled && e.Upstream != nil }
-
 // Entry is one entry of the Config, whether or not the Gateway starts it.
 type Entry struct {
 	Name string
@@ -156,6 +152,10 @@ type Entry struct {
 	// disabled and would not resolve if it were enabled.
 	Upstream *Upstream
 }
+
+// Starts reports whether the Gateway starts the entry: it is neither
+// disabled nor skipped.
+func (e Entry) Starts() bool { return !e.Disabled && e.Upstream != nil }
 
 // ParseEntries parses Config bytes into all of its entries, in Config
 // order, plus warnings about the Config. Like Parse, it fails on an invalid
