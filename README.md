@@ -80,7 +80,7 @@ linear    http       https://mcp.linear.app/mcp                  enabled        
 postgres  stdio      uvx postgres-mcp                            disabled                             -
 ```
 
-`TARGET` is the command and its args, or the URL, as the Config writes them, with `${VAR}` references left in. `STATE` says whether `sprut serve` starts the Upstream: `enabled`, `disabled`, or `skipped` and why. `AUTH` is the state of an [OAuth](#oauth) Upstream's Credentials, as `sprut auth status` reports it, and `-` for an Upstream that does not use OAuth, or one skipped before sprut can tell. It is offline: it starts no Upstream and contacts no server. An empty or missing Config lists nothing.
+`TARGET` is the command and its args, or the URL, as the Config writes them, with `${VAR}` references left in. `STATE` says whether `sprut serve` starts the Upstream: `enabled`, `disabled`, or `skipped` and why. `AUTH` is the state of an [OAuth](#oauth) Upstream's Credentials, as `sprut auth status` reports it, and `-` for an Upstream that does not use OAuth, or one skipped before sprut can tell; Credentials that can't be read show the error there. It is offline: it starts no Upstream and contacts no server. An empty or missing Config lists nothing.
 
 ## Add sprut to your Agents
 

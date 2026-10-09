@@ -318,6 +318,57 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// TestParseEntries checks what ParseEntries adds to Parse: every entry,
+// with its target as written and why it is not started.
+func TestParseEntries(t *testing.T) {
+	t.Parallel()
+	got, warnings, err := config.ParseEntries([]byte(`{"mcpServers": {
+		"local": {"command": "run", "args": ["--key", "${KEY}"]},
+		"unset": {"url": "https://example.com/${MISSING}"},
+		"legacy": {"type": "sse", "url": "https://example.com/sse"},
+		"off": {"url": "https://example.com/off", "disabled": true},
+		"off-unset": {"command": "run", "args": ["${MISSING}"], "disabled": true},
+		"off-broken": {"type": "stdio", "url": "https://example.com/x", "disabled": true}
+	}}`), lookup(map[string]string{"KEY": "k"}))
+	if err != nil {
+		t.Fatalf("ParseEntries: unexpected error: %v", err)
+	}
+	want := []config.Entry{
+		{
+			Name: "local", Transport: config.Stdio, Command: "run", Args: []string{"--key", "${KEY}"},
+			Upstream: &config.Upstream{Name: "local", Transport: config.Stdio, Command: "run", Args: []string{"--key", "k"}},
+		},
+		{
+			Name: "unset", Transport: config.HTTP, URL: "https://example.com/${MISSING}",
+			Skipped: "unset variable MISSING",
+		},
+		{
+			Name: "legacy", Transport: "sse", URL: "https://example.com/sse",
+			Skipped: "SSE transport is not supported",
+		},
+		{
+			Name: "off", Transport: config.HTTP, URL: "https://example.com/off", Disabled: true,
+			Upstream: &config.Upstream{Name: "off", Transport: config.HTTP, URL: "https://example.com/off"},
+		},
+		{
+			Name: "off-unset", Transport: config.Stdio, Command: "run", Args: []string{"${MISSING}"}, Disabled: true,
+		},
+		{
+			Name: "off-broken", Transport: config.Stdio, URL: "https://example.com/x", Disabled: true,
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("entries (-want +got):\n%s", diff)
+	}
+	wantWarnings := []config.Warning{
+		{Upstream: "unset", Message: "unset variable MISSING; upstream skipped"},
+		{Upstream: "legacy", Message: "SSE transport is not supported; upstream skipped"},
+	}
+	if diff := cmp.Diff(wantWarnings, warnings); diff != "" {
+		t.Errorf("warnings (-want +got):\n%s", diff)
+	}
+}
+
 func TestParseRejectsInvalidConfig(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

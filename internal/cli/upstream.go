@@ -13,7 +13,6 @@ import (
 
 	"github.com/marvell/sprut/internal/config"
 	"github.com/marvell/sprut/internal/credentials"
-	"github.com/marvell/sprut/internal/gateway"
 )
 
 func upstreamCommand(env []string, stdout io.Writer) *ucli.Command {
@@ -53,11 +52,7 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 			w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "NAME\tTRANSPORT\tTARGET\tSTATE\tAUTH")
 			for _, e := range entries {
-				auth, err := authState(store, e)
-				if err != nil {
-					return fmt.Errorf("upstream %q: %w", e.Name, err)
-				}
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Name, orDash(string(e.Transport)), orDash(target(e)), state(e), auth)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Name, orDash(string(e.Transport)), orDash(target(e)), state(e), authState(store, e))
 			}
 			return w.Flush()
 		},
@@ -84,12 +79,21 @@ func state(e config.Entry) string {
 }
 
 // authState describes the Credentials of the entry e, or is "-" if it is
-// not an OAuth Upstream, or can't be told to be one.
-func authState(store *credentials.Store, e config.Entry) (string, error) {
-	if e.Upstream == nil || gateway.CheckOAuthUpstream(*e.Upstream) != nil {
-		return "-", nil
+// not an OAuth Upstream, or can't be told to be one: a skipped entry has no
+// URL to bind Credentials to. Credentials that can't be read are one
+// entry's problem, so they don't fail the list.
+func authState(store *credentials.Store, e config.Entry) string {
+	if e.Upstream == nil {
+		return "-"
 	}
-	return gateway.Status(store, *e.Upstream)
+	status, ok, err := oauthStatus(store, *e.Upstream)
+	switch {
+	case err != nil:
+		return "error: " + err.Error()
+	case !ok:
+		return "-"
+	}
+	return status
 }
 
 func orDash(s string) string {

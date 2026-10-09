@@ -171,12 +171,12 @@ func statusCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			}
 			listed := 0
 			for _, u := range upstreams {
-				if gateway.CheckOAuthUpstream(u) != nil {
-					continue
-				}
-				status, err := gateway.Status(store, u)
+				status, ok, err := oauthStatus(store, u)
 				if err != nil {
 					return fmt.Errorf("upstream %q: %w", u.Name, err)
+				}
+				if !ok {
+					continue
 				}
 				_, _ = fmt.Fprintf(stdout, "%s: %s\n", u.Name, status)
 				listed++
@@ -187,4 +187,14 @@ func statusCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			return nil
 		},
 	}
+}
+
+// oauthStatus describes the Credentials of u, as gateway.Status does, and
+// reports whether u is an OAuth Upstream at all.
+func oauthStatus(store *credentials.Store, u config.Upstream) (string, bool, error) {
+	if gateway.CheckOAuthUpstream(u) != nil {
+		return "", false, nil
+	}
+	status, err := gateway.Status(store, u)
+	return status, true, err
 }

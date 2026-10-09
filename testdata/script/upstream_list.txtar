@@ -23,6 +23,12 @@ sprut upstream list
 cmp stdout small.golden
 env SPRUT_CONFIG=
 
+# Credentials that can't be read fail only their own row.
+sprut upstream list -c broken.json
+stdout '^broken +http +https://broken.invalid/mcp +enabled +error: reading credentials .*broken.json: invalid character'
+stdout '^fine +stdio +fake-upstream +enabled +-$'
+! stderr .
+
 # An empty or missing Config lists nothing, not even the header.
 sprut upstream list -c empty.json
 ! stdout .
@@ -95,6 +101,13 @@ legacy  sse        https://legacy.invalid/sse                    skipped: SSE tr
 -- small.golden --
 NAME  TRANSPORT  TARGET                STATE    AUTH
 fake  stdio      fake-upstream --flag  enabled  -
+-- broken.json --
+{"mcpServers": {
+  "broken": {"url": "https://broken.invalid/mcp"},
+  "fine": {"command": "fake-upstream"}
+}}
+-- state/sprut/credentials/broken.json --
+garbage
 -- empty.json --
 {}
 -- no-servers.json --
