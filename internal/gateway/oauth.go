@@ -161,7 +161,7 @@ func (h *storedCredentials) TokenSource(context.Context) (oauth2.TokenSource, er
 func (h *storedCredentials) Authorize(_ context.Context, _ *http.Request, resp *http.Response) error {
 	discard(resp)
 	if resp.StatusCode == http.StatusForbidden && insufficientScope(resp) {
-		return h.fail(h.needsLogin("the credentials lack a scope that the upstream needs"))
+		return h.fail(&credentials.LoginNeededError{Reason: "the credentials lack a scope that the upstream needs"})
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
 		// Any other 403 is the server's answer to give; the request is
