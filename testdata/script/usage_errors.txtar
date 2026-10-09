@@ -91,3 +91,25 @@ status 2
 ! sprut auth status a
 status 2
 ! stdout .
+
+# upstream and its commands.
+! sprut upstream
+status 2
+stderr 'sprut upstream'
+stderr 'list'
+! stdout .
+
+! sprut upstream bogus
+status 2
+stderr 'unknown command "bogus"'
+! stdout .
+
+! sprut upstream list bogus
+status 2
+stderr 'unexpected argument "bogus"'
+stderr 'sprut upstream list'
+! stdout .
+
+! sprut upstream list --bogus
+status 2
+! stdout .

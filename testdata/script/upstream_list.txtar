@@ -1,0 +1,105 @@
+# sprut upstream list prints every Upstream in the Config, in Config order,
+# with its state and the state of its Credentials. It is offline: it starts
+# no process, contacts no server, and only reads the Credentials.
+env XDG_CONFIG_HOME=$WORK/xdg
+env XDG_STATE_HOME=$WORK/state
+env TZ=UTC
+
+sprut upstream list
+cmp stdout list.golden
+! stderr .
+! exists state/sprut/credentials/linear.lock
+! exists state/sprut/credentials/notion.lock
+
+# -c goes in any position, and SPRUT_CONFIG names the Config too.
+sprut -c small.json upstream list
+cmp stdout small.golden
+sprut upstream -c small.json list
+cmp stdout small.golden
+sprut upstream list -c small.json
+cmp stdout small.golden
+env SPRUT_CONFIG=$WORK/small.json
+sprut upstream list
+cmp stdout small.golden
+env SPRUT_CONFIG=
+
+# An empty or missing Config lists nothing, not even the header.
+sprut upstream list -c empty.json
+! stdout .
+! stderr .
+sprut upstream list -c no-servers.json
+! stdout .
+! stderr .
+sprut upstream list -c missing.json
+! stdout .
+! stderr .
+env XDG_CONFIG_HOME=$WORK/nowhere
+sprut upstream list
+! stdout .
+! stderr .
+
+# An invalid Config is an error, which names the file and the mistake.
+! sprut upstream list -c malformed.json
+status 1
+stderr 'malformed.json'
+stderr 'unexpected end of JSON input'
+! stdout .
+
+! sprut upstream list -c bad-name.json
+status 1
+stderr 'My_Server'
+! stdout .
+
+-- xdg/sprut/config.json --
+{"mcpServers": {
+  "memory": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]},
+  "linear": {"url": "https://linear.invalid/mcp"},
+  "notion": {"url": "https://notion.invalid/mcp"},
+  "dead": {"url": "https://dead.invalid/mcp"},
+  "static": {"url": "https://static.invalid/mcp", "headers": {"authorization": "Bearer x"}},
+  "plain": {"url": "http://plain.invalid/mcp"},
+  "paused": {"url": "https://paused.invalid/mcp", "disabled": true},
+  "staged": {"command": "uvx", "args": ["postgres-mcp"], "env": {"DATABASE_URI": "${DATABASE_URI}"}, "disabled": true},
+  "secret": {"url": "https://secret.invalid/mcp?key=${SECRET_KEY}"},
+  "legacy": {"type": "sse", "url": "https://legacy.invalid/sse"}
+}}
+-- state/sprut/credentials/linear.json --
+{"access_token": "a", "token_type": "Bearer", "refresh_token": "r", "expiry": "2099-01-01T00:00:00Z",
+ "token_url": "https://linear.invalid/token", "auth_style": 0,
+ "resource": "https://linear.invalid/mcp", "issuer": "https://linear.invalid",
+ "config": {"url": "https://linear.invalid/mcp", "scopes": null}}
+-- state/sprut/credentials/dead.json --
+{"access_token": "a", "token_type": "Bearer", "expiry": "2000-01-01T00:00:00Z",
+ "token_url": "https://dead.invalid/token", "auth_style": 0,
+ "resource": "https://dead.invalid/mcp", "issuer": "https://dead.invalid",
+ "config": {"url": "https://dead.invalid/mcp", "scopes": null}}
+-- state/sprut/credentials/paused.json --
+{"access_token": "a", "token_type": "Bearer",
+ "token_url": "https://paused.invalid/token", "auth_style": 0,
+ "resource": "https://paused.invalid/mcp", "issuer": "https://paused.invalid",
+ "config": {"url": "https://paused.invalid/mcp", "scopes": null}}
+-- list.golden --
+NAME    TRANSPORT  TARGET                                        STATE                                    AUTH
+memory  stdio      npx -y @modelcontextprotocol/server-memory    enabled                                  -
+linear  http       https://linear.invalid/mcp                    enabled                                  logged in, access token expires 2099-01-01T00:00:00Z, renewable
+notion  http       https://notion.invalid/mcp                    enabled                                  no credentials
+dead    http       https://dead.invalid/mcp                      enabled                                  the credentials expired and cannot be renewed; run: sprut auth login dead
+static  http       https://static.invalid/mcp                    enabled                                  -
+plain   http       http://plain.invalid/mcp                      enabled                                  -
+paused  http       https://paused.invalid/mcp                    disabled                                 logged in, access token does not expire, not renewable
+staged  stdio      uvx postgres-mcp                              disabled                                 -
+secret  http       https://secret.invalid/mcp?key=${SECRET_KEY}  skipped: unset variable SECRET_KEY       -
+legacy  sse        https://legacy.invalid/sse                    skipped: SSE transport is not supported  -
+-- small.json --
+{"mcpServers": {"fake": {"command": "fake-upstream", "args": ["--flag"]}}}
+-- small.golden --
+NAME  TRANSPORT  TARGET                STATE    AUTH
+fake  stdio      fake-upstream --flag  enabled  -
+-- empty.json --
+{}
+-- no-servers.json --
+{"mcpServers": {}}
+-- malformed.json --
+{"mcpServers": {
+-- bad-name.json --
+{"mcpServers": {"My_Server": {"command": "x"}}}

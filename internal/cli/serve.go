@@ -80,34 +80,47 @@ func newLogger(w io.Writer, verbose bool) *slog.Logger {
 
 // loadConfig reads the Config that flag and the environment point at, logs
 // its warnings and returns the Upstreams to start and the Config's absolute
-// path. Unless the Config is at
-// the default location, each Upstream carries its path as ConfigPath: the
-// Agent may run sprut with -c or $SPRUT_CONFIG that the user's shell lacks,
-// and in another directory.
+// path.
 func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]config.Upstream, string, error) {
-	path, named, err := config.Path(flag, lookupEnv)
+	entries, warnings, path, err := loadEntries(flag, lookupEnv)
 	if err != nil {
 		return nil, "", err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("reading config: %w", err)
-	}
-	upstreams, warnings, err := config.Parse(data, lookupEnv)
-	if err != nil {
-		return nil, "", fmt.Errorf("config %s: %w", path, err)
 	}
 	for _, w := range warnings {
 		log.Warn(w.Message, "upstream", w.Upstream)
 	}
+	return config.Started(entries), path, nil
+}
+
+// loadEntries reads the Config that flag and the environment point at, and
+// returns all of its entries, its warnings and its absolute path. Reading a
+// missing Config fails with an fs.ErrNotExist. Unless the Config is at the
+// default location, each resolved Upstream carries its path as ConfigPath:
+// the Agent may run sprut with -c or $SPRUT_CONFIG that the user's shell
+// lacks, and in another directory.
+func loadEntries(flag string, lookupEnv config.LookupEnv) ([]config.Entry, []config.Warning, string, error) {
+	path, named, err := config.Path(flag, lookupEnv)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("reading config: %w", err)
+	}
+	entries, warnings, err := config.ParseEntries(data, lookupEnv)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("config %s: %w", path, err)
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("config %s: %w", path, err)
+		return nil, nil, "", fmt.Errorf("config %s: %w", path, err)
 	}
 	if named {
-		for i := range upstreams {
-			upstreams[i].ConfigPath = abs
+		for _, e := range entries {
+			if e.Upstream != nil {
+				e.Upstream.ConfigPath = abs
+			}
 		}
 	}
-	return upstreams, abs, nil
+	return entries, warnings, abs, nil
 }

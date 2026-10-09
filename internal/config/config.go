@@ -114,6 +114,49 @@ var validName = regexp.MustCompile(`^[a-z0-9-]+$`)
 // Parse parses Config bytes into the Upstreams to start, in Config order,
 // plus warnings about the Config. lookupEnv resolves ${VAR} references.
 func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
+	entries, warnings, err := ParseEntries(data, lookupEnv)
+	if err != nil {
+		return nil, nil, err
+	}
+	return Started(entries), warnings, nil
+}
+
+// Started returns the Upstreams of entries that the Gateway starts: those
+// neither disabled nor skipped, in order.
+func Started(entries []Entry) []Upstream {
+	var upstreams []Upstream
+	for _, e := range entries {
+		if !e.Disabled && e.Upstream != nil {
+			upstreams = append(upstreams, *e.Upstream)
+		}
+	}
+	return upstreams
+}
+
+// Entry is one entry of the Config, whether or not the Gateway starts it.
+type Entry struct {
+	Name string
+	// Transport, Command, Args and URL are as the entry writes them, with
+	// ${VAR} references left in. Transport is "" when the entry neither
+	// names one nor sets the one target it could be inferred from.
+	Transport Transport
+	Command   string
+	Args      []string
+	URL       string
+
+	Disabled bool
+	// Skipped says why the Gateway skips the entry although it is enabled,
+	// or is "".
+	Skipped string
+	// Upstream is the entry resolved, or nil when it is skipped, or
+	// disabled and would not resolve if it were enabled.
+	Upstream *Upstream
+}
+
+// ParseEntries parses Config bytes into all of its entries, in Config
+// order, plus warnings about the Config. Like Parse, it fails on an invalid
+// entry unless the entry is disabled, and it warns about no disabled entry.
+func ParseEntries(data []byte, lookupEnv LookupEnv) ([]Entry, []Warning, error) {
 	var f struct {
 		MCPServers servers `json:"mcpServers"`
 	}
@@ -122,12 +165,12 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 	}
 
 	var (
-		upstreams []Upstream
-		warnings  []Warning
-		errs      []error
+		entries  []Entry
+		warnings []Warning
+		errs     []error
 	)
 	for _, name := range f.MCPServers.names {
-		u, msgs, err := parseUpstream(name, f.MCPServers.entries[name], lookupEnv)
+		e, msgs, err := parseEntry(name, f.MCPServers.entries[name], lookupEnv)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("upstream %q: %w", name, err))
 			continue
@@ -135,14 +178,12 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 		for _, msg := range msgs {
 			warnings = append(warnings, Warning{Upstream: name, Message: msg})
 		}
-		if u != nil {
-			upstreams = append(upstreams, *u)
-		}
+		entries = append(entries, e)
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, nil, err
 	}
-	return upstreams, warnings, nil
+	return entries, warnings, nil
 }
 
 // servers are the entries of mcpServers, keeping the order of their names.
@@ -184,15 +225,36 @@ func (s *servers) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// parseUpstream parses one Config entry. It returns a nil Upstream, and
-// warnings saying why, when the entry is valid but must not be started.
-func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upstream, []string, error) {
+// parseEntry parses one Config entry, with warnings about it.
+func parseEntry(name string, raw json.RawMessage, lookupEnv LookupEnv) (Entry, []string, error) {
+	e, warnings, err := resolveEntry(name, raw, lookupEnv)
+	if !e.Disabled {
+		if err != nil {
+			return Entry{}, nil, err
+		}
+		return e, warnings, nil
+	}
+	// A disabled entry is not checked, so that disabling is a way to set
+	// aside an entry that is broken or whose variables are unset. It is
+	// still resolved where it can be, as if it were enabled, so that its
+	// Credentials can be found.
+	if err != nil {
+		e.Upstream = nil
+	}
+	e.Skipped = ""
+	return e, nil, nil
+}
+
+// resolveEntry parses one Config entry as if it were enabled, with warnings
+// about it. Once it knows whether the entry is disabled, it returns as much
+// of the Entry as it got even with an error.
+func resolveEntry(name string, raw json.RawMessage, lookupEnv LookupEnv) (Entry, []string, error) {
 	if !validName.MatchString(name) {
-		return nil, nil, fmt.Errorf("invalid name, must match %s", validName)
+		return Entry{}, nil, fmt.Errorf("invalid name, must match %s", validName)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
-		return nil, nil, errors.New("must be a JSON object")
+		return Entry{}, nil, errors.New("must be a JSON object")
 	}
 
 	u := Upstream{Name: name}
@@ -224,35 +286,34 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 	for _, name := range slices.Sorted(maps.Keys(known)) {
 		if known[name].transport == "" {
 			if err := decode(name); err != nil {
-				return nil, nil, err
+				return Entry{}, nil, err
 			}
 		}
 	}
-	// A disabled entry is not checked further, so that disabling is a way to
-	// set aside an entry that is broken or whose variables are unset.
-	if disabled {
-		return nil, nil, nil
+	e := Entry{Name: name, Transport: Transport(typ), Command: u.Command, URL: u.URL, Disabled: disabled}
+	var warnings []string
+	skip := func(reason string) (Entry, []string, error) {
+		e.Skipped = reason
+		return e, append(warnings, reason+"; upstream skipped"), nil
 	}
-
-	u.Transport = Transport(typ)
+	u.Transport = e.Transport
 	switch u.Transport {
 	case "":
 		t, err := inferTransport(u.Command, u.URL)
 		if err != nil {
-			return nil, nil, err
+			return e, nil, err
 		}
-		u.Transport = t
+		e.Transport, u.Transport = t, t
 	case Stdio, HTTP:
 		if err := checkTarget(u); err != nil {
-			return nil, nil, err
+			return e, nil, err
 		}
 	case "sse":
-		return nil, []string{"SSE transport is not supported; upstream skipped"}, nil
+		return skip("SSE transport is not supported")
 	default:
-		return nil, nil, fmt.Errorf(`unknown type %q, want "stdio", "http" or "sse"`, typ)
+		return e, nil, fmt.Errorf(`unknown type %q, want "stdio", "http" or "sse"`, typ)
 	}
 
-	var warnings []string
 	for _, name := range slices.Sorted(maps.Keys(fields)) {
 		f, ok := known[name]
 		switch {
@@ -263,30 +324,32 @@ func parseUpstream(name string, raw json.RawMessage, lookupEnv LookupEnv) (*Upst
 			warnings = append(warnings, fmt.Sprintf("field %q does not apply to %s upstreams; ignored", name, u.Transport))
 		default:
 			if err := decode(name); err != nil {
-				return nil, nil, err
+				return e, nil, err
 			}
 		}
 	}
+	e.Args = slices.Clone(u.Args)
 	if oauth != nil {
 		var (
 			msgs []string
 			err  error
 		)
 		if u.OAuth, msgs, err = parseOAuth(oauth); err != nil {
-			return nil, nil, err
+			return e, nil, err
 		}
 		warnings = append(warnings, msgs...)
 	}
 
 	if missing := interpolate(&u, lookupEnv); len(missing) > 0 {
-		return nil, append(warnings, unsetWarning(missing)), nil
+		return skip(unsetReason(missing))
 	}
 	// The target was checked before interpolation, but a variable set to empty
 	// can still empty it. "command" is not interpolated, so only "url" can.
 	if u.Transport == HTTP && u.URL == "" {
-		return nil, append(warnings, `"url" is empty after interpolation; upstream skipped`), nil
+		return skip(`"url" is empty after interpolation`)
 	}
-	return &u, warnings, nil
+	e.Upstream = &u
+	return e, warnings, nil
 }
 
 // parseOAuth parses the fields of "oauth", with warnings about the ones
@@ -382,13 +445,14 @@ func checkTarget(u Upstream) error {
 	return nil
 }
 
-// unsetWarning says which variables are unset, so the Upstream is skipped.
-func unsetWarning(missing []string) string {
+// unsetReason says which variables are unset, the reason to skip the
+// Upstream.
+func unsetReason(missing []string) string {
 	noun := "variable"
 	if len(missing) > 1 {
 		noun = "variables"
 	}
-	return fmt.Sprintf("unset %s %s; upstream skipped", noun, strings.Join(missing, ", "))
+	return fmt.Sprintf("unset %s %s", noun, strings.Join(missing, ", "))
 }
 
 // varRef is a ${VAR} reference.

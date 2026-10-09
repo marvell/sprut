@@ -67,6 +67,21 @@ Each key under `mcpServers` names an Upstream. It must match `^[a-z0-9-]+$`, and
 
 `${VAR}` in `args`, `env`, `url`, `headers` and the `oauth` fields is replaced from sprut's environment, so secrets stay out of the file. If a variable is unset, sprut skips that Upstream with a warning instead of substituting an empty string. Any other field is ignored with a warning.
 
+## List your Upstreams
+
+`sprut upstream list` shows every Upstream in the Config, in Config order:
+
+```console
+$ sprut upstream list
+NAME      TRANSPORT  TARGET                                      STATE                                AUTH
+memory    stdio      npx -y @modelcontextprotocol/server-memory  enabled                              -
+github    http       https://api.githubcopilot.com/mcp/          skipped: unset variable GITHUB_TOKEN  -
+linear    http       https://mcp.linear.app/mcp                  enabled                              logged in, access token expires 2026-10-08T21:10:00+03:00, renewable
+postgres  stdio      uvx postgres-mcp                            disabled                             -
+```
+
+`TARGET` is the command and its args, or the URL, as the Config writes them, with `${VAR}` references left in. `STATE` says whether `sprut serve` starts the Upstream: `enabled`, `disabled`, or `skipped` and why. `AUTH` is the state of an [OAuth](#oauth) Upstream's Credentials, as `sprut auth status` reports it, and `-` for an Upstream that does not use OAuth, or one skipped before sprut can tell. It is offline: it starts no Upstream and contacts no server. An empty or missing Config lists nothing.
+
 ## Add sprut to your Agents
 
 Each Agent runs `sprut serve` as a stdio MCP server. To give one Agent a different set of Upstreams, add `-c PATH` to its `args`.
@@ -210,7 +225,7 @@ In `$XDG_STATE_HOME/sprut/credentials/<upstream>.json` (`~/.local/state/sprut/cr
 | Code | Meaning |
 | --- | --- |
 | 0 | Clean exit: the Agent closed stdin, SIGINT or SIGTERM, or a successful dry run. |
-| 1 | A Config error, a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, or a `sprut auth` command that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
+| 1 | A Config error (`sprut upstream list` on a missing Config is not one), a session with the Agent that fails other than by EOF on stdin (such as a read error), a dry run in which some Upstream failed, or a `sprut auth` command that failed: a Login that failed, or an Upstream that is not in the Config or not an OAuth Upstream. |
 | 2 | A usage error, such as an unknown flag or command. Bare `sprut` exits 2 too, so it never starts the server by accident. |
 
 ## License
