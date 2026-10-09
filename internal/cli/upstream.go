@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -101,4 +102,13 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// findUpstream returns the Upstream called name.
+func findUpstream(upstreams []config.Upstream, name string) (config.Upstream, error) {
+	i := slices.IndexFunc(upstreams, func(u config.Upstream) bool { return u.Name == name })
+	if i < 0 {
+		return config.Upstream{}, fmt.Errorf("no upstream %q in the config", name)
+	}
+	return upstreams[i], nil
 }
