@@ -1003,3 +1003,45 @@ func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
 	wantNoSecrets(t, "instructions", instructions, "url-secret", "header-secret", "env-secret")
 	g.closeAgent(t)
 }
+
+// serve logs the absolute path of the Config it reads, wherever it found
+// it, so that the user can tell which file an Agent's sprut uses.
+func TestServeLogsWhereItReadsTheConfig(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"fake": fakeUpstreamEntry(t)}
+	configHome := t.TempDir()
+	atDefault := filepath.Join(configHome, "sprut", "config.json")
+	writeConfigAt(t, atDefault, upstreams)
+	abs := writeConfig(t, upstreams)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		env  []string
+		args []string
+		want string
+	}{
+		{name: "default location", env: []string{"XDG_CONFIG_HOME=" + configHome}, want: atDefault},
+		{name: "relative -c", args: []string{"-c", rel}, want: abs},
+		{name: "SPRUT_CONFIG", env: []string{"SPRUT_CONFIG=" + abs}, want: abs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := append([]string{envFakeUpstream + "=1"}, tc.env...)
+			code, _, stderr := runSprut(t, env, append([]string{"serve", "--dry-run"}, tc.args...)...)
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
+			}
+			if !regexp.MustCompile(`level=INFO msg="config loaded" path=` + regexp.QuoteMeta(tc.want) + `( |$)`).MatchString(stderr) {
+				t.Errorf("no INFO line saying the config was loaded from %s; stderr:\n%s", tc.want, stderr)
+			}
+		})
+	}
+}

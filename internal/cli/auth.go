@@ -42,7 +42,7 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
+			upstreams, _, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
 			if err != nil {
 				return err
 			}
@@ -118,7 +118,7 @@ func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
-			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
+			upstreams, _, err := loadConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
 			if err != nil {
 				return err
 			}
@@ -161,7 +161,7 @@ func statusCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 		Name:  "status",
 		Usage: "list each OAuth Upstream with the state of its Credentials",
 		Action: func(_ context.Context, cmd *ucli.Command) error {
-			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
+			upstreams, _, err := loadConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
 			if err != nil {
 				return err
 			}

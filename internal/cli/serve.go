@@ -38,10 +38,11 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			startupTimeout := cmd.Duration("startup-timeout")
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			upstreams, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
+			upstreams, path, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
 			if err != nil {
 				return err
 			}
+			log.Info("config loaded", "path", path, "upstreams", len(upstreams))
 
 			gw := gateway.Start(ctx, upstreams, env, startupTimeout, version(), log)
 			defer gw.Close()
@@ -78,34 +79,35 @@ func newLogger(w io.Writer, verbose bool) *slog.Logger {
 }
 
 // loadConfig reads the Config that flag and the environment point at, logs
-// its warnings and returns the Upstreams to start. Unless the Config is at
+// its warnings and returns the Upstreams to start and the Config's absolute
+// path. Unless the Config is at
 // the default location, each Upstream carries its path as ConfigPath: the
 // Agent may run sprut with -c or $SPRUT_CONFIG that the user's shell lacks,
 // and in another directory.
-func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]config.Upstream, error) {
+func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]config.Upstream, string, error) {
 	path, named, err := config.Path(flag, lookupEnv)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
+		return nil, "", fmt.Errorf("reading config: %w", err)
 	}
 	upstreams, warnings, err := config.Parse(data, lookupEnv)
 	if err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
+		return nil, "", fmt.Errorf("config %s: %w", path, err)
 	}
 	for _, w := range warnings {
 		log.Warn(w.Message, "upstream", w.Upstream)
 	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("config %s: %w", path, err)
+	}
 	if named {
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
-		}
 		for i := range upstreams {
 			upstreams[i].ConfigPath = abs
 		}
 	}
-	return upstreams, nil
+	return upstreams, abs, nil
 }

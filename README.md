@@ -121,6 +121,7 @@ If the Agent does not find `sprut` on its `PATH`, use the binary's absolute path
 ```console
 $ sprut serve --dry-run
 time=... level=WARN msg="unset variable GITHUB_TOKEN; upstream skipped" upstream=github
+time=... level=INFO msg="config loaded" path=/home/me/.config/sprut/config.json upstreams=1
 time=... level=INFO msg="upstream ready" upstream=memory tools=9 protocol=2025-06-18 duration=812ms
 time=... level=INFO msg="gateway started" ready=1 failed=0 tools=9
 ```
