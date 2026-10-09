@@ -76,7 +76,7 @@ type Store struct {
 
 	mu       sync.Mutex
 	idle     sync.Cond // signalled when renewing drops to 0
-	renewing int       // Renew calls in progress
+	renewing int       // renew calls in progress
 }
 
 // NewStore returns the Store under $XDG_STATE_HOME/sprut/credentials, or
@@ -96,19 +96,19 @@ var ErrNoHome = errors.New("cannot locate the credentials: HOME is not set")
 // lockTimeout bounds the wait for another process to release the lock.
 const lockTimeout = 30 * time.Second
 
-// Version is one write of an Upstream's Credentials file, as last read: every
-// write makes a new file, so a Version that is no longer the file means that
-// the Credentials were written or deleted since. The zero Version is no
-// file.
-type Version struct {
+// fileVersion is one write of an Upstream's Credentials file, as last read:
+// every write makes a new file, so a fileVersion that is no longer the file
+// means that the Credentials were written or deleted since. The zero
+// fileVersion is no file.
+type fileVersion struct {
 	// Kept open, so that the system can't give its inode to a later write,
 	// which would then pass for this one.
 	f  *os.File
 	fi os.FileInfo
 }
 
-// Close releases v.
-func (v Version) Close() {
+// close releases v.
+func (v fileVersion) close() {
 	if v.f != nil {
 		_ = v.f.Close()
 	}
@@ -117,41 +117,41 @@ func (v Version) Close() {
 // Load returns the Credentials of u, or nil if it has none, or none issued
 // for u as its Config is now.
 func (s *Store) Load(u config.Upstream) (*Credentials, error) {
-	c, v, err := s.Read(u)
-	v.Close()
+	c, v, err := s.read(u)
+	v.close()
 	return c, err
 }
 
-// Read is Load, and also returns the Version of the file it read, which the
-// caller closes.
-func (s *Store) Read(u config.Upstream) (*Credentials, Version, error) {
+// read is Load, and also returns the fileVersion of the file it read, which
+// the caller closes.
+func (s *Store) read(u config.Upstream) (*Credentials, fileVersion, error) {
 	f, err := os.Open(s.path(u.Name, ".json"))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, Version{}, nil
+		return nil, fileVersion{}, nil
 	}
 	if err != nil {
-		return nil, Version{}, fmt.Errorf("reading credentials: %w", err)
+		return nil, fileVersion{}, fmt.Errorf("reading credentials: %w", err)
 	}
 	var c Credentials
 	if err := json.NewDecoder(f).Decode(&c); err != nil {
 		_ = f.Close()
-		return nil, Version{}, fmt.Errorf("reading credentials %s: %w", f.Name(), err)
+		return nil, fileVersion{}, fmt.Errorf("reading credentials %s: %w", f.Name(), err)
 	}
 	fi, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
-		return nil, Version{}, fmt.Errorf("reading credentials: %w", err)
+		return nil, fileVersion{}, fmt.Errorf("reading credentials: %w", err)
 	}
-	v := Version{f, fi}
+	v := fileVersion{f, fi}
 	if !c.Config.equal(BindingOf(u)) {
 		return nil, v, nil
 	}
 	return &c, v, nil
 }
 
-// Changed reports whether the Credentials file of upstream is no longer the
+// changed reports whether the Credentials file of upstream is no longer the
 // one that v read.
-func (s *Store) Changed(upstream string, v Version) bool {
+func (s *Store) changed(upstream string, v fileVersion) bool {
 	now, err := os.Stat(s.path(upstream, ".json"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return v.f != nil
@@ -187,11 +187,7 @@ func (s *Store) Delete(ctx context.Context, upstream string) (bool, error) {
 	return true, nil
 }
 
-// ErrRefreshRejected is what the refresh function given to Renew returns
-// when the Authorization Server rejects the refresh token (invalid_grant).
-var ErrRefreshRejected = errors.New("the authorization server rejected the refresh token")
-
-// Renew renews the Credentials of u whose access token is stale with
+// renew renews the Credentials of u whose access token is stale with
 // refresh, under their lock, so that only one process renews them at a
 // time, and returns them. It reads them again first: if another process
 // has already renewed them, those are returned without a refresh; if they
@@ -201,9 +197,9 @@ var ErrRefreshRejected = errors.New("the authorization server rejected the refre
 // has rotated the refresh token meanwhile; otherwise the error is. Any
 // other error from refresh is returned as it is.
 //
-// When the renewed Credentials can't be saved, Renew returns them all the
+// When the renewed Credentials can't be saved, renew returns them all the
 // same, still good for this process, with the error.
-func (s *Store) Renew(ctx context.Context, u config.Upstream, stale string, refresh func(context.Context, *Credentials) (*Credentials, error)) (*Credentials, error) {
+func (s *Store) renew(ctx context.Context, u config.Upstream, stale string, refresh func(context.Context, *Credentials) (*Credentials, error)) (*Credentials, error) {
 	l, err := s.lock(ctx, u.Name)
 	if err != nil {
 		return nil, err
@@ -242,9 +238,9 @@ func (s *Store) Renew(ctx context.Context, u config.Upstream, stale string, refr
 	return renewed, l.save(renewed)
 }
 
-// Wait waits until no Renew that holds the lock is in progress, so that
+// Wait waits until no renewal that holds the lock is in progress, so that
 // Credentials that an Authorization Server has rotated are saved before the
-// process exits. A Renew that takes the lock once Wait has returned is not
+// process exits. A renewal that takes the lock once Wait has returned is not
 // waited for. A nil Store has none.
 func (s *Store) Wait() {
 	if s == nil {

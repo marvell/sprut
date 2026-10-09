@@ -56,9 +56,9 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 
 ## flock and file identity
 
-- **A `flock` belongs to the open file, not the process** (darwin and linux). A second `open` and `flock` of the same lock file in the same process blocks on the first. So whatever writes under the lock goes through the handle that holds it, as `credentials.lock.save` does in `Store.Renew`, not through a function that locks again.
+- **A `flock` belongs to the open file, not the process** (darwin and linux). A second `open` and `flock` of the same lock file in the same process blocks on the first. So whatever writes under the lock goes through the handle that holds it, as `credentials.lock.save` does in `Store.renew`, not through a function that locks again.
 - **A blocking `flock` can't be cancelled.** To bound the wait, retry `LOCK_EX|LOCK_NB` until the deadline, as `credentials.Store.lock` does. A blocking `flock` left running in an abandoned goroutine takes the lock later and holds it until its file is closed.
-- **`os.SameFile` matches a new file that got a freed inode** (go1.27.1). It compares device and inode, and a file system may give the inode of a deleted or replaced file to the next one it creates (ext4 often does). To tell a rewrite from the file last read, keep that file open so that its inode stays taken, as `credentials.Version` does.
+- **`os.SameFile` matches a new file that got a freed inode** (go1.27.1). It compares device and inode, and a file system may give the inode of a deleted or replaced file to the next one it creates (ext4 often does). To tell a rewrite from the file last read, keep that file open so that its inode stays taken, as `credentials.fileVersion` does.
 
 ## os/exec and process groups
 
