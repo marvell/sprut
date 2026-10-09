@@ -2,8 +2,6 @@ package config_test
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -230,106 +228,5 @@ func TestParseDocumentRefusesNonObject(t *testing.T) {
 		if _, err := config.ParseDocument([]byte(data)); err == nil {
 			t.Errorf("ParseDocument(%q) succeeded", data)
 		}
-	}
-}
-
-func TestWriteFile(t *testing.T) {
-	t.Parallel()
-
-	t.Run("creates the file and its directories private", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		path := filepath.Join(dir, "a", "b", "config.json")
-		if err := config.WriteFile(path, []byte("{}\n")); err != nil {
-			t.Fatal(err)
-		}
-		assertMode(t, path, 0o600)
-		assertMode(t, filepath.Join(dir, "a", "b"), 0o700|os.ModeDir)
-		assertMode(t, filepath.Join(dir, "a"), 0o700|os.ModeDir)
-		assertContent(t, path, "{}\n")
-	})
-
-	t.Run("replaces a file, keeping its mode and leaving no temp file", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		path := filepath.Join(dir, "config.json")
-		if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(path, 0o640); err != nil {
-			t.Fatal(err)
-		}
-		if err := config.WriteFile(path, []byte("new")); err != nil {
-			t.Fatal(err)
-		}
-		assertContent(t, path, "new")
-		assertMode(t, path, 0o640)
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(files) != 1 {
-			t.Errorf("directory holds %v, want only config.json", files)
-		}
-	})
-
-	t.Run("writes through a symlink to its target", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		target := filepath.Join(dir, "dotfiles", "config.json")
-		if err := os.Mkdir(filepath.Dir(target), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		link := filepath.Join(dir, "config.json")
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
-		if err := config.WriteFile(link, []byte("new")); err != nil {
-			t.Fatal(err)
-		}
-		assertContent(t, target, "new")
-		if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-			t.Errorf("the symlink was replaced: %v, %v", fi, err)
-		}
-	})
-
-	t.Run("leaves an existing directory's mode alone", func(t *testing.T) {
-		t.Parallel()
-		dir := filepath.Join(t.TempDir(), "shared")
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := config.WriteFile(filepath.Join(dir, "config.json"), []byte("{}")); err != nil {
-			t.Fatal(err)
-		}
-		assertMode(t, dir, 0o755|os.ModeDir)
-	})
-}
-
-func assertMode(t *testing.T, path string, want os.FileMode) {
-	t.Helper()
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := fi.Mode(); got != want {
-		t.Errorf("%s has mode %v, want %v", path, got, want)
-	}
-}
-
-func assertContent(t *testing.T, path, want string) {
-	t.Helper()
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != want {
-		t.Errorf("%s holds %q, want %q", path, got, want)
 	}
 }

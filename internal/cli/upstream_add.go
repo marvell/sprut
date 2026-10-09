@@ -62,7 +62,7 @@ func definition(args, target []string) (config.Definition, error) {
 		return config.Definition{Command: tail[0], Args: tail[1:]}, nil
 	}
 	if len(target) == 0 {
-		return config.Definition{}, errors.New("missing the Upstream's command or URL")
+		return config.Definition{}, errors.New("missing the upstream's command or URL")
 	}
 	if len(target) > 1 || !isHTTPURL(target[0]) {
 		return config.Definition{}, fmt.Errorf("%q is neither -- and a command nor an http(s) URL", strings.Join(target, " "))
@@ -70,6 +70,8 @@ func definition(args, target []string) (config.Definition, error) {
 	return config.Definition{URL: target[0]}, nil
 }
 
+// isHTTPURL reports whether s is an http(s) URL, taking the scheme in any
+// case, as URLs do.
 func isHTTPURL(s string) bool {
 	s = strings.ToLower(s)
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")

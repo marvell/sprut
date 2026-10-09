@@ -41,6 +41,27 @@ cmp keep.json keep.golden
 exec ls -l keep.json
 stdout '^-rw-r--r--'
 
+# The file is replaced whole, leaving no temporary file beside it, and a
+# directory that already exists keeps its mode.
+exec ls -a . xdg/sprut
+! stdout '\.json\..*\.tmp'
+mkdir shared
+chmod 0755 shared
+sprut upstream add -c shared/config.json a -- a
+exec ls -ld shared
+stdout '^drwxr-xr-x'
+
+# A Config that is a symlink, as from a dotfiles repository, is written at
+# its target, even one that doesn't exist yet.
+mkdir dotfiles
+symlink linked.json -> dotfiles/config.json
+sprut upstream add -c linked.json a -- a
+exists dotfiles/config.json
+sprut upstream add -c linked.json b -- b
+grep '"b"' dotfiles/config.json
+exec ls -l linked.json
+stdout '^l'
+
 # -c goes in any position, and SPRUT_CONFIG names the Config too.
 sprut -c dir/a.json upstream add a -- a
 exists dir/a.json

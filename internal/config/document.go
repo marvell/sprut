@@ -144,15 +144,14 @@ func marshal(v any) ([]byte, error) {
 // at its target. An existing Config keeps its mode; a new one is created
 // 0600, in directories created 0700, since it may hold secrets.
 func WriteFile(path string, data []byte) error {
+	path, err := resolveSymlinks(path)
+	if err != nil {
+		return err
+	}
 	mode := os.FileMode(0o600)
-	target, err := filepath.EvalSymlinks(path)
-	switch {
+	switch fi, err := os.Stat(path); {
 	case err == nil:
-		fi, err := os.Stat(target)
-		if err != nil {
-			return err
-		}
-		path, mode = target, fi.Mode().Perm()
+		mode = fi.Mode().Perm()
 	case errors.Is(err, fs.ErrNotExist):
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
@@ -161,4 +160,28 @@ func WriteFile(path string, data []byte) error {
 		return err
 	}
 	return atomicfile.Write(path, data, mode)
+}
+
+// resolveSymlinks follows path while it is a symlink, to the file it
+// names, which may not exist yet: unlike filepath.EvalSymlinks, it can
+// resolve a symlink to a Config still to be created.
+func resolveSymlinks(path string) (string, error) {
+	for range 40 { // as many as Linux follows
+		fi, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) || err == nil && fi.Mode()&fs.ModeSymlink == 0 {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
+	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
 }
