@@ -31,9 +31,11 @@ linters:
 
   exclusions:
     rules:
-      # main wires the process boundary into cli.Run; the fake Upstream in
-      # the tests reads its env and exits.
+      # main wires the process boundary into cli.Run; the fake stdio
+      # Upstream is a process of its own, which reads its env and exits.
       - path: ^main\.go$
+        linters: [forbidigo]
+      - path: ^internal/mcptest/stdio\.go$
         linters: [forbidigo]
       - path: _test\.go$
         linters: [forbidigo]

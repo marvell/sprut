@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marvell/sprut/internal/mcptest"
 )
 
 func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.T) {
@@ -213,7 +215,7 @@ func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 	u := startOAuthUpstream(t)
 	config := writeConfig(t, map[string]any{
 		"fake":  map[string]any{"url": u.URL},
-		"other": fakeUpstreamEntry(t),
+		"other": mcptest.Stdio{}.Entry(t),
 	})
 	env := []string{"XDG_STATE_HOME=" + t.TempDir()}
 
@@ -226,7 +228,7 @@ func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 	}
 	g.closeAgent(t)
 
-	code, _, stderr := runSprut(t, append([]string{envFakeUpstream + "=1"}, env...), "serve", "--dry-run", "-c", config)
+	code, _, stderr := runSprut(t, env, "serve", "--dry-run", "-c", config)
 	if code != 1 {
 		t.Errorf("--dry-run exit code = %d, want 1\nstderr:\n%s", code, stderr)
 	}
@@ -311,9 +313,9 @@ func TestAuthLoginExits1ForAnUpstreamThatIsNotAnOAuthUpstream(t *testing.T) {
 		entry  map[string]any
 		reason string
 	}{
-		{"stdio", fakeUpstreamEntry(t), "OAuth is only for HTTP upstreams"},
+		{"stdio", mcptest.Stdio{}.Entry(t), "OAuth is only for HTTP upstreams"},
 		{"static header", map[string]any{"url": u.URL, "headers": map[string]any{"authorization": "Bearer x"}}, "Authorization header"},
-		{"never answers 401", map[string]any{"url": startHTTPUpstream(t, "").URL}, "did not ask for authorization"},
+		{"never answers 401", map[string]any{"url": mcptest.StartHTTP(t, "").URL}, "did not ask for authorization"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -334,7 +336,7 @@ func TestAuthLoginExits1ForAnUpstreamThatIsNotAnOAuthUpstream(t *testing.T) {
 
 func TestAuthLoginExits1ForAnUpstreamNotInTheConfig(t *testing.T) {
 	t.Parallel()
-	config := writeConfig(t, map[string]any{"up": fakeUpstreamEntry(t)})
+	config := writeConfig(t, map[string]any{"up": mcptest.Stdio{}.Entry(t)})
 
 	code, _, stderr := runSprut(t, nil, "auth", "login", "nope", "-c", config)
 
@@ -345,7 +347,7 @@ func TestAuthLoginExits1ForAnUpstreamNotInTheConfig(t *testing.T) {
 
 func TestAuthReadsTheConfigThatSPRUTCONFIGNames(t *testing.T) {
 	t.Parallel()
-	config := writeConfig(t, map[string]any{"up": fakeUpstreamEntry(t)})
+	config := writeConfig(t, map[string]any{"up": mcptest.Stdio{}.Entry(t)})
 
 	code, _, stderr := runSprut(t, []string{"SPRUT_CONFIG=" + config}, "auth", "login", "up")
 

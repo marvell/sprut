@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/marvell/sprut/internal/mcptest"
 )
 
 func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
@@ -39,8 +41,8 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 			"name":         "fake__echo",
 			"title":        "Echo",
 			"description":  "Echoes its text argument back.",
-			"inputSchema":  echoInputSchema,
-			"outputSchema": echoOutputSchema,
+			"inputSchema":  mcptest.EchoInputSchema,
+			"outputSchema": mcptest.EchoOutputSchema,
 		}),
 		"fake__fail": toJSON(t, map[string]any{
 			"name":        "fake__fail",
@@ -66,7 +68,7 @@ func TestServeRoutesToolCallsToUpstreamAndReturnsResultUnchanged(t *testing.T) {
 		{
 			tool: "fake__echo",
 			args: map[string]any{"text": "hello"},
-			want: echoResult("hello"),
+			want: mcptest.EchoResult("hello"),
 		},
 		{
 			tool: "fake__fail",
@@ -136,9 +138,8 @@ func TestServeLogsLogfmtAtInfoToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
 func TestServeInterpolatesVariablesIntoUpstreamEnvironmentOverInheritedOne(t *testing.T) {
 	t.Parallel()
 	envFile := filepath.Join(t.TempDir(), "upstream.env")
-	entry := fakeUpstreamEntry(t, "SPRUT_TEST_SECRET=token-${SECRET}", "SPRUT_TEST_OVERRIDE=from-config")
+	entry := mcptest.Stdio{EnvFile: envFile}.Entry(t, "SPRUT_TEST_SECRET=token-${SECRET}", "SPRUT_TEST_OVERRIDE=from-config")
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), []string{
-		envFakeEnvFile + "=" + envFile,
 		"SECRET=abc",
 		"SPRUT_TEST_OVERRIDE=from-sprut",
 		"SPRUT_TEST_INHERITED=yes",
@@ -167,8 +168,8 @@ func TestServeInterpolatesVariablesIntoUpstreamEnvironmentOverInheritedOne(t *te
 
 func TestServeSkipsUpstreamWithUnsetVariableAndServesTheOthers(t *testing.T) {
 	t.Parallel()
-	broken := fakeUpstreamEntry(t, "TOKEN=${SPRUT_TEST_UNSET}")
-	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "broken": broken}), nil)
+	broken := mcptest.Stdio{}.Entry(t, "TOKEN=${SPRUT_TEST_UNSET}")
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t), "broken": broken}), nil)
 
 	g.wantTools(t, "fake__echo", "fake__fail")
 	g.wantLogLine(t, "WARN", "upstream=broken", "SPRUT_TEST_UNSET")
@@ -245,8 +246,8 @@ func (failingReader) Read([]byte) (int, error) { return 0, errAgentRead }
 
 func TestServeExcludesUpstreamThatFailsAtStartupAndServesTheOthers(t *testing.T) {
 	t.Parallel()
-	failing := fakeUpstreamEntry(t, envFakeStartup+"=fail")
-	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "failing": failing}), nil)
+	failing := mcptest.Stdio{Startup: mcptest.Fail}.Entry(t)
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t), "failing": failing}), nil)
 
 	g.wantTools(t, "fake__echo", "fake__fail")
 	g.wantLogLine(t, "WARN", "upstream=failing", "err=")
@@ -256,9 +257,9 @@ func TestServeExcludesUpstreamThatFailsAtStartupAndServesTheOthers(t *testing.T)
 
 func TestServeExcludesUpstreamThatHangsPastStartupTimeout(t *testing.T) {
 	t.Parallel()
-	hanging := fakeUpstreamEntry(t, envFakeStartup+"=hang")
+	hanging := mcptest.Stdio{Startup: mcptest.Hang}.Entry(t)
 	begin := time.Now()
-	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t), "hanging": hanging}), nil,
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t), "hanging": hanging}), nil,
 		"--startup-timeout", "1s")
 	// Well under the ~5s grace a hung Upstream gets to exit once stopped:
 	// stopping it must not hold up startup.
@@ -275,11 +276,11 @@ func TestServeStartsUpstreamsConcurrently(t *testing.T) {
 	t.Parallel()
 	// Each Upstream waits for all three to be running before it answers, so
 	// started one after another the first would never become ready.
-	rendezvous := envFakeRendezvous + "=3:" + t.TempDir()
+	meet := mcptest.Stdio{Rendezvous: &mcptest.Rendezvous{N: 3, Dir: t.TempDir()}}
 	g := startGateway(t, writeConfig(t, map[string]any{
-		"one":   fakeUpstreamEntry(t, rendezvous),
-		"two":   fakeUpstreamEntry(t, rendezvous),
-		"three": fakeUpstreamEntry(t, rendezvous),
+		"one":   meet.Entry(t),
+		"two":   meet.Entry(t),
+		"three": meet.Entry(t),
 	}), nil, "--startup-timeout", "5s")
 
 	g.wantTools(t, "one__echo", "one__fail", "three__echo", "three__fail", "two__echo", "two__fail")
@@ -289,7 +290,7 @@ func TestServeSkipsToolWhoseNamespacedNameBreaksTheNameRules(t *testing.T) {
 	t.Parallel()
 	fits := strings.Repeat("a", 58)    // fake__ + 58 = 64 characters
 	tooLong := strings.Repeat("b", 59) // fake__ + 59 = 65 characters
-	entry := fakeUpstreamEntry(t, envFakeExtraTools+"="+strings.Join([]string{fits, tooLong, "has.dot"}, ","))
+	entry := mcptest.Stdio{ExtraTools: []string{fits, tooLong, "has.dot"}}.Entry(t)
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
 
 	g.wantTools(t, "fake__"+fits, "fake__echo", "fake__fail")
@@ -325,7 +326,7 @@ func TestServeRoutesEachNamespacedToolToItsOwnUpstream(t *testing.T) {
 	t.Parallel()
 	upstreams := map[string]any{}
 	for _, name := range []string{"one", "two"} {
-		upstreams[name] = fakeUpstreamEntry(t, envFakeExtraTools+"=whoami", envFakeID+"=upstream "+name)
+		upstreams[name] = mcptest.Stdio{ExtraTools: []string{"whoami"}, ID: "upstream " + name}.Entry(t)
 	}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 
@@ -343,7 +344,7 @@ func TestServeRoutesEachNamespacedToolToItsOwnUpstream(t *testing.T) {
 
 func TestServeSkipsToolWithoutAnObjectInputSchema(t *testing.T) {
 	t.Parallel()
-	g := startGateway(t, writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t, envFakeBadSchemaTool+"=bad")}), nil)
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{BadSchemaTool: "bad"}.Entry(t)}), nil)
 
 	g.wantTools(t, "fake__echo", "fake__fail")
 	g.wantLogLine(t, "WARN", "upstream=fake", "fake__bad")
@@ -354,10 +355,10 @@ func TestServeDryRunWithHealthyUpstreamsExits0AndStopsThem(t *testing.T) {
 	dir := t.TempDir()
 	upstreams := map[string]any{}
 	for _, name := range []string{"one", "two"} {
-		upstreams[name] = fakeUpstreamEntry(t, envFakePIDFile+"="+filepath.Join(dir, name+".pid"))
+		upstreams[name] = mcptest.Stdio{PIDFile: filepath.Join(dir, name+".pid")}.Entry(t)
 	}
 
-	code, stdout, stderr := runSprut(t, []string{envFakeUpstream + "=1"}, "serve", "--dry-run", "-c", writeConfig(t, upstreams))
+	code, stdout, stderr := runSprut(t, nil, "serve", "--dry-run", "-c", writeConfig(t, upstreams))
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
 	}
@@ -376,20 +377,20 @@ func TestServeDryRunExits1WhenAnyUpstreamFailsOrTimesOut(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		startup string
+		startup mcptest.Startup
 	}{
-		{name: "fails", startup: "fail"},
-		{name: "times out", startup: "hang"},
+		{name: "fails", startup: mcptest.Fail},
+		{name: "times out", startup: mcptest.Hang},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			config := writeConfig(t, map[string]any{
-				"fake":   fakeUpstreamEntry(t),
-				"broken": fakeUpstreamEntry(t, envFakeStartup+"="+tt.startup),
+				"fake":   mcptest.Stdio{}.Entry(t),
+				"broken": mcptest.Stdio{Startup: tt.startup}.Entry(t),
 			})
 
-			code, stdout, stderr := runSprut(t, []string{envFakeUpstream + "=1"},
+			code, stdout, stderr := runSprut(t, nil,
 				"serve", "--dry-run", "--startup-timeout", "1s", "-c", config)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
@@ -407,17 +408,16 @@ func TestServeDryRunExits1WhenAnyUpstreamFailsOrTimesOut(t *testing.T) {
 func TestServeDryRunLogsExactlyWhatANormalStartupLogs(t *testing.T) {
 	t.Parallel()
 	config := writeConfig(t, map[string]any{
-		"fake":     fakeUpstreamEntry(t, envFakeExtraTools+"=has.dot"),
-		"failing":  fakeUpstreamEntry(t, envFakeStartup+"=fail"),
-		"unset":    fakeUpstreamEntry(t, "TOKEN=${SPRUT_TEST_UNSET}"),
+		"fake":     mcptest.Stdio{ExtraTools: []string{"has.dot"}}.Entry(t),
+		"failing":  mcptest.Stdio{Startup: mcptest.Fail}.Entry(t),
+		"unset":    mcptest.Stdio{}.Entry(t, "TOKEN=${SPRUT_TEST_UNSET}"),
 		"disabled": map[string]any{"command": "x", "disabled": true},
 	})
-	env := []string{envFakeUpstream + "=1"}
 
 	// A normal run whose Agent goes away at once (EOF on stdin) logs startup
 	// and nothing else.
-	_, _, normal := runSprut(t, env, "serve", "-c", config)
-	_, _, dryRun := runSprut(t, env, "serve", "--dry-run", "-c", config)
+	_, _, normal := runSprut(t, nil, "serve", "-c", config)
+	_, _, dryRun := runSprut(t, nil, "serve", "--dry-run", "-c", config)
 	if !strings.Contains(normal, `msg="gateway started"`) {
 		t.Fatalf("normal run logged no startup summary:\n%s", normal)
 	}
@@ -442,7 +442,7 @@ var durationField = regexp.MustCompile(` duration=\S+`)
 
 func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
 	t.Parallel()
-	upstreams := map[string]any{"one": fakeUpstreamEntry(t), "two": fakeUpstreamEntry(t)}
+	upstreams := map[string]any{"one": mcptest.Stdio{}.Entry(t), "two": mcptest.Stdio{}.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil, "-v")
 
 	for _, upstream := range []string{"one", "two"} {
@@ -463,7 +463,7 @@ func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
 
 func TestServeLogsUpstreamStderrLineByLine(t *testing.T) {
 	t.Parallel()
-	entry := fakeUpstreamEntry(t, envFakeStderr+"=first line\nsecond line\n")
+	entry := mcptest.Stdio{Stderr: "first line\nsecond line\n"}.Entry(t)
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
 	g.closeAgent(t)
 
@@ -476,7 +476,7 @@ func TestServeKillsUpstreamsThatIgnoreSIGTERMAfterOneGrace(t *testing.T) {
 	dir := t.TempDir()
 	upstreams := map[string]any{}
 	for _, name := range []string{"one", "two"} {
-		upstreams[name] = fakeUpstreamEntry(t, envFakeIgnoreSIGTERM+"=1", envFakePIDFile+"="+filepath.Join(dir, name+".pid"))
+		upstreams[name] = mcptest.Stdio{IgnoreSIGTERM: true, PIDFile: filepath.Join(dir, name+".pid")}.Entry(t)
 	}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 
@@ -495,7 +495,7 @@ func TestServeGivesUpOnAnUpstreamThatNeverExits(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	pidFile, groupFile := filepath.Join(dir, "upstream.pid"), filepath.Join(dir, "group.pid")
-	entry := fakeUpstreamEntry(t, envFakePIDFile+"="+pidFile, envFakeLeaveGroup+"="+groupFile)
+	entry := mcptest.Stdio{PIDFile: pidFile, LeaveGroupPIDFile: groupFile}.Entry(t)
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
 	// What the Gateway gives up on is left for the test to stop.
 	t.Cleanup(func() { _ = syscall.Kill(-readPID(t, groupFile), syscall.SIGKILL) })
@@ -524,7 +524,7 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 			t.Parallel()
 			dir := t.TempDir()
 			pidFile, grandchildPIDFile := filepath.Join(dir, "upstream.pid"), filepath.Join(dir, "grandchild.pid")
-			entry := fakeUpstreamEntry(t, envFakePIDFile+"="+pidFile, envFakeGrandchild+"="+grandchildPIDFile)
+			entry := mcptest.Stdio{PIDFile: pidFile, GrandchildPIDFile: grandchildPIDFile}.Entry(t)
 			g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil)
 
 			tt.stop(g)
@@ -538,7 +538,7 @@ func TestServeShutsDownCleanlyLeavingNoUpstreamOrGrandchildBehind(t *testing.T) 
 
 func TestServeDoesNotReportTheExitOfAnUpstreamThatFailsAtStartup(t *testing.T) {
 	t.Parallel()
-	upstreams := map[string]any{"fake": fakeUpstreamEntry(t), "failing": fakeUpstreamEntry(t, envFakeStartup+"=fail")}
+	upstreams := map[string]any{"fake": mcptest.Stdio{}.Entry(t), "failing": mcptest.Stdio{Startup: mcptest.Fail}.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 
 	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=failing")
@@ -548,7 +548,7 @@ func TestServeDoesNotReportTheExitOfAnUpstreamThatFailsAtStartup(t *testing.T) {
 
 func TestServeReportsTheExitOfAnUpstreamThatHangsUpRightAfterListingItsTools(t *testing.T) {
 	t.Parallel()
-	upstreams := map[string]any{"quitter": fakeUpstreamEntry(t, envFakeHangUpAfterList+"=1")}
+	upstreams := map[string]any{"quitter": mcptest.Stdio{HangUpAfterList: true}.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 
 	g.wantTools(t, "quitter__echo", "quitter__fail")
@@ -578,7 +578,7 @@ func TestServeAnswersCallsToUnknownToolsWithAnErrorResult(t *testing.T) {
 
 func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *testing.T) {
 	t.Parallel()
-	upstreams := map[string]any{"doomed": fakeUpstreamEntry(t, envFakeCrashTool+"=1"), "fake": fakeUpstreamEntry(t)}
+	upstreams := map[string]any{"doomed": mcptest.Stdio{CrashTool: true}.Entry(t), "fake": mcptest.Stdio{}.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil, "-v")
 	ctx := context.Background()
 
@@ -607,7 +607,7 @@ func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *
 func TestServeEndsCallsToAnUpstreamThatExitsWhileItsChildHoldsStdoutAndStopsTheChild(t *testing.T) {
 	t.Parallel()
 	childPIDFile := filepath.Join(t.TempDir(), "child.pid")
-	upstreams := map[string]any{"orphaner": fakeUpstreamEntry(t, envFakeOrphanTool+"="+childPIDFile)}
+	upstreams := map[string]any{"orphaner": mcptest.Stdio{OrphanToolPIDFile: childPIDFile}.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 	// Bounds the test, not the call: a call that is not ended promptly
 	// fails the timing check below.
@@ -646,7 +646,7 @@ func TestServePassesUpstreamProtocolErrorsThrough(t *testing.T) {
 func TestServeCancelsCallOnUpstreamWhenAgentCancelsIt(t *testing.T) {
 	t.Parallel()
 	progress := filepath.Join(t.TempDir(), "block")
-	g := startFakeGateway(t, envFakeBlockTool+"="+progress)
+	g := startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{BlockToolFile: progress}.Entry(t)}), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	called := g.startBlockingCall(ctx, t, progress)
@@ -664,8 +664,8 @@ func TestServeForwardsConcurrentCallsIncludingSeveralToOneUpstream(t *testing.T)
 	// Each Upstream answers only once three calls are in flight to it, so
 	// calls forwarded one at a time would never be answered.
 	const perUpstream = 3
-	gather := envFakeGatherTool + "=" + strconv.Itoa(perUpstream)
-	upstreams := map[string]any{"one": fakeUpstreamEntry(t, gather), "two": fakeUpstreamEntry(t, gather)}
+	gather := mcptest.Stdio{GatherTool: perUpstream}
+	upstreams := map[string]any{"one": gather.Entry(t), "two": gather.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -688,7 +688,7 @@ func TestServeForwardsConcurrentCallsIncludingSeveralToOneUpstream(t *testing.T)
 func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	t.Parallel()
 	progress := filepath.Join(t.TempDir(), "block")
-	entry := fakeUpstreamEntry(t, envFakeBlockTool+"="+progress)
+	entry := mcptest.Stdio{BlockToolFile: progress}.Entry(t)
 	// The startup timeout is the Gateway's only timeout; it must not apply
 	// to calls.
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "1s")
@@ -716,12 +716,12 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 
 func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
 	t.Parallel()
-	eras := []string{legacyProtocol, modernProtocol}
+	eras := []string{mcptest.Legacy, mcptest.Modern}
 	for _, agent := range eras {
 		for _, upstream := range eras {
 			t.Run("Agent "+agent+" Upstream "+upstream, func(t *testing.T) {
 				t.Parallel()
-				path := writeConfig(t, map[string]any{"fake": fakeUpstreamEntry(t, envFakeProtocol+"="+upstream)})
+				path := writeConfig(t, map[string]any{"fake": mcptest.Stdio{Protocol: upstream}.Entry(t)})
 				g := startGatewayAs(t, agent, path, nil)
 
 				if got := g.Agent.InitializeResult().ProtocolVersion; got != agent {
@@ -735,7 +735,7 @@ func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
 				if err != nil {
 					t.Fatalf("tools/call: %v", err)
 				}
-				if got, want := callResult(t, res), toJSON(t, echoResult("hi")); !reflect.DeepEqual(got, want) {
+				if got, want := callResult(t, res), toJSON(t, mcptest.EchoResult("hi")); !reflect.DeepEqual(got, want) {
 					t.Errorf("result:\n got %v\nwant %v", got, want)
 				}
 			})
@@ -746,7 +746,7 @@ func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
 func TestServeEndsCallWithAnErrorResultWhenModernUpstreamAsksForInteractiveInput(t *testing.T) {
 	t.Parallel()
 	path := writeConfig(t, map[string]any{
-		"fake": fakeUpstreamEntry(t, envFakeProtocol+"="+modernProtocol, envFakeAskTool+"=1"),
+		"fake": mcptest.Stdio{Protocol: mcptest.Modern, AskTool: true}.Entry(t),
 	})
 	g := startGateway(t, path, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -764,12 +764,12 @@ func TestServeEndsCallWithAnErrorResultWhenModernUpstreamAsksForInteractiveInput
 
 func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
 	t.Parallel()
-	for _, protocol := range []string{legacyProtocol, modernProtocol} {
+	for _, protocol := range []string{mcptest.Legacy, mcptest.Modern} {
 		t.Run("Upstream "+protocol, func(t *testing.T) {
 			t.Parallel()
-			remote := startHTTPUpstream(t, protocol)
+			remote := mcptest.StartHTTP(t, protocol)
 			g := startGateway(t, writeConfig(t, map[string]any{
-				"fake":   fakeUpstreamEntry(t),
+				"fake":   mcptest.Stdio{}.Entry(t),
 				"remote": map[string]any{"url": remote.URL},
 			}), nil)
 
@@ -780,7 +780,7 @@ func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tools/call: %v", err)
 			}
-			if got, want := callResult(t, res), toJSON(t, echoResult("hi")); !reflect.DeepEqual(got, want) {
+			if got, want := callResult(t, res), toJSON(t, mcptest.EchoResult("hi")); !reflect.DeepEqual(got, want) {
 				t.Errorf("result:\n got %v\nwant %v", got, want)
 			}
 			g.closeAgent(t)
@@ -792,10 +792,10 @@ func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
 // error of its own; it is not the Upstream's answer to pass on.
 func TestServeAnswersCallsToAnHTTPUpstreamThatIsGoneWithAnErrorResult(t *testing.T) {
 	t.Parallel()
-	for _, protocol := range []string{legacyProtocol, modernProtocol} {
+	for _, protocol := range []string{mcptest.Legacy, mcptest.Modern} {
 		t.Run("Upstream "+protocol, func(t *testing.T) {
 			t.Parallel()
-			remote := startHTTPUpstream(t, protocol)
+			remote := mcptest.StartHTTP(t, protocol)
 			g := startGateway(t, writeConfig(t, map[string]any{"remote": map[string]any{"url": remote.URL}}), nil)
 			g.wantTools(t, "remote__echo", "remote__fail")
 
@@ -816,7 +816,7 @@ func TestServeAnswersCallsToAnHTTPUpstreamThatIsGoneWithAnErrorResult(t *testing
 
 func TestServeSendsConfiguredHeadersOnEveryHTTPRequest(t *testing.T) {
 	t.Parallel()
-	remote := startHTTPUpstream(t, "")
+	remote := mcptest.StartHTTP(t, "")
 	g := startGateway(t, writeConfig(t, map[string]any{"remote": map[string]any{
 		"url":     remote.URL,
 		"headers": map[string]string{"Authorization": "Bearer ${TOKEN}", "X-Static": "yes"},
@@ -846,8 +846,8 @@ func TestServeSendsConfiguredHeadersOnEveryHTTPRequest(t *testing.T) {
 func TestServeFailsSSEOnlyHTTPUpstreamWithoutFallbackAndServesTheOthers(t *testing.T) {
 	t.Parallel()
 	g := startGateway(t, writeConfig(t, map[string]any{
-		"fake":       fakeUpstreamEntry(t),
-		"legacy-sse": map[string]any{"url": startSSEOnlyUpstream(t)},
+		"fake":       mcptest.Stdio{}.Entry(t),
+		"legacy-sse": map[string]any{"url": mcptest.StartSSEOnly(t)},
 	}), nil)
 
 	g.wantTools(t, "fake__echo", "fake__fail")
@@ -860,8 +860,8 @@ func TestServeExcludesHTTPUpstreamThatHangsPastStartupTimeout(t *testing.T) {
 	t.Parallel()
 	begin := time.Now()
 	g := startGateway(t, writeConfig(t, map[string]any{
-		"fake":    fakeUpstreamEntry(t),
-		"hanging": map[string]any{"url": startHangingHTTPUpstream(t)},
+		"fake":    mcptest.Stdio{}.Entry(t),
+		"hanging": map[string]any{"url": mcptest.StartHanging(t)},
 	}), nil, "--startup-timeout", "1s")
 	if took := time.Since(begin); took > 3*time.Second {
 		t.Errorf("startup took %s with a 1s startup timeout", took)
@@ -874,7 +874,7 @@ func TestServeExcludesHTTPUpstreamThatHangsPastStartupTimeout(t *testing.T) {
 
 func TestServeSendsConfiguredHeadersOnlyToTheConfiguredHost(t *testing.T) {
 	t.Parallel()
-	elsewhere := startHTTPUpstream(t, "")
+	elsewhere := mcptest.StartHTTP(t, "")
 	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
 	}))
@@ -901,7 +901,7 @@ func TestServeReachesHTTPUpstreamThroughTheProxyInItsEnvironment(t *testing.T) {
 	t.Parallel()
 	// The proxy serves the Upstream itself, so the request reaches it only
 	// through the proxy: remote.invalid resolves nowhere.
-	proxy := startHTTPUpstream(t, "")
+	proxy := mcptest.StartHTTP(t, "")
 	g := startGateway(t, writeConfig(t, map[string]any{
 		"remote": map[string]any{"url": "http://remote.invalid/mcp"},
 	}), []string{"HTTP_PROXY=" + proxy.URL})
@@ -912,7 +912,7 @@ func TestServeReachesHTTPUpstreamThroughTheProxyInItsEnvironment(t *testing.T) {
 
 func TestServeBlamesHTTPSSEOnlyOnAServerThatSpeaksIt(t *testing.T) {
 	t.Parallel()
-	g := startGateway(t, writeConfig(t, map[string]any{"gone": map[string]any{"url": refusingURL()}}), nil)
+	g := startGateway(t, writeConfig(t, map[string]any{"gone": map[string]any{"url": mcptest.RefusingURL()}}), nil)
 
 	g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=gone", "connection refused")
 	g.wantNoLogLine(t, "WARN", "HTTP+SSE")
@@ -937,7 +937,7 @@ func TestServeDoesNotBlameHTTPSSEOnAStreamableHTTPServerWithASessionlessGETStrea
 			t.Parallel()
 			begin := time.Now()
 			g := startGateway(t, writeConfig(t, map[string]any{
-				"broken": map[string]any{"url": startGETStreamUpstream(t, tc.chunk)},
+				"broken": map[string]any{"url": mcptest.StartGETStream(t, tc.chunk)},
 			}), nil, "--startup-timeout", "20s")
 			if took := time.Since(begin); took > tc.maxStartup {
 				t.Errorf("startup took %s", took)
@@ -952,13 +952,13 @@ func TestServeDoesNotBlameHTTPSSEOnAStreamableHTTPServerWithASessionlessGETStrea
 
 func TestServeListsUpstreamsSkippedAtStartupInItsInstructions(t *testing.T) {
 	t.Parallel()
-	for _, protocol := range []string{legacyProtocol, modernProtocol} {
+	for _, protocol := range []string{mcptest.Legacy, mcptest.Modern} {
 		t.Run(protocol, func(t *testing.T) {
 			t.Parallel()
 			g := startGatewayAs(t, protocol, writeConfig(t, map[string]any{
-				"fake":    fakeUpstreamEntry(t),
-				"failing": fakeUpstreamEntry(t, envFakeStartup+"=fail"),
-				"hanging": fakeUpstreamEntry(t, envFakeStartup+"=hang"),
+				"fake":    mcptest.Stdio{}.Entry(t),
+				"failing": mcptest.Stdio{Startup: mcptest.Fail}.Entry(t),
+				"hanging": mcptest.Stdio{Startup: mcptest.Hang}.Entry(t),
 			}), nil, "--startup-timeout", "1s")
 
 			instructions := g.Agent.InitializeResult().Instructions
@@ -987,11 +987,11 @@ func TestServeHasEmptyInstructionsWhenNoUpstreamWasSkipped(t *testing.T) {
 func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
 	t.Parallel()
 	// Refusing connections, so the reason quotes the URL.
-	withPassword := strings.Replace(refusingURL(), "://", "://user:url-secret@", 1)
+	withPassword := strings.Replace(mcptest.RefusingURL(), "://", "://user:url-secret@", 1)
 	g := startGateway(t, writeConfig(t, map[string]any{
-		"fake":   fakeUpstreamEntry(t),
+		"fake":   mcptest.Stdio{}.Entry(t),
 		"remote": map[string]any{"url": withPassword, "headers": map[string]string{"Authorization": "Bearer ${TOKEN}"}},
-		"local":  fakeUpstreamEntry(t, envFakeStartup+"=fail", "API_KEY=${KEY}"),
+		"local":  mcptest.Stdio{Startup: mcptest.Fail}.Entry(t, "API_KEY=${KEY}"),
 	}), []string{"TOKEN=header-secret", "KEY=env-secret"})
 
 	instructions := g.Agent.InitializeResult().Instructions
@@ -1008,7 +1008,7 @@ func TestServeKeepsConfigSecretsOutOfItsInstructions(t *testing.T) {
 // it, so that the user can tell which file an Agent's sprut uses.
 func TestServeLogsWhereItReadsTheConfig(t *testing.T) {
 	t.Parallel()
-	upstreams := map[string]any{"fake": fakeUpstreamEntry(t)}
+	upstreams := map[string]any{"fake": mcptest.Stdio{}.Entry(t)}
 	configHome := t.TempDir()
 	atDefault := filepath.Join(configHome, "sprut", "config.json")
 	writeConfigAt(t, atDefault, upstreams)
@@ -1034,8 +1034,7 @@ func TestServeLogsWhereItReadsTheConfig(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			env := append([]string{envFakeUpstream + "=1"}, tc.env...)
-			code, _, stderr := runSprut(t, env, append([]string{"serve", "--dry-run"}, tc.args...)...)
+			code, _, stderr := runSprut(t, tc.env, append([]string{"serve", "--dry-run"}, tc.args...)...)
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
 			}

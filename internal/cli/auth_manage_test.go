@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marvell/sprut/internal/mcptest"
 )
 
 // loginAs logs in to u as the Upstream name of config, with its
@@ -53,7 +55,7 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 		"valid": map[string]any{"url": u.URL},
 		"stale": map[string]any{"url": u.URL},
 		"dead":  map[string]any{"url": u.URL},
-		"local": fakeUpstreamEntry(t),
+		"local": mcptest.Stdio{}.Entry(t),
 	})
 	loginAs(t, u, state, config, "valid")
 	loginAs(t, u, state, config, "stale").makeStale(t)
@@ -129,7 +131,7 @@ func TestAuthLogoutStopsARunningServeFromUsingTheCredentials(t *testing.T) {
 
 func TestAuthLogoutExits1ForAnUpstreamThatIsNotAnOAuthUpstreamInTheConfig(t *testing.T) {
 	t.Parallel()
-	config := writeConfig(t, map[string]any{"local": fakeUpstreamEntry(t)})
+	config := writeConfig(t, map[string]any{"local": mcptest.Stdio{}.Entry(t)})
 	state := t.TempDir()
 	for _, name := range []string{"local", "nope"} {
 		code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "auth", "logout", name, "-c", config)
@@ -173,8 +175,8 @@ func TestAuthLoginWithoutUpstreamsLogsInOnlyThoseThatNeedIt(t *testing.T) {
 		"good":   map[string]any{"url": u.URL},
 		"stale":  map[string]any{"url": renewable.URL},
 		"dead":   map[string]any{"url": u.URL},
-		"local":  fakeUpstreamEntry(t),
-		"public": map[string]any{"url": startHTTPUpstream(t, "").URL},
+		"local":  mcptest.Stdio{}.Entry(t),
+		"public": map[string]any{"url": mcptest.StartHTTP(t, "").URL},
 	})
 	loginAs(t, u, state, config, "good")
 	loginAs(t, renewable, state, config, "stale").makeStale(t)
@@ -255,7 +257,7 @@ func TestServeRefusesARedirectToAnotherOriginWithoutSendingTheToken(t *testing.T
 			t.Parallel()
 			u := startOAuthUpstreamOn(t, "localhost")
 			l := logInTo(t, u, 3600)
-			proxy := startHTTPUpstream(t, "")
+			proxy := mcptest.StartHTTP(t, "")
 			u.RedirectMCP(tc.target(strings.TrimPrefix(u.Base, "http://localhost:")))
 			env := append([]string{"HTTP_PROXY=" + proxy.URL, "HTTPS_PROXY=" + proxy.URL}, l.env...)
 

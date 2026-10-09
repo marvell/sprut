@@ -22,6 +22,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/marvell/sprut/internal/mcptest"
+
 	"github.com/marvell/sprut/internal/cli"
 )
 
@@ -102,7 +104,7 @@ func startOAuthUpstreamOn(t *testing.T, host string) *oauthUpstream {
 		expiresIn: 3600, live: map[string]liveToken{}, release: make(chan struct{}),
 		secret: fakeClientSecret, challengeScope: fakeScope, supported: []string{fakeScope},
 	}
-	server := newFakeServer("")
+	server := mcptest.NewServer("")
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true})
 
