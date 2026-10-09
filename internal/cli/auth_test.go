@@ -103,15 +103,15 @@ func TestAuthLoginIgnoresCallbacksThatAreNotTheOneItWaitsFor(t *testing.T) {
 			t.Errorf("%s: callback answered %s, want an error status", tc.name, resp.Status)
 		}
 		if l.exited() {
-			code, stderr := l.wait(t)
-			t.Fatalf("%s: auth login exited %d\nstderr:\n%s", tc.name, code, stderr)
+			code, _ := l.wait(t)
+			t.Fatalf("%s: auth login exited %d", tc.name, code)
 		}
 	}
 	if resp := l.do(t, http.MethodGet, link.String()); resp.StatusCode != http.StatusOK {
 		t.Errorf("the valid callback answered %s", resp.Status)
 	}
-	if code, stderr := l.wait(t); code != 0 {
-		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
+	if code, _ := l.wait(t); code != 0 {
+		t.Fatalf("auth login exit code = %d, want 0", code)
 	}
 }
 
@@ -155,7 +155,7 @@ func TestAuthLoginChecksTheIssuerOfTheAuthorizationResponse(t *testing.T) {
 			code, stderr := l.wait(t)
 
 			if code != tc.wantCode {
-				t.Fatalf("auth login exit code = %d, want %d\nstderr:\n%s", code, tc.wantCode, stderr)
+				t.Fatalf("auth login exit code = %d, want %d", code, tc.wantCode)
 			}
 			if code == 0 {
 				return
@@ -183,7 +183,7 @@ func TestAuthLoginWithoutACallbackTimesOutWithExit1(t *testing.T) {
 	code, stderr := l.wait(t)
 
 	if code != 1 || !strings.Contains(stderr, "no callback from the browser") {
-		t.Errorf("exit code = %d, want 1 saying no callback came\nstderr:\n%s", code, stderr)
+		t.Errorf("exit code = %d, want 1 saying no callback came", code)
 	}
 }
 
@@ -205,9 +205,9 @@ func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 	}
 	g.closeAgent(t)
 
-	code, _, stderr := runSprut(t, env, "serve", "--dry-run", "-c", config)
+	code, _, _ := runSprut(t, env, "serve", "--dry-run", "-c", config)
 	if code != 1 {
-		t.Errorf("--dry-run exit code = %d, want 1\nstderr:\n%s", code, stderr)
+		t.Errorf("--dry-run exit code = %d, want 1", code)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestTheLoginHintNamesTheConfigAsAShellElsewhereFindsIt(t *testing.T) {
 			args := append([]string{"serve", "--dry-run"}, tc.args...)
 			code, _, stderr := runSprut(t, append(tc.env, state), args...)
 			if code != 1 {
-				t.Fatalf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
+				t.Fatalf("exit code = %d, want 1", code)
 			}
 			if !strings.Contains(stderr, `hint="`+tc.want+`"`) {
 				t.Errorf("stderr lacks the hint %q:\n%s", tc.want, stderr)
@@ -277,7 +277,7 @@ func TestOAuthOverPlainHTTPToANonLoopbackHostIsRefused(t *testing.T) {
 		t.Parallel()
 		code, _, stderr := runSprut(t, env, "auth", "login", "remote", "--no-browser", "-c", config)
 		if code != 1 || !strings.Contains(stderr, "OAuth requires HTTPS") {
-			t.Errorf("exit code = %d, want 1 saying OAuth requires HTTPS\nstderr:\n%s", code, stderr)
+			t.Errorf("exit code = %d, want 1 saying OAuth requires HTTPS", code)
 		}
 	})
 }
@@ -302,7 +302,7 @@ func TestAuthLoginExits1ForAnUpstreamThatIsNotAnOAuthUpstream(t *testing.T) {
 			code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "auth", "login", "up", "--no-browser", "-c", config)
 
 			if code != 1 || !strings.Contains(stderr, tc.reason) {
-				t.Errorf("exit code = %d, want 1 with a reason containing %q\nstderr:\n%s", code, tc.reason, stderr)
+				t.Errorf("exit code = %d, want 1 with a reason containing %q", code, tc.reason)
 			}
 			if _, err := os.Stat(filepath.Join(state, "sprut", "credentials", "up.json")); err == nil {
 				t.Error("Credentials were written")
@@ -318,7 +318,7 @@ func TestAuthLoginExits1ForAnUpstreamNotInTheConfig(t *testing.T) {
 	code, _, stderr := runSprut(t, nil, "auth", "login", "nope", "-c", config)
 
 	if code != 1 || !strings.Contains(stderr, `"nope"`) {
-		t.Errorf("exit code = %d, want 1 naming the upstream\nstderr:\n%s", code, stderr)
+		t.Errorf("exit code = %d, want 1 naming the upstream", code)
 	}
 }
 
@@ -330,7 +330,7 @@ func TestAuthReadsTheConfigThatSPRUTCONFIGNames(t *testing.T) {
 
 	// Only the Config there knows up, and that it is stdio.
 	if code != 1 || !strings.Contains(stderr, "OAuth is only for HTTP upstreams") {
-		t.Errorf("exit code = %d, want 1 saying up is not an HTTP upstream\nstderr:\n%s", code, stderr)
+		t.Errorf("exit code = %d, want 1 saying up is not an HTTP upstream", code)
 	}
 }
 
@@ -347,10 +347,10 @@ func TestAuthUsageErrorsExit2(t *testing.T) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			code, stdout, stderr := runSprut(t, nil, args...)
+			code, stdout, _ := runSprut(t, nil, args...)
 
 			if code != 2 {
-				t.Errorf("exit code = %d, want 2\nstderr:\n%s", code, stderr)
+				t.Errorf("exit code = %d, want 2", code)
 			}
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)

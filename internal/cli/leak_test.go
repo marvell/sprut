@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/marvell/sprut/internal/mcptest"
@@ -24,7 +23,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 				"auth", "login", "fake", "--no-browser", "-v", "-c", config)
 
 			if code != 1 {
-				t.Errorf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
+				t.Errorf("exit code = %d, want 1", code)
 			}
 			wantNoSecrets(t, "auth login stderr", stderr, leakySecrets...)
 		})
@@ -37,7 +36,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 			code, stderr := login(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-v", "-c", config)
 
 			if code != 1 {
-				t.Errorf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
+				t.Errorf("exit code = %d, want 1", code)
 			}
 			wantNoSecrets(t, "auth login stderr", stderr, leakySecrets...)
 		})
@@ -65,7 +64,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 			l.FailRefresh(how)
 			l.RevokeAccessTokens()
 
-			res := g.echo(context.Background(), t)
+			res := g.echo(t.Context(), t)
 
 			if !res.IsError {
 				t.Errorf("fake__echo = %v, want an isError result", toJSON(t, res))

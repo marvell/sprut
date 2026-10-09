@@ -33,9 +33,9 @@ func loginAs(t *testing.T, u *mcptest.OAuthUpstream, state, config, name string)
 		env:           []string{"XDG_STATE_HOME=" + state},
 		creds:         filepath.Join(state, "sprut", "credentials", name+".json"),
 	}
-	code, stderr := login(t, u, l.env, name, "--no-browser", "-c", config)
+	code, _ := login(t, u, l.env, name, "--no-browser", "-c", config)
 	if code != 0 {
-		t.Fatalf("auth login %s exit code = %d, want 0\nstderr:\n%s", name, code, stderr)
+		t.Fatalf("auth login %s exit code = %d, want 0", name, code)
 	}
 	return l
 }
@@ -124,7 +124,7 @@ func mustLogin(t *testing.T, u *mcptest.OAuthUpstream, env []string, config stri
 	t.Helper()
 	code, stderr := login(t, u, env, append([]string{"fake", "--no-browser", "-c", config}, args...)...)
 	if code != 0 {
-		t.Fatalf("auth login exit code = %d, want 0\nstderr:\n%s", code, stderr)
+		t.Fatalf("auth login exit code = %d, want 0", code)
 	}
 	return stderr
 }
@@ -141,12 +141,12 @@ type loginRun struct {
 // env, which must exit within timeout.
 func startLogin(t *testing.T, timeout time.Duration, env []string, args ...string) *loginRun {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	t.Cleanup(cancel)
 	l := &loginRun{ctx: ctx, deadline: time.Now().Add(timeout), stderr: &syncBuffer{}, exit: make(chan int, 1)}
 	go func() {
 		l.exit <- cli.Run(ctx, append([]string{"sprut", "auth", "login"}, args...), env,
-			strings.NewReader(""), io.Discard, l.stderr)
+			strings.NewReader(""), io.Discard, io.MultiWriter(l.stderr, testLog(t, "sprut auth login")))
 	}()
 	return l
 }
@@ -165,7 +165,7 @@ func (l *loginRun) authURL(t *testing.T, u *mcptest.OAuthUpstream) *url.URL {
 		return link != ""
 	})
 	if !found {
-		t.Fatalf("no authorization URL on stderr:\n%s", l.stderr)
+		t.Fatalf("no authorization URL on stderr")
 	}
 	if link == "" {
 		return nil
@@ -182,8 +182,8 @@ func (l *loginRun) mustAuthURL(t *testing.T, u *mcptest.OAuthUpstream) *url.URL 
 	t.Helper()
 	link := l.authURL(t, u)
 	if link == nil {
-		code, stderr := l.wait(t)
-		t.Fatalf("auth login exited %d before printing the authorization URL\nstderr:\n%s", code, stderr)
+		code, _ := l.wait(t)
+		t.Fatalf("auth login exited %d before printing the authorization URL", code)
 	}
 	return link
 }
@@ -221,7 +221,7 @@ func (l *loginRun) wait(t *testing.T) (code int, stderr string) {
 	select {
 	case code = <-l.exit:
 	case <-time.After(time.Until(l.deadline) + 10*time.Second):
-		t.Fatalf("sprut auth login did not exit\nstderr:\n%s", l.stderr)
+		t.Fatalf("sprut auth login did not exit")
 	}
 	return code, l.stderr.String()
 }
@@ -349,11 +349,11 @@ func (l *loggedIn) startEcho(t *testing.T, g *gateway) <-chan *callOutcome {
 	rejected := l.Rejected()
 	done := make(chan *callOutcome, 1)
 	go func() {
-		res, err := g.callEcho(context.Background())
+		res, err := g.callEcho(t.Context())
 		done <- &callOutcome{res, err}
 	}()
 	if !eventually(func() bool { return l.Rejected() > rejected }) {
-		t.Fatalf("the call was not rejected\nstderr:\n%s", g.stderr)
+		t.Fatalf("the call was not rejected")
 	}
 	return done
 }

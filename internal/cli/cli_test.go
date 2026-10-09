@@ -17,7 +17,7 @@ func TestVersionFlagPrintsVersionToStdout(t *testing.T) {
 			code, stdout, stderr := runSprut(t, nil, args...)
 
 			if code != 0 {
-				t.Errorf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+				t.Errorf("exit code = %d, want 0", code)
 			}
 			if !regexp.MustCompile(`^sprut version \S+\n$`).MatchString(stdout) {
 				t.Errorf("stdout = %q, want \"sprut version <version>\\n\"", stdout)
@@ -46,7 +46,7 @@ func TestHelpPrintsUsageToStdoutAndExits0(t *testing.T) {
 			code, stdout, stderr := runSprut(t, nil, tc.args...)
 
 			if code != 0 {
-				t.Errorf("exit code = %d, want 0; stderr:\n%s", code, stderr)
+				t.Errorf("exit code = %d, want 0", code)
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(stdout, want) {

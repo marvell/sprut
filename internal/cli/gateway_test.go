@@ -71,7 +71,7 @@ func startGateway(t *testing.T, configPath string, env []string, args ...string)
 // sets its era. An empty protocol is the SDK's latest.
 func startGatewayAs(t *testing.T, protocol, configPath string, env []string, args ...string) *gateway {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	// main delivers signals by cancelling cli.Run's ctx.
 	runCtx, sendSignal := context.WithCancel(ctx)
@@ -79,10 +79,11 @@ func startGatewayAs(t *testing.T, protocol, configPath string, env []string, arg
 	agentToGateway, gatewayStdin := io.Pipe()
 	gatewayStdout, gatewayToAgent := io.Pipe()
 	g := &gateway{stdout: &syncBuffer{}, stderr: &syncBuffer{}, exit: make(chan int, 1), sendSignal: sendSignal}
+	stderr := io.MultiWriter(g.stderr, testLog(t, "sprut serve"))
 
 	go func() {
 		code := cli.Run(runCtx, append([]string{"sprut", "serve", "-c", configPath}, args...), env,
-			agentToGateway, io.MultiWriter(gatewayToAgent, g.stdout), g.stderr)
+			agentToGateway, io.MultiWriter(gatewayToAgent, g.stdout), stderr)
 		_ = gatewayToAgent.Close()
 		g.exit <- code
 	}()
@@ -91,7 +92,7 @@ func startGatewayAs(t *testing.T, protocol, configPath string, env []string, arg
 	session, err := client.Connect(ctx, &mcp.IOTransport{Reader: gatewayStdout, Writer: gatewayStdin},
 		&mcp.ClientSessionOptions{ProtocolVersion: protocol})
 	if err != nil {
-		t.Fatalf("Agent failed to connect: %v\nstderr:\n%s", err, g.stderr)
+		t.Fatalf("Agent failed to connect: %v", err)
 	}
 	g.Agent = session
 	t.Cleanup(func() { _ = session.Close() })
@@ -108,10 +109,10 @@ func runSprut(t *testing.T, env []string, args ...string) (code int, stdout, std
 // runSprutOn is runSprut with stdin read from stdin.
 func runSprutOn(t *testing.T, stdin io.Reader, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	var out, errOut bytes.Buffer
-	code = cli.Run(ctx, append([]string{"sprut"}, args...), env, stdin, &out, &errOut)
+	code = cli.Run(ctx, append([]string{"sprut"}, args...), env, stdin, &out, io.MultiWriter(&errOut, testLog(t, "sprut")))
 	return code, out.String(), errOut.String()
 }
 
@@ -129,10 +130,10 @@ func (g *gateway) wantCleanExit(t *testing.T, cause string) {
 	select {
 	case code := <-g.exit:
 		if code != 0 {
-			t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, g.stderr)
+			t.Errorf("exit code = %d, want 0", code)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatalf("Gateway did not exit after %s\nstderr:\n%s", cause, g.stderr)
+		t.Fatalf("Gateway did not exit after %s", cause)
 	}
 }
 
@@ -153,7 +154,7 @@ func (g *gateway) startBlockingCall(ctx context.Context, t *testing.T, progress 
 // wantTools checks that the Agent's tools are exactly want, by name.
 func (g *gateway) wantTools(t *testing.T, want ...string) {
 	t.Helper()
-	res, err := g.Agent.ListTools(context.Background(), nil)
+	res, err := g.Agent.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
@@ -164,7 +165,7 @@ func (g *gateway) wantTools(t *testing.T, want ...string) {
 	slices.Sort(got)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
-		t.Errorf("tools = %v, want %v\nstderr:\n%s", got, want, g.stderr)
+		t.Errorf("tools = %v, want %v", got, want)
 	}
 }
 
@@ -173,7 +174,7 @@ func (g *gateway) wantTools(t *testing.T, want ...string) {
 func (g *gateway) wantLogLine(t *testing.T, level string, parts ...string) {
 	t.Helper()
 	if !g.logged(level, parts...) {
-		t.Errorf("no %s line containing all of %q; stderr:\n%s", level, parts, g.stderr)
+		t.Errorf("no %s line containing all of %q", level, parts)
 	}
 }
 
@@ -182,7 +183,7 @@ func (g *gateway) wantLogLine(t *testing.T, level string, parts ...string) {
 func (g *gateway) wantNoLogLine(t *testing.T, level string, parts ...string) {
 	t.Helper()
 	if g.logged(level, parts...) {
-		t.Errorf("a %s line contains all of %q; stderr:\n%s", level, parts, g.stderr)
+		t.Errorf("a %s line contains all of %q", level, parts)
 	}
 }
 
@@ -193,6 +194,46 @@ func (g *gateway) logged(level string, parts ...string) bool {
 		return strings.Contains(line, "level="+level+" ") &&
 			!slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) })
 	})
+}
+
+// testLog returns a writer to t's output that marks each line as the
+// stderr of cmd, so that a failure shows what sprut logged without each
+// message quoting it. Whatever sprut writes once the test has ended, when
+// writing to t would panic, is dropped.
+func testLog(t *testing.T, cmd string) io.Writer {
+	w := &lineLog{out: t.Output(), prefix: cmd + " │ ", start: true}
+	t.Cleanup(func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.out = nil
+	})
+	return w
+}
+
+// lineLog is the writer of testLog.
+type lineLog struct {
+	mu     sync.Mutex
+	out    io.Writer // nil once the test has ended
+	prefix string
+	start  bool // whether the next byte starts a line
+}
+
+func (w *lineLog) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.out == nil {
+		return len(p), nil
+	}
+	var b strings.Builder
+	for line := range strings.Lines(string(p)) {
+		if w.start {
+			b.WriteString(w.prefix)
+		}
+		b.WriteString(line)
+		w.start = strings.HasSuffix(line, "\n")
+	}
+	_, _ = io.WriteString(w.out, b.String())
+	return len(p), nil
 }
 
 // syncBuffer is a bytes.Buffer safe for concurrent use.
@@ -242,8 +283,8 @@ func (g *gateway) echo(ctx context.Context, t *testing.T) *mcp.CallToolResult {
 // wantEcho checks that a call to fake__echo succeeds.
 func (g *gateway) wantEcho(t *testing.T) {
 	t.Helper()
-	res := g.echo(context.Background(), t)
+	res := g.echo(t.Context(), t)
 	if res.IsError || resultText(t, res) != "echo: hi" {
-		t.Fatalf("fake__echo = %v, want it to echo\nstderr:\n%s", toJSON(t, res), g.stderr)
+		t.Fatalf("fake__echo = %v, want it to echo", toJSON(t, res))
 	}
 }

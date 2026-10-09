@@ -83,7 +83,7 @@ func TestServeReportsCredentialsTheAuthorizationServerRejectsWithALoginHint(t *t
 
 		l.FailRefresh("invalid_grant")
 		l.RevokeAccessTokens()
-		wantLoginHint(t, l.config, g.echo(context.Background(), t))
+		wantLoginHint(t, l.config, g.echo(t.Context(), t))
 
 		g.closeAgent(t)
 		wantNoSecrets(t, "serve stderr", g.stderr.String(), leakySecrets...)
@@ -133,7 +133,7 @@ func TestServeKeepsCredentialsWhenRenewalFailsOnTheWay(t *testing.T) {
 			l.RevokeAccessTokens()
 			// The Agent gives up on a hanging call, well before the 30s that
 			// the token request is allowed.
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			res, err := g.callEcho(ctx)
 			switch {
@@ -155,10 +155,10 @@ func TestServeKeepsCredentialsWhenRenewalFailsOnTheWay(t *testing.T) {
 			l.FailRefresh("")
 			l.Release()
 			if !eventually(func() bool {
-				res, err := g.callEcho(context.Background())
+				res, err := g.callEcho(t.Context())
 				return err == nil && !res.IsError
 			}) {
-				t.Errorf("fake__echo still fails once refreshes work\nstderr:\n%s", g.stderr)
+				t.Errorf("fake__echo still fails once refreshes work")
 			}
 			g.closeAgent(t)
 			wantNoSecrets(t, "serve stderr", g.stderr.String(), leakySecrets...)
@@ -201,7 +201,7 @@ func TestServeSavesARenewalInProgressBeforeItExits(t *testing.T) {
 	select {
 	case <-refreshing:
 	case <-time.After(10 * time.Second):
-		t.Fatalf("no refresh request\nstderr:\n%s", g.stderr)
+		t.Fatalf("no refresh request")
 	}
 
 	// Closing the Agent's side returns only once the Gateway has exited.
@@ -211,7 +211,7 @@ func TestServeSavesARenewalInProgressBeforeItExits(t *testing.T) {
 	// than this wait goes undetected.
 	select {
 	case <-g.exit:
-		t.Fatalf("Gateway exited with a renewal in progress\nstderr:\n%s", g.stderr)
+		t.Fatalf("Gateway exited with a renewal in progress")
 	case <-time.After(7 * time.Second):
 	}
 	l.Release()
@@ -229,7 +229,7 @@ func TestServeSendsNoRefreshWhenTheUpstreamNamesAnotherIssuer(t *testing.T) {
 
 	l.NameIssuer("https://other.example")
 	l.RevokeAccessTokens()
-	wantLoginHint(t, l.config, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(t.Context(), t))
 
 	if n := len(l.Refreshes()); n != 0 {
 		t.Errorf("refreshes = %d, want none", n)

@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"context"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -103,7 +102,7 @@ func TestServeReportsInsufficientScopeWithALoginHintAndTheNextLoginKeepsTheGrant
 	// The Upstream now wants a scope it didn't grant, and says so in its 401s too.
 	u.RequireScope("write")
 	u.OfferScopes("write", nil)
-	wantLoginHint(t, l.config, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(t.Context(), t))
 	g.closeAgent(t)
 
 	mustLogin(t, u, l.env, l.config)

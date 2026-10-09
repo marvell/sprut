@@ -15,7 +15,7 @@ func callAll(t *testing.T, gs ...*gateway) {
 	var wg sync.WaitGroup
 	for _, g := range gs {
 		wg.Go(func() {
-			res, err := g.callEcho(context.Background())
+			res, err := g.callEcho(t.Context())
 			wantEchoed(t, res, err)
 		})
 	}
@@ -127,7 +127,7 @@ func TestServePicksUpALoginWithoutARestart(t *testing.T) {
 
 	l.FailRefresh("invalid_grant")
 	l.RevokeAccessTokens()
-	wantLoginHint(t, l.config, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(t.Context(), t))
 
 	l.FailRefresh("")
 	mustLogin(t, l.OAuthUpstream, l.env, l.config)
@@ -147,7 +147,7 @@ func TestServeDropsCredentialsWhoseFileIsDeleted(t *testing.T) {
 		if err := os.Remove(l.creds); err != nil {
 			t.Fatal(err)
 		}
-		wantLoginHint(t, l.config, g.echo(context.Background(), t))
+		wantLoginHint(t, l.config, g.echo(t.Context(), t))
 
 		for _, auth := range l.MCPAuth()[sent:] {
 			if auth != "" {
@@ -197,7 +197,7 @@ func TestServeGivesUpWaitingForTheLockWithTheCall(t *testing.T) {
 
 	unlock := l.lockCreds(t)
 	l.RevokeAccessTokens()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if res, err := g.callEcho(ctx); err == nil {
 		t.Errorf("fake__echo = %v, want the call to end with the Agent's timeout", toJSON(t, res))

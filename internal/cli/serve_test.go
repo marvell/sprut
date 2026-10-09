@@ -27,7 +27,7 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
 
-	res, err := g.Agent.ListTools(context.Background(), nil)
+	res, err := g.Agent.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 func TestServeRoutesToolCallsToUpstreamAndReturnsResultUnchanged(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		tool string
@@ -107,7 +107,7 @@ func TestServeIdentifiesAsSprutAndAdvertisesOnlyTools(t *testing.T) {
 func TestServeLogsLogfmtAtInfoToStderrAndWritesOnlyMCPToStdout(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := g.Agent.ListTools(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestServeRoutesEachNamespacedToolToItsOwnUpstream(t *testing.T) {
 
 	g.wantTools(t, "one__echo", "one__fail", "one__whoami", "two__echo", "two__fail", "two__whoami")
 	for tool, want := range map[string]string{"one__whoami": "upstream one", "two__whoami": "upstream two"} {
-		res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: tool})
+		res, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: tool})
 		if err != nil {
 			t.Fatalf("tools/call %s: %v", tool, err)
 		}
@@ -360,13 +360,13 @@ func TestServeDryRunWithHealthyUpstreamsExits0AndStopsThem(t *testing.T) {
 
 	code, stdout, stderr := runSprut(t, nil, "serve", "--dry-run", "-c", writeConfig(t, upstreams))
 	if code != 0 {
-		t.Errorf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
+		t.Errorf("exit code = %d, want 0", code)
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty", stdout)
 	}
 	if !strings.Contains(stderr, "ready=2 failed=0 tools=4") {
-		t.Errorf("no startup summary for two ready Upstreams; stderr:\n%s", stderr)
+		t.Errorf("no startup summary for two ready Upstreams")
 	}
 	for _, name := range []string{"one", "two"} {
 		wantGone(t, filepath.Join(dir, name+".pid"))
@@ -393,13 +393,13 @@ func TestServeDryRunExits1WhenAnyUpstreamFailsOrTimesOut(t *testing.T) {
 			code, stdout, stderr := runSprut(t, nil,
 				"serve", "--dry-run", "--startup-timeout", "1s", "-c", config)
 			if code != 1 {
-				t.Errorf("exit code = %d, want 1\nstderr:\n%s", code, stderr)
+				t.Errorf("exit code = %d, want 1", code)
 			}
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
 			if !strings.Contains(stderr, "ready=1 failed=1") {
-				t.Errorf("no startup summary with the failed Upstream; stderr:\n%s", stderr)
+				t.Errorf("no startup summary with the failed Upstream")
 			}
 		})
 	}
@@ -451,7 +451,7 @@ func TestServeVerboseLogsEveryNamespacedToolAndToolCallAtDebug(t *testing.T) {
 		}
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, tool := range []string{"two__echo", "two__fail"} {
 		if _, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}}); err != nil {
 			t.Fatalf("tools/call %s: %v", tool, err)
@@ -556,7 +556,7 @@ func TestServeReportsTheExitOfAnUpstreamThatHangsUpRightAfterListingItsTools(t *
 	// would have the Gateway end the session first, which is not reported.
 	exit := []string{`msg="upstream exited"`, "upstream=quitter", `err="exit status 1"`}
 	if !eventually(func() bool { return g.logged("WARN", exit...) }) {
-		t.Fatalf("no WARN line containing all of %q; stderr:\n%s", exit, g.stderr)
+		t.Fatalf("no WARN line containing all of %q", exit)
 	}
 	g.closeAgent(t)
 }
@@ -566,7 +566,7 @@ func TestServeAnswersCallsToUnknownToolsWithAnErrorResult(t *testing.T) {
 	g := startFakeGateway(t)
 
 	for _, tool := range []string{"fake__nope", "nobody__echo", "echo"} {
-		res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}})
+		res, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"text": "x"}})
 		if err != nil {
 			t.Fatalf("tools/call %s: %v, want an isError result", tool, err)
 		}
@@ -580,7 +580,7 @@ func TestServeAnswersCallsToACrashedUpstreamWithAnErrorResultAndKeepsServing(t *
 	t.Parallel()
 	upstreams := map[string]any{"doomed": mcptest.Stdio{CrashTool: true}.Entry(t), "fake": mcptest.Stdio{}.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil, "-v")
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// The call that crashes the Upstream, then calls to the dead Upstream:
 	// it is not restarted.
@@ -611,7 +611,7 @@ func TestServeEndsCallsToAnUpstreamThatExitsWhileItsChildHoldsStdoutAndStopsTheC
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 	// Bounds the test, not the call: a call that is not ended promptly
 	// fails the timing check below.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	begin := time.Now()
@@ -637,7 +637,7 @@ func TestServePassesUpstreamProtocolErrorsThrough(t *testing.T) {
 
 	// The fake's echo answers arguments it can't decode with a protocol
 	// error, not an isError result.
-	res, err := g.Agent.CallTool(context.Background(), &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": 5}})
+	res, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": 5}})
 	if err == nil || !strings.Contains(err.Error(), "unmarshal") {
 		t.Errorf("tools/call = %v, %v; want the Upstream's protocol error", res, err)
 	}
@@ -648,7 +648,7 @@ func TestServeCancelsCallOnUpstreamWhenAgentCancelsIt(t *testing.T) {
 	progress := filepath.Join(t.TempDir(), "block")
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{BlockToolFile: progress}.Entry(t)}), nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	called := g.startBlockingCall(ctx, t, progress)
 	cancel() // the Agent sends notifications/cancelled
 
@@ -668,7 +668,7 @@ func TestServeForwardsConcurrentCallsIncludingSeveralToOneUpstream(t *testing.T)
 	upstreams := map[string]any{"one": gather.Entry(t), "two": gather.Entry(t)}
 	g := startGateway(t, writeConfig(t, upstreams), nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
 	for _, upstream := range []string{"one", "two"} {
@@ -693,7 +693,7 @@ func TestServeImposesNoTimeoutOnToolCalls(t *testing.T) {
 	// to calls.
 	g := startGateway(t, writeConfig(t, map[string]any{"fake": entry}), nil, "--startup-timeout", "1s")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	called := g.startBlockingCall(ctx, t, progress)
 
@@ -730,7 +730,7 @@ func TestServeBridgesProtocolErasBetweenAgentAndUpstream(t *testing.T) {
 				g.wantLogLine(t, "INFO", `msg="upstream ready"`, "upstream=fake", "protocol="+upstream)
 				g.wantTools(t, "fake__echo", "fake__fail")
 				g.wantLogLine(t, "INFO", `msg="agent connected"`, "protocol="+agent)
-				res, err := g.Agent.CallTool(context.Background(),
+				res, err := g.Agent.CallTool(t.Context(),
 					&mcp.CallToolParams{Name: "fake__echo", Arguments: map[string]any{"text": "hi"}})
 				if err != nil {
 					t.Fatalf("tools/call: %v", err)
@@ -749,12 +749,12 @@ func TestServeEndsCallWithAnErrorResultWhenModernUpstreamAsksForInteractiveInput
 		"fake": mcptest.Stdio{Protocol: mcptest.Modern, AskTool: true}.Entry(t),
 	})
 	g := startGateway(t, path, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	res, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "fake__ask"})
 	if err != nil {
-		t.Fatalf("tools/call: %v\nstderr:\n%s", err, g.stderr)
+		t.Fatalf("tools/call: %v", err)
 	}
 	if text := resultText(t, res); !res.IsError || !strings.Contains(text, "interactive input is not supported by the gateway") {
 		t.Errorf("result = %q (isError %v), want an isError result saying interactive input is not supported by the Gateway", text, res.IsError)
@@ -775,7 +775,7 @@ func TestServeServesHTTPUpstreamToolsAndRoutesCallsToIt(t *testing.T) {
 
 			g.wantLogLine(t, "INFO", `msg="upstream ready"`, "upstream=remote", "tools=2", "protocol="+protocol)
 			g.wantTools(t, "fake__echo", "fake__fail", "remote__echo", "remote__fail")
-			res, err := g.Agent.CallTool(context.Background(),
+			res, err := g.Agent.CallTool(t.Context(),
 				&mcp.CallToolParams{Name: "remote__echo", Arguments: map[string]any{"text": "hi"}})
 			if err != nil {
 				t.Fatalf("tools/call: %v", err)
@@ -800,7 +800,7 @@ func TestServeAnswersCallsToAnHTTPUpstreamThatIsGoneWithAnErrorResult(t *testing
 			g.wantTools(t, "remote__echo", "remote__fail")
 
 			remote.Close()
-			res, err := g.Agent.CallTool(context.Background(),
+			res, err := g.Agent.CallTool(t.Context(),
 				&mcp.CallToolParams{Name: "remote__echo", Arguments: map[string]any{"text": "hi"}})
 
 			if err != nil {
@@ -822,7 +822,7 @@ func TestServeSendsConfiguredHeadersOnEveryHTTPRequest(t *testing.T) {
 		"headers": map[string]string{"Authorization": "Bearer ${TOKEN}", "X-Static": "yes"},
 	}}), []string{"TOKEN=secret"})
 
-	if _, err := g.Agent.CallTool(context.Background(),
+	if _, err := g.Agent.CallTool(t.Context(),
 		&mcp.CallToolParams{Name: "remote__echo", Arguments: map[string]any{"text": "hi"}}); err != nil {
 		t.Fatalf("tools/call: %v", err)
 	}
@@ -1036,10 +1036,10 @@ func TestServeLogsWhereItReadsTheConfig(t *testing.T) {
 			t.Parallel()
 			code, _, stderr := runSprut(t, tc.env, append([]string{"serve", "--dry-run"}, tc.args...)...)
 			if code != 0 {
-				t.Fatalf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
+				t.Fatalf("exit code = %d, want 0", code)
 			}
 			if !regexp.MustCompile(`level=INFO msg="config loaded" path=` + regexp.QuoteMeta(tc.want) + `( |$)`).MatchString(stderr) {
-				t.Errorf("no INFO line saying the config was loaded from %s; stderr:\n%s", tc.want, stderr)
+				t.Errorf("no INFO line saying the config was loaded from %s", tc.want)
 			}
 		})
 	}

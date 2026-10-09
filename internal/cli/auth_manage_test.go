@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,10 +28,10 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	loginAs(t, u, state, config, "stale").makeStale(t)
 	loginAs(t, u, state, config, "dead").makeDead(t)
 
-	code, stdout, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "auth", "status", "-c", config)
+	code, stdout, _ := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "auth", "status", "-c", config)
 
 	if code != 0 {
-		t.Fatalf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
+		t.Fatalf("exit code = %d, want 0", code)
 	}
 	stamp := `\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\S*`
 	want := []string{
@@ -63,9 +62,9 @@ func TestConfigFlagGoesBeforeOrAfterTheCommand(t *testing.T) {
 		{"auth", "-c", config, "status"},
 		{"auth", "status", "-c", config},
 	} {
-		code, stdout, stderr := runSprut(t, env, args...)
+		code, stdout, _ := runSprut(t, env, args...)
 		if code != 0 || stdout != "remote: no credentials\n" {
-			t.Errorf("sprut %q: exit code = %d, stdout = %q, want 0 listing remote\nstderr:\n%s", args, code, stdout, stderr)
+			t.Errorf("sprut %q: exit code = %d, stdout = %q, want 0 listing remote", args, code, stdout)
 		}
 	}
 }
@@ -77,11 +76,11 @@ func TestAuthLogoutStopsARunningServeFromUsingTheCredentials(t *testing.T) {
 	g.wantEcho(t)
 	sent := len(l.MCPAuth())
 
-	code, stdout, stderr := runSprut(t, l.env, "auth", "logout", "fake", "-c", l.config)
+	code, stdout, _ := runSprut(t, l.env, "auth", "logout", "fake", "-c", l.config)
 	if code != 0 || !strings.Contains(stdout, "fake: logged out") {
-		t.Fatalf("exit code = %d, stdout = %q, want 0 saying fake is logged out\nstderr:\n%s", code, stdout, stderr)
+		t.Fatalf("exit code = %d, stdout = %q, want 0 saying fake is logged out", code, stdout)
 	}
-	wantLoginHint(t, l.config, g.echo(context.Background(), t))
+	wantLoginHint(t, l.config, g.echo(t.Context(), t))
 	for _, auth := range l.MCPAuth()[sent:] {
 		if auth != "" {
 			t.Errorf("a request after the logout carried Authorization %q, want none", auth)
@@ -104,7 +103,7 @@ func TestAuthLogoutExits1ForAnUpstreamThatIsNotAnOAuthUpstreamInTheConfig(t *tes
 	for _, name := range []string{"local", "nope"} {
 		code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "auth", "logout", name, "-c", config)
 		if code != 1 || !strings.Contains(stderr, `"`+name+`"`) {
-			t.Errorf("logout %s: exit code = %d, want 1 naming it\nstderr:\n%s", name, code, stderr)
+			t.Errorf("logout %s: exit code = %d, want 1 naming it", name, code)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(state, "sprut")); err == nil {
@@ -135,7 +134,7 @@ func TestAuthLoginWithoutUpstreamsLogsInOnlyThoseThatNeedIt(t *testing.T) {
 	code, stderr := startLogin(t, 30*time.Second, env, "--no-browser", "-c", config, "-v").playLogins(t, u)
 
 	if code != 0 {
-		t.Fatalf("exit code = %d, want 0\nstderr:\n%s", code, stderr)
+		t.Fatalf("exit code = %d, want 0", code)
 	}
 	for _, name := range []string{"none", "dead"} {
 		if !strings.Contains(stderr, "Logging in to "+name+".") {
@@ -180,7 +179,7 @@ func TestAuthLoginExits1WhenAnyLoginFailsAndStillLogsInTheOthers(t *testing.T) {
 	code, stderr := l.playLogins(t, working)
 
 	if code != 1 || !strings.Contains(stderr, `upstream "a"`) || !strings.Contains(stderr, "access_denied") {
-		t.Errorf("exit code = %d, want 1 reporting a's failure\nstderr:\n%s", code, stderr)
+		t.Errorf("exit code = %d, want 1 reporting a's failure", code)
 	}
 	_, stdout, _ := runSprut(t, env, "auth", "status", "-c", config)
 	if !strings.Contains(stdout, "b: logged in") || !strings.Contains(stdout, "a: no credentials") {
