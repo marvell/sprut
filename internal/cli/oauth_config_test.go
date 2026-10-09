@@ -6,24 +6,26 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/marvell/sprut/internal/mcptest"
 )
 
 func TestAuthLoginWithAPreRegisteredClientAndServeRenewingWithTheSecretFromTheConfig(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{
 		"url":   u.URL,
-		"oauth": map[string]any{"clientId": fakeClientID, "clientSecret": "${SECRET}"},
+		"oauth": map[string]any{"clientId": mcptest.ClientID, "clientSecret": "${SECRET}"},
 	}})
 	state := t.TempDir()
-	creds := &loggedIn{oauthUpstream: u, creds: filepath.Join(state, "sprut", "credentials", "fake.json")}
+	creds := &loggedIn{OAuthUpstream: u, creds: filepath.Join(state, "sprut", "credentials", "fake.json")}
 
-	env := []string{"XDG_STATE_HOME=" + state, "SECRET=" + fakeClientSecret}
+	env := []string{"XDG_STATE_HOME=" + state, "SECRET=" + mcptest.ClientSecret}
 	mustLogin(t, u, env, config)
 	if n := u.Registrations(); n != 0 {
 		t.Errorf("client registrations = %d, want 0", n)
 	}
-	wantNoSecrets(t, "Credentials file", creds.readCreds(t), fakeClientSecret)
+	wantNoSecrets(t, "Credentials file", creds.readCreds(t), mcptest.ClientSecret)
 
 	// The secret is rotated in the Config, and the Credentials keep working.
 	const rotated = "rotated-client-secret-0b7a"
@@ -38,7 +40,7 @@ func TestAuthLoginWithAPreRegisteredClientAndServeRenewingWithTheSecretFromTheCo
 	if len(refreshes) != 1 || refreshes[0].Get("client_secret") != rotated {
 		t.Errorf("refreshes = %v, want one with the rotated secret", refreshes)
 	}
-	wantNoSecrets(t, "Credentials file", creds.readCreds(t), fakeClientSecret, rotated)
+	wantNoSecrets(t, "Credentials file", creds.readCreds(t), mcptest.ClientSecret, rotated)
 }
 
 func TestAuthLoginRequestsScopes(t *testing.T) {
@@ -65,7 +67,7 @@ func TestAuthLoginRequestsScopes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			u := startOAuthUpstream(t)
+			u := mcptest.StartOAuth(t)
 			u.OfferScopes(tt.challenge, tt.supported)
 			if tt.offline {
 				u.AdvertiseOfflineAccess()
@@ -92,7 +94,7 @@ func sameScopes(a, b string) bool {
 
 func TestServeReportsInsufficientScopeWithALoginHintAndTheNextLoginKeepsTheGrantedScopes(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	u.OfferScopes("read", nil)
 	l := logInTo(t, u, 3600)
 	g := startGateway(t, l.config, l.env)
@@ -123,35 +125,35 @@ func TestServeUsesCredentialsOnlyForWhatTheyWereIssuedFor(t *testing.T) {
 		needLogin bool
 	}{
 		{name: "changed url", localhost: true, needLogin: true},
-		{name: "added oauth.clientId", serve: map[string]any{"clientId": fakeClientID}, needLogin: true},
+		{name: "added oauth.clientId", serve: map[string]any{"clientId": mcptest.ClientID}, needLogin: true},
 		{
 			name:      "changed oauth.clientId",
-			login:     map[string]any{"clientId": fakeClientID, "clientSecret": fakeClientSecret},
-			serve:     map[string]any{"clientId": "other-client", "clientSecret": fakeClientSecret},
+			login:     map[string]any{"clientId": mcptest.ClientID, "clientSecret": mcptest.ClientSecret},
+			serve:     map[string]any{"clientId": "other-client", "clientSecret": mcptest.ClientSecret},
 			needLogin: true,
 		},
-		{name: "added oauth.scopes", serve: map[string]any{"scopes": []string{fakeScope}}, needLogin: true},
+		{name: "added oauth.scopes", serve: map[string]any{"scopes": []string{mcptest.Scope}}, needLogin: true},
 		{
 			name:      "changed oauth.scopes",
-			login:     map[string]any{"scopes": []string{fakeScope}},
-			serve:     map[string]any{"scopes": []string{fakeScope, "admin"}},
+			login:     map[string]any{"scopes": []string{mcptest.Scope}},
+			serve:     map[string]any{"scopes": []string{mcptest.Scope, "admin"}},
 			needLogin: true,
 		},
 		{
 			name:  "reordered oauth.scopes",
-			login: map[string]any{"scopes": []string{fakeScope, "admin"}},
-			serve: map[string]any{"scopes": []string{"admin", fakeScope}},
+			login: map[string]any{"scopes": []string{mcptest.Scope, "admin"}},
+			serve: map[string]any{"scopes": []string{"admin", mcptest.Scope}},
 		},
 		{
 			name:  "changed oauth.clientSecret",
-			login: map[string]any{"clientId": fakeClientID, "clientSecret": fakeClientSecret},
-			serve: map[string]any{"clientId": fakeClientID, "clientSecret": "rotated-client-secret-0b7a"},
+			login: map[string]any{"clientId": mcptest.ClientID, "clientSecret": mcptest.ClientSecret},
+			serve: map[string]any{"clientId": mcptest.ClientID, "clientSecret": "rotated-client-secret-0b7a"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			u := startOAuthUpstream(t)
+			u := mcptest.StartOAuth(t)
 			env := []string{"XDG_STATE_HOME=" + t.TempDir()}
 			config := writeConfig(t, map[string]any{"fake": upstreamEntry(u.URL, tt.login)})
 			mustLogin(t, u, env, config)

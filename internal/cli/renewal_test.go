@@ -9,13 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marvell/sprut/internal/mcptest"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // loggedIn is an OAuth Upstream, "fake", that `sprut auth login` has stored
 // Credentials for.
 type loggedIn struct {
-	*oauthUpstream
+	*mcptest.OAuthUpstream
 	config string
 	env    []string
 	creds  string // the path of the Credentials file
@@ -25,11 +27,11 @@ type loggedIn struct {
 // seconds, and logs in to it.
 func logIn(t *testing.T, expiresIn int) *loggedIn {
 	t.Helper()
-	return logInTo(t, startOAuthUpstream(t), expiresIn)
+	return logInTo(t, mcptest.StartOAuth(t), expiresIn)
 }
 
 // logInTo logs in to u, whose access tokens live for expiresIn seconds.
-func logInTo(t *testing.T, u *oauthUpstream, expiresIn int) *loggedIn {
+func logInTo(t *testing.T, u *mcptest.OAuthUpstream, expiresIn int) *loggedIn {
 	t.Helper()
 	u.ExpireIn(expiresIn)
 	return loginAs(t, u, t.TempDir(), writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}}), "fake")
@@ -53,9 +55,9 @@ func (l *loggedIn) wantCredsUnchanged(t *testing.T, before string) {
 	}
 }
 
-// leakySecrets are fakeSecrets and what the fake Authorization Server says
+// leakySecrets are mcptest.Secrets and what the fake Authorization Server says
 // around them in an error_description.
-var leakySecrets = append(slices.Clone(fakeSecrets), "of client")
+var leakySecrets = append(slices.Clone(mcptest.Secrets), "of client")
 
 // callEcho calls fake__echo under ctx.
 func (g *gateway) callEcho(ctx context.Context) (*mcp.CallToolResult, error) {
@@ -112,7 +114,7 @@ func TestServeRenewsCredentialsWhenTheUpstreamAnswers401(t *testing.T) {
 	}
 	g.wantLogLine(t, "DEBUG", `msg="credentials renewed"`, "upstream=fake", "expires=")
 	g.closeAgent(t)
-	wantNoSecrets(t, "serve stderr", g.stderr.String(), fakeSecrets...)
+	wantNoSecrets(t, "serve stderr", g.stderr.String(), mcptest.Secrets...)
 }
 
 // Access tokens that live for 2s are always within the 5 minutes before
@@ -139,7 +141,7 @@ func TestServeRenewsCredentialsBeforeTheyExpireWithTheResource(t *testing.T) {
 			t.Errorf("refresh %d: resource = %q, want %q", i, got, l.URL)
 		}
 	}
-	if creds := l.readCreds(t); !strings.Contains(creds, fakeAccessToken+"-") {
+	if creds := l.readCreds(t); !strings.Contains(creds, mcptest.AccessToken+"-") {
 		t.Errorf("the Credentials file does not hold a renewed access token:\n%s", creds)
 	}
 	g.closeAgent(t)
@@ -191,7 +193,7 @@ func TestServeReportsCredentialsTheAuthorizationServerRejectsWithALoginHint(t *t
 
 func TestServeSkipsAnUpstreamWhoseCredentialsExpiredWithoutARefreshToken(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	u.IssueNoRefreshToken()
 	l := logInTo(t, u, 1)
 	time.Sleep(1100 * time.Millisecond) // past its expiry
@@ -280,7 +282,7 @@ func TestServeSavesARenewalInProgressBeforeItExits(t *testing.T) {
 	var once sync.Once
 	l.OnRefresh(func() {
 		once.Do(func() { close(refreshing) })
-		<-l.release // until Release, which the fake's cleanup also calls
+		<-l.Released() // until Release, which the fake's cleanup also calls
 	})
 
 	g := startGateway(t, l.config, l.env, "--startup-timeout", "1s")
@@ -303,7 +305,7 @@ func TestServeSavesARenewalInProgressBeforeItExits(t *testing.T) {
 	}
 	l.Release()
 	g.wantCleanExit(t, "EOF on stdin")
-	if creds := l.readCreds(t); !strings.Contains(creds, `"refresh_token":"`+fakeRefreshToken+`-2"`) {
+	if creds := l.readCreds(t); !strings.Contains(creds, `"refresh_token":"`+mcptest.RefreshToken+`-2"`) {
 		t.Errorf("Credentials = %s, want the rotated refresh token", creds)
 	}
 }

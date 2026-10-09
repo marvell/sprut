@@ -12,13 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marvell/sprut/internal/mcptest"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // wantOneRefreshPerRotation checks that no refresh token was sent to the
 // Authorization Server twice: a second refresh with one would mean that
 // two processes renewed the same Credentials.
-func wantOneRefreshPerRotation(t *testing.T, u *oauthUpstream) {
+func wantOneRefreshPerRotation(t *testing.T, u *mcptest.OAuthUpstream) {
 	t.Helper()
 	seen := map[string]bool{}
 	for _, form := range u.Refreshes() {
@@ -176,7 +178,7 @@ func TestServeRenewsOnceWhileAnotherWritesTheCredentialsWithARename(t *testing.T
 		r := <-done
 		wantEchoed(t, r.res, r.err)
 	}
-	wantOneRefreshPerRotation(t, l.oauthUpstream)
+	wantOneRefreshPerRotation(t, l.OAuthUpstream)
 	a.closeAgent(t)
 	c.closeAgent(t)
 }
@@ -193,7 +195,7 @@ func TestServeKeepsCredentialsThatAnotherProcessRotatedOnInvalidGrant(t *testing
 	var first sync.Once
 	l.OnRefresh(func() {
 		first.Do(func() {
-			rotated := l.issue() // as a refresh by another process would
+			rotated := l.Issue() // as a refresh by another process would
 			l.rewriteCreds(t, func(fields map[string]any) {
 				fields["access_token"] = rotated["access_token"]
 				fields["refresh_token"] = rotated["refresh_token"]
@@ -221,7 +223,7 @@ func TestServePicksUpALoginWithoutARestart(t *testing.T) {
 	wantLoginHint(t, l.config, g.echo(context.Background(), t))
 
 	l.FailRefresh("")
-	mustLogin(t, l.oauthUpstream, l.env, l.config)
+	mustLogin(t, l.OAuthUpstream, l.env, l.config)
 	g.wantEcho(t)
 	g.closeAgent(t)
 }

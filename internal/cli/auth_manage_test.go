@@ -16,10 +16,10 @@ import (
 
 // loginAs logs in to u as the Upstream name of config, with its
 // Credentials under state, and returns them.
-func loginAs(t *testing.T, u *oauthUpstream, state, config, name string) *loggedIn {
+func loginAs(t *testing.T, u *mcptest.OAuthUpstream, state, config, name string) *loggedIn {
 	t.Helper()
 	l := &loggedIn{
-		oauthUpstream: u,
+		OAuthUpstream: u,
 		config:        config,
 		env:           []string{"XDG_STATE_HOME=" + state},
 		creds:         filepath.Join(state, "sprut", "credentials", name+".json"),
@@ -48,7 +48,7 @@ func (l *loggedIn) makeDead(t *testing.T) {
 
 func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	state := t.TempDir()
 	config := writeConfig(t, map[string]any{
 		"none":  map[string]any{"url": u.URL},
@@ -82,7 +82,7 @@ func TestAuthStatusReportsEachOAuthUpstream(t *testing.T) {
 			t.Errorf("line %d = %q, want it to match %q", i, got[i], pattern)
 		}
 	}
-	wantNoSecrets(t, "auth status stdout", stdout, fakeSecrets...)
+	wantNoSecrets(t, "auth status stdout", stdout, mcptest.Secrets...)
 }
 
 func TestConfigFlagGoesBeforeOrAfterTheCommand(t *testing.T) {
@@ -147,7 +147,7 @@ func TestAuthLogoutExits1ForAnUpstreamThatIsNotAnOAuthUpstreamInTheConfig(t *tes
 // playLogins waits for l to exit, opening each authorization URL of the
 // Authorization Server of u that it prints, as the user would. It returns
 // sprut's exit code and stderr.
-func (l *loginRun) playLogins(t *testing.T, u *oauthUpstream) (code int, stderr string) {
+func (l *loginRun) playLogins(t *testing.T, u *mcptest.OAuthUpstream) (code int, stderr string) {
 	t.Helper()
 	pattern := authURLPattern(u.Base)
 	for opened := 0; ; opened++ {
@@ -165,9 +165,9 @@ func (l *loginRun) playLogins(t *testing.T, u *oauthUpstream) (code int, stderr 
 
 func TestAuthLoginWithoutUpstreamsLogsInOnlyThoseThatNeedIt(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	// Of its own, as the fake honours only the refresh token it issued last.
-	renewable := startOAuthUpstream(t)
+	renewable := mcptest.StartOAuth(t)
 	state := t.TempDir()
 	env := []string{"XDG_STATE_HOME=" + state}
 	config := writeConfig(t, map[string]any{
@@ -211,14 +211,14 @@ func TestAuthLoginWithoutUpstreamsLogsInOnlyThoseThatNeedIt(t *testing.T) {
 			t.Errorf("after the login, auth status says %q, want logged in", line)
 		}
 	}
-	wantNoSecrets(t, "auth login stderr", stderr, fakeSecrets...)
+	wantNoSecrets(t, "auth login stderr", stderr, mcptest.Secrets...)
 }
 
 func TestAuthLoginExits1WhenAnyLoginFailsAndStillLogsInTheOthers(t *testing.T) {
 	t.Parallel()
-	failing := startOAuthUpstream(t)
+	failing := mcptest.StartOAuth(t)
 	failing.RedirectWith(url.Values{"error": {"access_denied"}})
-	working := startOAuthUpstream(t)
+	working := mcptest.StartOAuth(t)
 	state := t.TempDir()
 	env := []string{"XDG_STATE_HOME=" + state}
 	config := writeConfig(t, map[string]any{
@@ -255,7 +255,7 @@ func TestServeRefusesARedirectToAnotherOriginWithoutSendingTheToken(t *testing.T
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			u := startOAuthUpstreamOn(t, "localhost")
+			u := mcptest.StartOAuthOn(t, "localhost")
 			l := logInTo(t, u, 3600)
 			proxy := mcptest.StartHTTP(t, "")
 			u.RedirectMCP(tc.target(strings.TrimPrefix(u.Base, "http://localhost:")))
@@ -269,7 +269,7 @@ func TestServeRefusesARedirectToAnotherOriginWithoutSendingTheToken(t *testing.T
 			for _, h := range proxy.Headers() {
 				t.Errorf("the redirect reached the proxy (Authorization %q), want it refused before", h.Get("Authorization"))
 			}
-			wantNoSecrets(t, "serve stderr", g.stderr.String(), fakeSecrets...)
+			wantNoSecrets(t, "serve stderr", g.stderr.String(), mcptest.Secrets...)
 		})
 	}
 }

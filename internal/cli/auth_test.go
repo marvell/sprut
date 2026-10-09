@@ -15,7 +15,7 @@ import (
 
 func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 	state := t.TempDir()
 	env := []string{"XDG_STATE_HOME=" + state}
@@ -48,23 +48,23 @@ func TestAuthLoginStoresCredentialsThatServeSendsFromTheFirstRequest(t *testing.
 		t.Fatal("the Upstream got no requests from serve")
 	}
 	for i, got := range served {
-		if got != "Bearer "+fakeAccessToken {
+		if got != "Bearer "+mcptest.AccessToken {
 			t.Errorf("request %d from serve: Authorization = %q, want the stored access token", i, got)
 		}
 	}
-	wantNoSecrets(t, "auth login stderr", stderr, fakeSecrets...)
-	wantNoSecrets(t, "serve stderr", g.stderr.String(), fakeSecrets...)
+	wantNoSecrets(t, "auth login stderr", stderr, mcptest.Secrets...)
+	wantNoSecrets(t, "serve stderr", g.stderr.String(), mcptest.Secrets...)
 }
 
 func TestAuthLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 
 	stderr := mustLogin(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, config)
 	at := authURLPattern(u.Base).FindStringIndex(stderr)
 	before := stderr[:at[0]]
-	for _, want := range []string{"authorization server: " + u.Base + "\n", "scopes: " + fakeScope + "\n"} {
+	for _, want := range []string{"authorization server: " + u.Base + "\n", "scopes: " + mcptest.Scope + "\n"} {
 		if !strings.Contains(before, want) {
 			t.Errorf("stderr before the authorization URL lacks %q:\n%s", want, stderr)
 		}
@@ -73,7 +73,7 @@ func TestAuthLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
 
 func TestAuthLoginIgnoresCallbacksThatAreNotTheOneItWaitsFor(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 	l := startLogin(t, 30*time.Second, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-c", config)
 	link := l.mustAuthURL(t, u)
@@ -82,10 +82,10 @@ func TestAuthLoginIgnoresCallbacksThatAreNotTheOneItWaitsFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid := callback.Query()
-	valid.Set("code", fakeCode)
+	valid.Set("code", mcptest.Code)
 	valid.Set("state", link.Query().Get("state"))
 	wrongState := callback.Query()
-	wrongState.Set("code", fakeCode)
+	wrongState.Set("code", mcptest.Code)
 	wrongState.Set("state", "forged")
 
 	for _, tc := range []struct {
@@ -121,25 +121,25 @@ func TestAuthLoginChecksTheIssuerOfTheAuthorizationResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		advertise bool
-		redirect  func(u *oauthUpstream) url.Values
+		redirect  func(u *mcptest.OAuthUpstream) url.Values
 		wantCode  int
 	}{
-		{"matching iss", false, func(u *oauthUpstream) url.Values {
-			return url.Values{"code": {fakeCode}, "iss": {u.Base}}
+		{"matching iss", false, func(u *mcptest.OAuthUpstream) url.Values {
+			return url.Values{"code": {mcptest.Code}, "iss": {u.Base}}
 		}, 0},
-		{"mismatched iss", false, func(*oauthUpstream) url.Values {
-			return url.Values{"code": {fakeCode}, "iss": {"https://evil.example"}}
+		{"mismatched iss", false, func(*mcptest.OAuthUpstream) url.Values {
+			return url.Values{"code": {mcptest.Code}, "iss": {"https://evil.example"}}
 		}, 1},
-		{"error with a mismatched iss", false, func(*oauthUpstream) url.Values {
+		{"error with a mismatched iss", false, func(*mcptest.OAuthUpstream) url.Values {
 			return url.Values{"error": {"access_denied"}, "error_description": {description}, "iss": {"https://evil.example"}}
 		}, 1},
-		{"advertised iss missing from an error", true, func(*oauthUpstream) url.Values {
+		{"advertised iss missing from an error", true, func(*mcptest.OAuthUpstream) url.Values {
 			return url.Values{"error": {"access_denied"}, "error_description": {description}}
 		}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			u := startOAuthUpstream(t)
+			u := mcptest.StartOAuth(t)
 			if tc.advertise {
 				u.AdvertiseIss()
 			}
@@ -175,7 +175,7 @@ func TestAuthLoginChecksTheIssuerOfTheAuthorizationResponse(t *testing.T) {
 // own 5 minutes are the same error.
 func TestAuthLoginWithoutACallbackTimesOutWithExit1(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 	l := startLogin(t, 3*time.Second, []string{"XDG_STATE_HOME=" + t.TempDir()}, "fake", "--no-browser", "-c", config)
 	l.mustAuthURL(t, u)
@@ -212,7 +212,7 @@ func wantNoSecrets(t *testing.T, what, out string, secrets ...string) {
 
 func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{
 		"fake":  map[string]any{"url": u.URL},
 		"other": mcptest.Stdio{}.Entry(t),
@@ -239,7 +239,7 @@ func TestServeSkipsOAuthUpstreamWithoutCredentialsWithALoginHint(t *testing.T) {
 // where sprut looks by default.
 func TestTheLoginHintNamesTheConfigAsAShellElsewhereFindsIt(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	upstreams := map[string]any{"fake": map[string]any{"url": u.URL}}
 	state := "XDG_STATE_HOME=" + t.TempDir()
 
@@ -285,7 +285,7 @@ func TestTheLoginHintNamesTheConfigAsAShellElsewhereFindsIt(t *testing.T) {
 // on a host that is not a loopback address.
 func TestOAuthOverPlainHTTPToANonLoopbackHostIsRefused(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	config := writeConfig(t, map[string]any{"remote": map[string]any{"url": "http://remote.invalid/mcp"}})
 	env := []string{"HTTP_PROXY=" + u.Base, "XDG_STATE_HOME=" + t.TempDir()}
 
@@ -307,7 +307,7 @@ func TestOAuthOverPlainHTTPToANonLoopbackHostIsRefused(t *testing.T) {
 
 func TestAuthLoginExits1ForAnUpstreamThatIsNotAnOAuthUpstream(t *testing.T) {
 	t.Parallel()
-	u := startOAuthUpstream(t)
+	u := mcptest.StartOAuth(t)
 	for _, tc := range []struct {
 		name   string
 		entry  map[string]any

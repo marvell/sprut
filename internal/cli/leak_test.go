@@ -3,6 +3,8 @@ package cli_test
 import (
 	"context"
 	"testing"
+
+	"github.com/marvell/sprut/internal/mcptest"
 )
 
 // The fake Authorization Server echoes every secret it knows in its errors,
@@ -14,7 +16,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 	for _, how := range []string{"json", "text"} {
 		t.Run("client registration, "+how, func(t *testing.T) {
 			t.Parallel()
-			u := startOAuthUpstream(t)
+			u := mcptest.StartOAuth(t)
 			u.FailRegistration(how)
 			config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 
@@ -28,7 +30,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 		})
 		t.Run("code exchange, "+how, func(t *testing.T) {
 			t.Parallel()
-			u := startOAuthUpstream(t)
+			u := mcptest.StartOAuth(t)
 			u.FailCodeExchange(how)
 			config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
 

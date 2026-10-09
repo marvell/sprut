@@ -1,0 +1,547 @@
+package mcptest
+
+import (
+	"cmp"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"maps"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// The secrets the fake Authorization Server hands out, distinctive enough
+// that finding one in sprut's output can only mean a leak.
+const (
+	ClientID     = "fake-client"
+	ClientSecret = "fake-client-secret-c3f0"
+	Code         = "fake-auth-code-55e2"
+	AccessToken  = "fake-access-token-7d1e"
+	RefreshToken = "fake-refresh-token-91ab"
+	Scope        = "mcp:tools"
+)
+
+// Secrets are every secret of the fake Authorization Server.
+var Secrets = []string{ClientSecret, Code, AccessToken, RefreshToken}
+
+// OAuthUpstream is a fake OAuth Upstream and its Authorization Server on one
+// httptest server: Protected Resource Metadata, Authorization Server
+// metadata, Dynamic Client Registration, an authorization endpoint that
+// redirects straight to the callback, a token endpoint that also refreshes,
+// rotating the refresh token, and an MCP endpoint at /mcp that answers 401
+// to any request without a live access token.
+//
+// It honours only the refresh token it issued last, so one fake serves one
+// set of Credentials that is renewed; renewable Credentials of another
+// Upstream need a fake of their own.
+type OAuthUpstream struct {
+	Base string // the server's origin, which is also the issuer
+	URL  string // the MCP endpoint
+
+	mu         sync.Mutex
+	challenge  string     // PKCE code challenge of the last authorization request
+	grantTypes []string   // of the last client registration
+	appType    string     // application_type of the last client registration
+	redirect   url.Values // added to the callback in place of the code
+	issParam   bool       // whether the metadata says the callback carries iss
+	mcpAuth    []string   // the Authorization header of each request to /mcp
+	rejected   int        // requests to /mcp answered 401
+
+	registrations  int        // client registrations so far
+	secret         string     // the client secret the token endpoint accepts
+	challengeScope string     // the scope a 401 names, if any
+	supported      []string   // the Protected Resource Metadata's scopes_supported; nil leaves it out
+	offline        bool       // whether the Authorization Server advertises offline_access
+	authorizeQuery url.Values // of the last authorization request, whose scope tokens are issued with
+	requireScope   string     // the scope /mcp answers 403 insufficient_scope without, if any
+
+	prmIssuer string               // the issuer the Protected Resource Metadata names, if not Base
+	expiresIn int                  // of each access token issued, in seconds
+	live      map[string]liveToken // access tokens issued and not revoked
+	refresh   string               // the one refresh token that works
+	issued    int                  // access tokens issued so far
+	refreshes []url.Values         // the form of each refresh request
+	failWith  string               // how refresh requests fail, if they do (see FailRefresh)
+	release   chan struct{}        // closed when hanging refresh requests may end
+	noRefresh bool                 // whether tokens are issued without a refresh token
+	onRefresh func()               // runs before each refresh request is answered, if set
+
+	redirectTo string // where /mcp redirects requests with a live access token, if anywhere
+	// how client registrations and code exchanges fail, if they do (see
+	// FailRegistration and FailCodeExchange)
+	failRegister, failExchange string
+}
+
+// StartOAuth starts a fake OAuth Upstream, which stops when the test ends.
+func StartOAuth(t testing.TB) *OAuthUpstream {
+	t.Helper()
+	return StartOAuthOn(t, "")
+}
+
+// StartOAuthOn is StartOAuth with host in its URLs in place of 127.0.0.1,
+// if set: on localhost, it has subdomains for a proxy to stand in for. It is
+// always plain HTTP: seam 1 can't make sprut trust a test certificate, so
+// no fake Upstream is on HTTPS.
+func StartOAuthOn(t testing.TB, host string) *OAuthUpstream {
+	t.Helper()
+	u := &OAuthUpstream{
+		expiresIn: 3600, live: map[string]liveToken{}, release: make(chan struct{}),
+		secret: ClientSecret, challengeScope: Scope, supported: []string{Scope},
+	}
+	server := NewServer("")
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
+		u.mu.Lock()
+		meta := map[string]any{
+			"resource":              u.URL,
+			"authorization_servers": []string{cmp.Or(u.prmIssuer, u.Base)},
+		}
+		if u.supported != nil {
+			meta["scopes_supported"] = u.supported
+		}
+		u.mu.Unlock()
+		writeJSON(w, http.StatusOK, meta)
+	})
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		u.mu.Lock()
+		issParam := u.issParam
+		scopes := []string{Scope}
+		if u.offline {
+			scopes = append(scopes, "offline_access")
+		}
+		u.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"scopes_supported": scopes,
+			"authorization_response_iss_parameter_supported": issParam,
+			"issuer":                                u.Base,
+			"authorization_endpoint":                u.Base + "/authorize",
+			"token_endpoint":                        u.Base + "/token",
+			"registration_endpoint":                 u.Base + "/register",
+			"response_types_supported":              []string{"code"},
+			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+			"code_challenge_methods_supported":      []string{"S256"},
+			"token_endpoint_auth_methods_supported": []string{"client_secret_post"},
+		})
+	})
+	mux.HandleFunc("POST /register", func(w http.ResponseWriter, r *http.Request) {
+		u.mu.Lock()
+		fail := u.failRegister
+		u.mu.Unlock()
+		if fail != "" {
+			writeEcho(w, fail, "invalid_client_metadata")
+			return
+		}
+		var meta map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&meta); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_client_metadata"})
+			return
+		}
+		var grantTypes []string
+		for _, g := range meta["grant_types"].([]any) {
+			grantTypes = append(grantTypes, g.(string))
+		}
+		u.mu.Lock()
+		u.registrations++
+		u.grantTypes = grantTypes
+		u.appType, _ = meta["application_type"].(string)
+		u.mu.Unlock()
+		meta["client_id"] = ClientID
+		meta["client_secret"] = ClientSecret
+		meta["token_endpoint_auth_method"] = "client_secret_post"
+		writeJSON(w, http.StatusCreated, meta)
+	})
+	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("client_id") != ClientID || q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
+			http.Error(w, "bad authorization request", http.StatusBadRequest)
+			return
+		}
+		u.mu.Lock()
+		u.challenge = q.Get("code_challenge")
+		u.authorizeQuery = q
+		u.mu.Unlock()
+		callback, err := url.Parse(q.Get("redirect_uri"))
+		if err != nil {
+			http.Error(w, "bad redirect_uri", http.StatusBadRequest)
+			return
+		}
+		u.mu.Lock()
+		cq := maps.Clone(u.redirect)
+		u.mu.Unlock()
+		if cq == nil {
+			cq = url.Values{"code": {Code}}
+		}
+		cq.Set("state", q.Get("state"))
+		callback.RawQuery = cq.Encode()
+		http.Redirect(w, r, callback.String(), http.StatusFound)
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})
+			return
+		}
+		if r.PostForm.Get("grant_type") == "refresh_token" {
+			u.serveRefresh(w, r)
+			return
+		}
+		u.mu.Lock()
+		challenge, secret, fail := u.challenge, u.secret, u.failExchange
+		u.mu.Unlock()
+		if fail != "" {
+			writeEcho(w, fail, "invalid_grant")
+			return
+		}
+		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
+		if r.PostForm.Get("grant_type") != "authorization_code" || r.PostForm.Get("code") != Code ||
+			r.PostForm.Get("client_secret") != secret ||
+			base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_grant"})
+			return
+		}
+		writeJSON(w, http.StatusOK, u.Issue())
+	})
+	serveMCP := func(w http.ResponseWriter, r *http.Request) {
+		got := r.Header.Get("Authorization")
+		u.mu.Lock()
+		u.mcpAuth = append(u.mcpAuth, got)
+		live, ok := u.live[strings.TrimPrefix(got, "Bearer ")]
+		ok = ok && strings.HasPrefix(got, "Bearer ") && time.Now().Before(live.expiry)
+		if !ok {
+			u.rejected++
+		}
+		challengeScope, requireScope := u.challengeScope, u.requireScope
+		u.mu.Unlock()
+		challenge := `Bearer resource_metadata="` + u.Base + `/.well-known/oauth-protected-resource/mcp"`
+		if !ok {
+			if challengeScope != "" {
+				challenge += `, scope="` + challengeScope + `"`
+			}
+			w.Header().Set("WWW-Authenticate", challenge)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if requireScope != "" && !slices.Contains(strings.Fields(live.scope), requireScope) {
+			w.Header().Set("WWW-Authenticate", challenge+`, error="insufficient_scope", scope="`+requireScope+`"`)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		u.mu.Lock()
+		redirectTo := u.redirectTo
+		u.mu.Unlock()
+		if redirectTo != "" && r.URL.Path == "/mcp" {
+			http.Redirect(w, r, redirectTo, http.StatusTemporaryRedirect)
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	}
+	mux.HandleFunc("/mcp", serveMCP)
+	mux.HandleFunc("/mcp-moved", serveMCP)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	// Before the server closes, which waits for a hanging refresh.
+	t.Cleanup(u.Release)
+	u.Base = ts.URL
+	if host != "" {
+		u.Base = "http://" + net.JoinHostPort(host, strconv.Itoa(ts.Listener.Addr().(*net.TCPAddr).Port))
+	}
+	u.URL = ts.URL + "/mcp"
+	return u
+}
+
+// liveToken is an access token that the fake accepts, until expiry.
+type liveToken struct {
+	expiry time.Time
+	scope  string // granted
+}
+
+// Issue issues a new access token and refresh token, and returns the token
+// response. The first are AccessToken and RefreshToken; later ones
+// add a counter to them.
+func (u *OAuthUpstream) Issue() map[string]any {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.issued++
+	access, refresh := AccessToken, RefreshToken
+	if u.issued > 1 {
+		n := "-" + strconv.Itoa(u.issued)
+		access, refresh = access+n, refresh+n
+	}
+	scope := u.authorizeQuery.Get("scope")
+	u.live[access] = liveToken{expiry: time.Now().Add(time.Duration(u.expiresIn) * time.Second), scope: scope}
+	u.refresh = refresh
+	resp := map[string]any{
+		"access_token":  access,
+		"token_type":    "Bearer",
+		"expires_in":    u.expiresIn,
+		"refresh_token": refresh,
+	}
+	if scope != "" {
+		resp["scope"] = scope
+	}
+	if u.noRefresh {
+		delete(resp, "refresh_token")
+	}
+	return resp
+}
+
+// IssueNoRefreshToken makes every token response from now on leave out the
+// refresh token.
+func (u *OAuthUpstream) IssueNoRefreshToken() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.noRefresh = true
+}
+
+// serveRefresh answers a refresh request, as FailRefresh says, and records
+// its form.
+func (u *OAuthUpstream) serveRefresh(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	u.refreshes = append(u.refreshes, r.PostForm)
+	onRefresh := u.onRefresh
+	u.mu.Unlock()
+	if onRefresh != nil {
+		onRefresh()
+	}
+	u.mu.Lock()
+	failWith, current, release, secret := u.failWith, u.refresh, u.release, u.secret
+	u.mu.Unlock()
+	switch {
+	case failWith == "hang":
+		<-release
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "temporarily_unavailable"})
+	case failWith == "5xx" || failWith == "text":
+		writeEcho(w, failWith, "server_error")
+	case failWith == "drop":
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	case failWith == "invalid_grant" || r.PostForm.Get("refresh_token") != current ||
+		r.PostForm.Get("client_id") != ClientID || r.PostForm.Get("client_secret") != secret:
+		writeEcho(w, "json", "invalid_grant")
+	default:
+		writeJSON(w, http.StatusOK, u.Issue())
+	}
+}
+
+// OnRefresh makes f run before each refresh request from now on is
+// answered, and after it is recorded.
+func (u *OAuthUpstream) OnRefresh(f func()) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.onRefresh = f
+}
+
+// ExpireIn makes every access token issued from now on live for seconds.
+func (u *OAuthUpstream) ExpireIn(seconds int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.expiresIn = seconds
+}
+
+// RedirectMCP makes /mcp redirect every request with a live access token
+// to link (307, so that a POST stays one), from now on.
+func (u *OAuthUpstream) RedirectMCP(link string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.redirectTo = link
+}
+
+// RevokeAccessTokens makes every access token issued so far fail with 401.
+func (u *OAuthUpstream) RevokeAccessTokens() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	clear(u.live)
+}
+
+// FailRefresh makes every refresh request from now on fail: "invalid_grant",
+// "5xx", "text" (an error body that is not JSON; see writeEcho), "drop" (the connection closes without an answer) or "hang" (until
+// Release, then 503). "" makes them work again.
+func (u *OAuthUpstream) FailRefresh(how string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failWith = how
+}
+
+// Release ends every hanging refresh request.
+func (u *OAuthUpstream) Release() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	select {
+	case <-u.release:
+	default:
+		close(u.release)
+	}
+}
+
+// Released returns a channel that Release closes.
+func (u *OAuthUpstream) Released() <-chan struct{} {
+	return u.release
+}
+
+// NameIssuer makes the Protected Resource Metadata name issuer as the
+// Upstream's Authorization Server.
+func (u *OAuthUpstream) NameIssuer(issuer string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.prmIssuer = issuer
+}
+
+// Refreshes returns the form of each refresh request so far.
+func (u *OAuthUpstream) Refreshes() []url.Values {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.refreshes)
+}
+
+// Rejected returns how many requests to the MCP endpoint were answered 401.
+func (u *OAuthUpstream) Rejected() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.rejected
+}
+
+// MCPAuth returns the Authorization header of each request to the MCP
+// endpoint so far.
+func (u *OAuthUpstream) MCPAuth() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.mcpAuth)
+}
+
+// GrantTypes returns the grant types of the last client registration.
+func (u *OAuthUpstream) GrantTypes() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.grantTypes)
+}
+
+// RedirectWith makes the authorization endpoint redirect to the callback
+// with params and the state, in place of the code.
+func (u *OAuthUpstream) RedirectWith(params url.Values) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.redirect = params
+}
+
+// AdvertiseIss makes the metadata say that the callback carries iss
+// (RFC 9207).
+func (u *OAuthUpstream) AdvertiseIss() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.issParam = true
+}
+
+// Registrations returns how many clients were registered so far.
+func (u *OAuthUpstream) Registrations() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.registrations
+}
+
+// AcceptClientSecret makes the token endpoint accept secret, and only it,
+// as the client's secret from now on.
+func (u *OAuthUpstream) AcceptClientSecret(secret string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.secret = secret
+}
+
+// OfferScopes makes a 401 name challenge as its scope ("" for none), and
+// the Protected Resource Metadata list supported as scopes_supported (nil
+// to leave it out).
+func (u *OAuthUpstream) OfferScopes(challenge string, supported []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.challengeScope, u.supported = challenge, supported
+}
+
+// AdvertiseOfflineAccess makes the Authorization Server list offline_access
+// in its scopes_supported.
+func (u *OAuthUpstream) AdvertiseOfflineAccess() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.offline = true
+}
+
+// RequireScope makes /mcp answer 403 insufficient_scope, naming scope, to
+// an access token that was not granted it.
+func (u *OAuthUpstream) RequireScope(scope string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.requireScope = scope
+}
+
+// RequestedScope returns the scope parameter of the last authorization
+// request, and whether it had one.
+func (u *OAuthUpstream) RequestedScope() (string, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.authorizeQuery.Get("scope"), u.authorizeQuery.Has("scope")
+}
+
+// AppType returns the application_type of the last client registration.
+func (u *OAuthUpstream) AppType() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.appType
+}
+
+// FailRegistration makes every client registration from now on fail as
+// writeEcho does with how.
+func (u *OAuthUpstream) FailRegistration(how string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failRegister = how
+}
+
+// FailCodeExchange makes every exchange of an authorization code from now
+// on fail as writeEcho does with how.
+func (u *OAuthUpstream) FailCodeExchange(how string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failExchange = how
+}
+
+// echoed is what a careless Authorization Server says when it fails, every
+// secret of the fake included.
+var echoed = "refresh token " + RefreshToken + " of client " + ClientSecret + " with code " + Code
+
+// writeEcho fails a request to the Authorization Server, echoing its
+// secrets: as how is "json" or "5xx", with a 400 or a 502 OAuth error whose
+// code is code and whose error_description echoes them; as it is "text",
+// with a 502 whose plain-text body does.
+func writeEcho(w http.ResponseWriter, how, code string) {
+	switch how {
+	case "json":
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": code, "error_description": echoed})
+		return
+	case "5xx":
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": code, "error_description": echoed})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusBadGateway)
+	_, _ = io.WriteString(w, echoed)
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
