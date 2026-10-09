@@ -91,19 +91,21 @@ var transportFlags = []struct {
 	name      string
 	usage     string // the flag as errors name it
 	transport config.Transport
-	upstream  string // the Upstreams it applies to, as errors name them
 }{
-	{"env", "-e/--env", config.Stdio, "a stdio upstream"},
-	{"header", "-H/--header", config.HTTP, "an HTTP upstream"},
-	{"oauth-client-id", "--oauth-client-id", config.HTTP, "an HTTP upstream"},
-	{"oauth-client-secret", "--oauth-client-secret", config.HTTP, "an HTTP upstream"},
-	{"oauth-scope", "--oauth-scope", config.HTTP, "an HTTP upstream"},
+	{"env", "-e/--env", config.Stdio},
+	{"header", "-H/--header", config.HTTP},
+	{"oauth-client-id", "--oauth-client-id", config.HTTP},
+	{"oauth-client-secret", "--oauth-client-secret", config.HTTP},
+	{"oauth-scope", "--oauth-scope", config.HTTP},
 }
+
+// upstreams names the Upstreams of each Transport in errors.
+var upstreams = map[config.Transport]string{config.Stdio: "a stdio upstream", config.HTTP: "an HTTP upstream"}
 
 // setFields sets the fields of def, an Upstream from add's arguments, that
 // add's flags give. A flag that doesn't apply to def's Transport is an
-// error rather than a field serve would ignore, and so is a client secret
-// without a client ID.
+// error rather than a field serve would ignore, and so are a client secret
+// without a client ID and an empty OAuth value, which would write nothing.
 func setFields(cmd *ucli.Command, def *config.Definition) error {
 	transport := config.Stdio
 	if def.URL != "" {
@@ -111,12 +113,24 @@ func setFields(cmd *ucli.Command, def *config.Definition) error {
 	}
 	for _, f := range transportFlags {
 		if f.transport != transport && cmd.IsSet(f.name) {
-			return fmt.Errorf("%s applies only to %s", f.usage, f.upstream)
+			return fmt.Errorf("%s applies only to %s", f.usage, upstreams[f.transport])
 		}
 	}
 	id, secret, scopes := cmd.String("oauth-client-id"), cmd.String("oauth-client-secret"), cmd.StringSlice("oauth-scope")
 	if cmd.IsSet("oauth-client-secret") && id == "" {
 		return errors.New("--oauth-client-secret needs --oauth-client-id")
+	}
+	for _, f := range []struct {
+		name  string
+		empty bool
+	}{
+		{"oauth-client-id", id == ""},
+		{"oauth-client-secret", secret == ""},
+		{"oauth-scope", slices.Contains(scopes, "")},
+	} {
+		if f.empty && cmd.IsSet(f.name) {
+			return fmt.Errorf("--%s must not be empty", f.name)
+		}
 	}
 	var err error
 	if def.Env, err = envVars(cmd.StringSlice("env")); err != nil {
@@ -141,11 +155,11 @@ func envVars(values []string) (map[string]string, error) {
 }
 
 // headers parses -H values, each in curl's form: the name, a colon, and
-// the value, with the spaces around it dropped.
+// the value, with the spaces after the colon dropped.
 func headers(values []string) (map[string]string, error) {
 	return pairs(values, "Name: value", func(v string) (string, string, bool) {
 		name, value, ok := strings.Cut(v, ":")
-		return name, strings.TrimSpace(value), ok && name != "" && !strings.ContainsAny(name, " \t")
+		return name, strings.TrimLeft(value, " \t"), ok && name != "" && !strings.ContainsAny(name, " \t")
 	})
 }
 

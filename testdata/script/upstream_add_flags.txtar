@@ -10,7 +10,7 @@ stdout '^added upstream "memory"$'
 cmp env.json env.golden
 
 # -H sets an HTTP Upstream's headers, in curl's form: the name, a colon,
-# and the value, with the spaces around it dropped.
+# and the value, with the spaces after the colon dropped.
 sprut upstream add -c headers.json -H 'Authorization: Bearer ${API_TOKEN}' --header 'X-Trace:a: b ' -H 'X-Empty:' api https://api.example/mcp
 stdout '^added upstream "api"$'
 stderr '^warning: upstream "api": unset variable API_TOKEN; upstream skipped$'
@@ -67,8 +67,19 @@ status 2
 stderr '"X-A b" is not Name: value'
 ! sprut upstream add -c usage.json -H ': b' web https://web.example/mcp
 status 2
+stderr '": b" is not Name: value'
 ! sprut upstream add -c usage.json -H 'X A: b' web https://web.example/mcp
 status 2
+stderr '"X A: b" is not Name: value'
+! sprut upstream add -c usage.json --oauth-client-id '' web https://web.example/mcp
+status 2
+stderr '^sprut: --oauth-client-id must not be empty$'
+! sprut upstream add -c usage.json --oauth-client-id id --oauth-client-secret '' web https://web.example/mcp
+status 2
+stderr '^sprut: --oauth-client-secret must not be empty$'
+! sprut upstream add -c usage.json --oauth-scope '' web https://web.example/mcp
+status 2
+stderr '^sprut: --oauth-scope must not be empty$'
 cmp usage.json oauth.golden
 ! sprut upstream add -c new.json -e K=V web https://web.example/mcp
 status 2
@@ -106,7 +117,7 @@ stdout '\-\-oauth-client-secret string .*''\$\{CLIENT_SECRET\}'''
       "headers": {
         "Authorization": "Bearer ${API_TOKEN}",
         "X-Empty": "",
-        "X-Trace": "a: b"
+        "X-Trace": "a: b "
       }
     }
   }
