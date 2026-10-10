@@ -310,3 +310,15 @@ func TestUpstreamLoginExits1ForAnUpstreamThatIsNotAnOAuthUpstream(t *testing.T) 
 		})
 	}
 }
+
+func TestUpstreamLoginToADisabledUpstreamStoresCredentialsItUsesOnceEnabled(t *testing.T) {
+	t.Parallel()
+	u := mcptest.StartOAuth(t)
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL, "disabled": true}})
+	l := loginAs(t, u, t.TempDir(), config, "fake")
+
+	code, stdout, stderr := runSprut(t, l.env, "upstream", "enable", "fake", "-c", config)
+	if code != 0 || !strings.Contains(stdout, `upstream "fake": ok (2 tools)`) {
+		t.Errorf("enable: exit code = %d, stdout = %q, stderr = %q; want 0 and the Upstream ok", code, stdout, stderr)
+	}
+}

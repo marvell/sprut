@@ -119,12 +119,12 @@ func Parse(data []byte, lookupEnv LookupEnv) ([]Upstream, []Warning, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return Started(entries), warnings, nil
+	return started(entries), warnings, nil
 }
 
-// Started returns the Upstreams of entries that the Gateway starts: those
+// started returns the Upstreams of entries that the Gateway starts: those
 // neither disabled nor skipped, in order.
-func Started(entries []Entry) []Upstream {
+func started(entries []Entry) []Upstream {
 	var upstreams []Upstream
 	for _, e := range entries {
 		if e.Starts() {
@@ -149,8 +149,11 @@ type Entry struct {
 	// Skipped says why the Gateway skips the entry although it is enabled,
 	// or is "".
 	Skipped string
-	// Upstream is the entry resolved, or nil when it is skipped, or
-	// disabled and would not resolve if it were enabled.
+	// Unresolved says why the entry, disabled, would be invalid or skipped
+	// if it were enabled, or is "".
+	Unresolved string
+	// Upstream is the entry resolved, or nil when it is skipped or
+	// Unresolved.
 	Upstream *Upstream
 }
 
@@ -259,8 +262,11 @@ func parseEntry(name string, raw json.RawMessage, lookupEnv LookupEnv) (Entry, [
 	// aside an entry that is broken or whose variables are unset. It is
 	// still resolved where it can be, as if it were enabled, so that its
 	// Credentials can be found.
-	if err != nil {
-		e.Upstream = nil
+	switch {
+	case err != nil:
+		e.Upstream, e.Unresolved = nil, err.Error()
+	case e.Skipped != "":
+		e.Unresolved = e.Skipped
 	}
 	e.Skipped = ""
 	return e, nil, nil

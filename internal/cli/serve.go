@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
 	ucli "github.com/urfave/cli/v3"
@@ -28,11 +26,12 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			startupTimeout := cmd.Duration("startup-timeout")
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			upstreams, path, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
+			c, err := openConfig(cmd.String("config"), config.LookupIn(env), log)
 			if err != nil {
 				return err
 			}
-			log.Info("config loaded", "path", path, "upstreams", len(upstreams))
+			upstreams := c.Upstreams()
+			log.Info("config loaded", "path", c.Path, "upstreams", len(upstreams))
 
 			gw := gateway.Start(ctx, upstreams, env, startupTimeout, version(), log)
 			defer gw.Close()
@@ -82,84 +81,15 @@ func newLogger(w io.Writer, verbose bool) *slog.Logger {
 	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
 }
 
-// loadConfig reads the Config that flag and the environment point at, logs
-// its warnings and returns the Upstreams to start and the Config's absolute
-// path.
-func loadConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) ([]config.Upstream, string, error) {
-	entries, warnings, path, err := loadEntries(flag, lookupEnv)
+// openConfig opens the Config that flag and lookupEnv point at, and logs
+// its warnings.
+func openConfig(flag string, lookupEnv config.LookupEnv, log *slog.Logger) (*config.Config, error) {
+	c, err := config.Open(flag, lookupEnv)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	for _, w := range warnings {
+	for _, w := range c.Warnings {
 		log.Warn(w.Message, "upstream", w.Upstream)
 	}
-	return config.Started(entries), path, nil
-}
-
-// readConfig reads the Config that flag and the environment point at, and
-// returns its path, whether flag or $SPRUT_CONFIG named it, and its bytes.
-// Reading a missing Config fails with an fs.ErrNotExist, and still returns
-// the path.
-func readConfig(flag string, lookupEnv config.LookupEnv) (path string, named bool, data []byte, err error) {
-	path, named, err = config.Path(flag, lookupEnv)
-	if err != nil {
-		return "", false, nil, err
-	}
-	data, err = os.ReadFile(path)
-	if err != nil {
-		return path, named, nil, fmt.Errorf("reading config: %w", err)
-	}
-	return path, named, data, nil
-}
-
-// loadEntries reads the Config that flag and the environment point at, and
-// returns all of its entries, its warnings and its absolute path. Reading a
-// missing Config fails with an fs.ErrNotExist. Unless the Config is at the
-// default location, each resolved Upstream carries its path as ConfigPath:
-// the Agent may run sprut with -c or $SPRUT_CONFIG that the user's shell
-// lacks, and in another directory.
-func loadEntries(flag string, lookupEnv config.LookupEnv) ([]config.Entry, []config.Warning, string, error) {
-	path, named, data, err := readConfig(flag, lookupEnv)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	_, entries, warnings, err := parseConfig(path, data, lookupEnv)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, nil, "", configError(path, err)
-	}
-	if named {
-		for _, e := range entries {
-			if e.Upstream != nil {
-				e.Upstream.ConfigPath = abs
-			}
-		}
-	}
-	return entries, warnings, abs, nil
-}
-
-// parseConfig parses data, the Config read from path, into its Document
-// and all of its entries, with its warnings.
-func parseConfig(path string, data []byte, lookupEnv config.LookupEnv) (*config.Document, []config.Entry, []config.Warning, error) {
-	doc, err := config.ParseDocument(data)
-	var (
-		entries  []config.Entry
-		warnings []config.Warning
-	)
-	if err == nil {
-		entries, warnings, err = doc.Entries(lookupEnv)
-	}
-	if err != nil {
-		return nil, nil, nil, configError(path, err)
-	}
-	return doc, entries, warnings, nil
-}
-
-// configError is err, a problem with the Config at path, as sprut reports
-// it.
-func configError(path string, err error) error {
-	return fmt.Errorf("config %s: %w", path, err)
+	return c, nil
 }

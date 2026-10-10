@@ -23,7 +23,12 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			u, err := loadUpstream(cmd.String("config"), config.LookupIn(env), log, name)
+			c, err := openConfig(cmd.String("config"), config.LookupIn(env), log)
+			if err != nil {
+				return err
+			}
+			// A disabled Upstream too, so that it can be enabled logged in.
+			u, err := c.Upstream(name)
 			if err != nil {
 				return err
 			}

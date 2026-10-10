@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -56,31 +55,28 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			lookupEnv := config.LookupIn(env)
-			entries, _, _, err := loadEntries(cmd.String("config"), lookupEnv)
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			if err != nil {
+			c, err := config.Open(cmd.String("config"), lookupEnv)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
-			if len(entries) == 0 {
+			if len(c.Entries) == 0 {
 				return nil
 			}
 			store, err := credentials.NewStore(lookupEnv)
 			if err != nil {
 				return err
 			}
-			states := make([]string, len(entries))
-			for i, e := range entries {
+			states := make([]string, len(c.Entries))
+			for i, e := range c.Entries {
 				states[i] = state(e)
 			}
 			healthy := true
 			if cmd.Bool("check") {
-				healthy = checkStates(ctx, entries, states, env, cmd.Duration("startup-timeout"))
+				healthy = checkStates(ctx, c, states, env, cmd.Duration("startup-timeout"))
 			}
 			w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "NAME\tTRANSPORT\tTARGET\tSTATE\tAUTH")
-			for i, e := range entries {
+			for i, e := range c.Entries {
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Name, orDash(string(e.Transport)), orDash(target(e)), states[i], authState(store, e))
 			}
 			if err := w.Flush(); err != nil {
@@ -94,18 +90,18 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 	}
 }
 
-// checkStates starts every enabled entry of entries, as serve would, sets
+// checkStates starts every enabled entry of c, as serve would, sets
 // its state in states to how it fared, and reports whether all of them
 // work.
-func checkStates(ctx context.Context, entries []config.Entry, states []string, env []string, startupTimeout time.Duration) bool {
-	upstreams := config.Started(entries)
+func checkStates(ctx context.Context, c *config.Config, states []string, env []string, startupTimeout time.Duration) bool {
+	upstreams := c.Upstreams()
 	// By name, which is unique in a Config.
 	health := make(map[string]gateway.Health, len(upstreams))
 	for i, h := range check(ctx, upstreams, env, startupTimeout) {
 		health[upstreams[i].Name] = h
 	}
 	healthy := true
-	for i, e := range entries {
+	for i, e := range c.Entries {
 		if h, ok := health[e.Name]; ok {
 			healthy = healthy && h.Err == nil
 			states[i] = healthState(h)
@@ -148,15 +144,23 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name str
 		return
 	}
 	// The edit has already printed the warnings about the Upstream.
-	u, err := loadUpstream(cmd.String("config"), config.LookupIn(env), slog.New(slog.DiscardHandler), name)
-	if errors.Is(err, config.ErrNotFound) {
-		return
-	}
-	if err != nil {
+	notChecked := func(err error) {
 		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
+	}
+	c, err := config.Open(cmd.String("config"), config.LookupIn(env))
+	if err != nil {
+		notChecked(err)
 		return
 	}
-	h := check(ctx, []config.Upstream{u}, env, cmd.Duration("startup-timeout"))[0]
+	e, err := c.Lookup(name)
+	if err != nil {
+		notChecked(err)
+		return
+	}
+	if !e.Starts() {
+		return
+	}
+	h := check(ctx, []config.Upstream{*e.Upstream}, env, cmd.Duration("startup-timeout"))[0]
 	state, hint := healthState(h), h.Hint()
 	switch {
 	case h.Err == nil:
@@ -221,16 +225,11 @@ func orDash(s string) string {
 // that already fails to parse. A missing Config is created. edit reports
 // whether it changed the Config; if not, the file is left as it is.
 func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name string, edit func(*config.Document) (bool, error)) error {
-	path, _, data, err := readConfig(flag, lookupEnv)
-	if errors.Is(err, fs.ErrNotExist) {
-		data = []byte("{}")
-	} else if err != nil {
+	c, err := config.Open(flag, lookupEnv)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	doc, _, _, err := parseConfig(path, data, lookupEnv)
-	if err != nil {
-		return err
-	}
+	doc := c.Document()
 	edited, err := edit(doc)
 	if err != nil || !edited {
 		return err
@@ -244,7 +243,7 @@ func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name 
 			_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, w.Message)
 		}
 	}
-	if err := config.WriteFile(path, doc.Bytes()); err != nil {
+	if err := config.WriteFile(c.Path, doc.Bytes()); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	return nil
@@ -255,18 +254,4 @@ func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name 
 func changed(stdout, stderr io.Writer, format string, a ...any) {
 	_, _ = fmt.Fprintf(stdout, format+"\n", a...)
 	_, _ = fmt.Fprintln(stderr, "note: running agents see this change only after their sprut restarts")
-}
-
-// loadUpstream loads the Config as loadConfig does, and returns the
-// Upstream called name among those it starts.
-func loadUpstream(flag string, lookupEnv config.LookupEnv, log *slog.Logger, name string) (config.Upstream, error) {
-	upstreams, _, err := loadConfig(flag, lookupEnv, log)
-	if err != nil {
-		return config.Upstream{}, err
-	}
-	i := slices.IndexFunc(upstreams, func(u config.Upstream) bool { return u.Name == name })
-	if i < 0 {
-		return config.Upstream{}, fmt.Errorf("upstream %q: %w", name, config.ErrNotFound)
-	}
-	return upstreams[i], nil
 }

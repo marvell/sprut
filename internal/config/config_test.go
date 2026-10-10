@@ -352,9 +352,11 @@ func TestParseEntries(t *testing.T) {
 		},
 		{
 			Name: "off-unset", Transport: config.Stdio, Command: "run", Args: []string{"${MISSING}"}, Disabled: true,
+			Unresolved: "unset variable MISSING",
 		},
 		{
 			Name: "off-broken", Transport: config.Stdio, URL: "https://example.com/x", Disabled: true,
+			Unresolved: `type "stdio" needs "command" and no "url"`,
 		},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -149,6 +150,15 @@ func (d *Document) SetDisabled(name string, disabled bool) (bool, error) {
 	d.servers.entries[name] = object(fields)
 	d.setServers()
 	return true, nil
+}
+
+// clone returns a copy of d that edits independently of it. Edits replace
+// raw JSON values rather than change them, so those are shared.
+func (d *Document) clone() *Document {
+	c := *d
+	c.members = slices.Clone(d.members)
+	c.servers = servers{names: slices.Clone(d.servers.names), entries: maps.Clone(d.servers.entries)}
+	return &c
 }
 
 // setServers writes d.servers back into mcpServers, adding it after the

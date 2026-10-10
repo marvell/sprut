@@ -1,0 +1,40 @@
+# sprut upstream logout acts on a disabled Upstream as on an enabled one:
+# its Credentials are still found, and still deleted.
+env XDG_STATE_HOME=$WORK/state
+
+sprut upstream list -c config.json
+stdout '^paused .* disabled +logged in'
+
+sprut upstream logout paused -c config.json
+stdout '^paused: logged out$'
+! exists state/sprut/credentials/paused.json
+
+sprut upstream logout paused -c config.json
+stdout '^paused: no credentials$'
+
+# OAuth still applies only to HTTP Upstreams, disabled or not.
+! sprut upstream logout staged -c config.json
+status 1
+stderr '^sprut: upstream "staged": uses stdio, and OAuth is only for HTTP upstreams$'
+
+# An entry that doesn't resolve is named with why, not as missing.
+! sprut upstream logout secret -c config.json
+status 1
+stderr '^sprut: upstream "secret": unset variable SECRET_KEY$'
+! sprut upstream logout broken -c config.json
+status 1
+stderr '^sprut: upstream "broken": disabled, and has both "command" and "url"; set only one$'
+! stdout .
+
+-- config.json --
+{"mcpServers": {
+  "paused": {"url": "https://paused.invalid/mcp", "disabled": true},
+  "staged": {"command": "uvx", "disabled": true},
+  "secret": {"url": "https://secret.invalid/mcp?key=${SECRET_KEY}"},
+  "broken": {"url": "https://broken.invalid/mcp", "command": "x", "disabled": true}
+}}
+-- state/sprut/credentials/paused.json --
+{"access_token": "a", "token_type": "Bearer",
+ "token_url": "https://paused.invalid/token", "auth_style": 0,
+ "resource": "https://paused.invalid/mcp", "issuer": "https://paused.invalid",
+ "config": {"url": "https://paused.invalid/mcp", "scopes": null}}
