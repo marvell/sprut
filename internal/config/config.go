@@ -166,13 +166,18 @@ func ParseEntries(data []byte, lookupEnv LookupEnv) ([]Entry, []Warning, error) 
 	if err != nil {
 		return nil, nil, err
 	}
+	return doc.Entries(lookupEnv)
+}
+
+// Entries is ParseEntries of the Config d is, as edited so far.
+func (d *Document) Entries(lookupEnv LookupEnv) ([]Entry, []Warning, error) {
 	var (
 		entries  []Entry
 		warnings []Warning
 		errs     []error
 	)
-	for _, name := range doc.servers.names {
-		e, msgs, err := parseEntry(name, doc.servers.entries[name], lookupEnv)
+	for _, name := range d.servers.names {
+		e, msgs, err := parseEntry(name, d.servers.entries[name], lookupEnv)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("upstream %q: %w", name, err))
 			continue

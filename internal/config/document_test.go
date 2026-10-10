@@ -280,3 +280,50 @@ func TestDocumentSetDisabledNotFound(t *testing.T) {
 		t.Fatalf("SetDisabled of a missing name: %v, want ErrNotFound", err)
 	}
 }
+
+func TestDefinitionTransport(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		def  config.Definition
+		want config.Transport
+	}{
+		{config.Definition{Command: "npx"}, config.Stdio},
+		{config.Definition{URL: "https://example.com/mcp"}, config.HTTP},
+		{config.Definition{Command: "npx", URL: "https://example.com/mcp"}, ""},
+		{config.Definition{}, ""},
+	}
+	for _, tt := range tests {
+		if got := tt.def.Transport(); got != tt.want {
+			t.Errorf("%+v.Transport() = %q, want %q", tt.def, got, tt.want)
+		}
+	}
+}
+
+func TestDocumentEntries(t *testing.T) {
+	t.Parallel()
+	doc, err := config.ParseDocument([]byte(`{"mcpServers": {"a": {"command": "a", "x": 1}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Add("b", config.Definition{URL: "https://${HOST}/mcp", Disabled: true}, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, warnings, err := doc.Entries(lookup(map[string]string{"HOST": "example.com"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []config.Entry{
+		{Name: "a", Transport: config.Stdio, Command: "a", Upstream: &config.Upstream{Name: "a", Transport: config.Stdio, Command: "a"}},
+		{
+			Name: "b", Transport: config.HTTP, URL: "https://${HOST}/mcp", Disabled: true,
+			Upstream: &config.Upstream{Name: "b", Transport: config.HTTP, URL: "https://example.com/mcp"},
+		},
+	}
+	if diff := cmp.Diff(want, entries); diff != "" {
+		t.Errorf("Entries after Add (-want +got):\n%s", diff)
+	}
+	wantWarnings := []config.Warning{{Upstream: "a", Message: `unknown field "x" ignored`}}
+	if diff := cmp.Diff(wantWarnings, warnings); diff != "" {
+		t.Errorf("Entries warnings (-want +got):\n%s", diff)
+	}
+}

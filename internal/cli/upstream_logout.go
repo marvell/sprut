@@ -20,11 +20,7 @@ func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
 			lookupEnv := config.LookupIn(env)
-			upstreams, _, err := loadConfig(cmd.String("config"), lookupEnv, newLogger(stderr, false))
-			if err != nil {
-				return err
-			}
-			u, err := findUpstream(upstreams, name)
+			u, err := loadUpstream(cmd.String("config"), lookupEnv, newLogger(stderr, false), name)
 			if err != nil {
 				return err
 			}

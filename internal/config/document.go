@@ -45,6 +45,13 @@ type Definition struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
+// Transport is the Transport the parser infers for the entry def writes,
+// or "" if it sets both "command" and "url", or neither.
+func (def Definition) Transport() Transport {
+	t, _ := inferTransport(def.Command, def.URL)
+	return t
+}
+
 // ErrExists is the error of adding an Upstream whose name is taken.
 var ErrExists = errors.New("already in the config")
 

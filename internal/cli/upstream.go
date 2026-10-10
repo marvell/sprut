@@ -98,18 +98,17 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 // its state in states to how it fared, and reports whether all of them
 // work.
 func checkStates(ctx context.Context, entries []config.Entry, states []string, env []string, startupTimeout time.Duration) bool {
-	var upstreams []config.Upstream
-	var rows []int // the index in entries of each of upstreams
-	for i, e := range entries {
-		if e.Starts() {
-			upstreams = append(upstreams, *e.Upstream)
-			rows = append(rows, i)
-		}
+	upstreams := config.Started(entries)
+	health := make(map[string]gateway.Health, len(upstreams))
+	for i, h := range check(ctx, upstreams, env, startupTimeout) {
+		health[upstreams[i].Name] = h
 	}
 	healthy := true
-	for j, h := range check(ctx, upstreams, env, startupTimeout) {
-		healthy = healthy && h.Err == nil
-		states[rows[j]] = healthState(h)
+	for i, e := range entries {
+		if h, ok := health[e.Name]; ok {
+			healthy = healthy && h.Err == nil
+			states[i] = healthState(h)
+		}
 	}
 	return healthy
 }
@@ -147,13 +146,12 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name str
 	if cmd.Bool("no-check") {
 		return
 	}
-	entries, _, _, err := loadEntries(cmd.String("config"), config.LookupIn(env))
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
+	u, err := loadUpstream(cmd.String("config"), config.LookupIn(env), slog.New(slog.DiscardHandler), name)
+	if errors.Is(err, config.ErrNotFound) {
 		return
 	}
-	u, err := findUpstream(config.Started(entries), name)
 	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
 		return
 	}
 	h := check(ctx, []config.Upstream{u}, env, cmd.Duration("startup-timeout"))[0]
@@ -222,26 +220,20 @@ func orDash(s string) string {
 // whether it changed the Config; if not, the file is left as it is.
 func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name string, edit func(*config.Document) (bool, error)) error {
 	path, _, data, err := readConfig(flag, lookupEnv)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
+	if errors.Is(err, fs.ErrNotExist) {
 		data = []byte("{}")
-	case err != nil:
+	} else if err != nil {
 		return err
-	default:
-		if _, _, err := config.ParseEntries(data, lookupEnv); err != nil {
-			return fmt.Errorf("config %s: %w", path, err)
-		}
 	}
-	doc, err := config.ParseDocument(data)
+	doc, _, _, err := parseConfig(path, data, lookupEnv)
 	if err != nil {
-		return fmt.Errorf("config %s: %w", path, err)
+		return err
 	}
 	edited, err := edit(doc)
 	if err != nil || !edited {
 		return err
 	}
-	out := doc.Bytes()
-	_, warnings, err := config.ParseEntries(out, lookupEnv)
+	_, warnings, err := doc.Entries(lookupEnv)
 	if err != nil {
 		return err
 	}
@@ -250,7 +242,7 @@ func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name 
 			_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, w.Message)
 		}
 	}
-	if err := config.WriteFile(path, out); err != nil {
+	if err := config.WriteFile(path, doc.Bytes()); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	return nil
@@ -263,8 +255,13 @@ func changed(stdout, stderr io.Writer, format string, a ...any) {
 	_, _ = fmt.Fprintln(stderr, "note: running agents see this change only after their sprut restarts")
 }
 
-// findUpstream returns the Upstream called name.
-func findUpstream(upstreams []config.Upstream, name string) (config.Upstream, error) {
+// loadUpstream loads the Config as loadConfig does, and returns the
+// Upstream called name among those it starts.
+func loadUpstream(flag string, lookupEnv config.LookupEnv, log *slog.Logger, name string) (config.Upstream, error) {
+	upstreams, _, err := loadConfig(flag, lookupEnv, log)
+	if err != nil {
+		return config.Upstream{}, err
+	}
 	i := slices.IndexFunc(upstreams, func(u config.Upstream) bool { return u.Name == name })
 	if i < 0 {
 		return config.Upstream{}, fmt.Errorf("upstream %q: %w", name, config.ErrNotFound)

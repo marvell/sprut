@@ -23,11 +23,7 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			upstreams, _, err := loadConfig(cmd.String("config"), config.LookupIn(env), log)
-			if err != nil {
-				return err
-			}
-			u, err := findUpstream(upstreams, name)
+			u, err := loadUpstream(cmd.String("config"), config.LookupIn(env), log, name)
 			if err != nil {
 				return err
 			}

@@ -123,13 +123,13 @@ func loadEntries(flag string, lookupEnv config.LookupEnv) ([]config.Entry, []con
 	if err != nil {
 		return nil, nil, "", err
 	}
-	entries, warnings, err := config.ParseEntries(data, lookupEnv)
+	_, entries, warnings, err := parseConfig(path, data, lookupEnv)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("config %s: %w", path, err)
+		return nil, nil, "", err
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("config %s: %w", path, err)
+		return nil, nil, "", err
 	}
 	if named {
 		for _, e := range entries {
@@ -139,4 +139,21 @@ func loadEntries(flag string, lookupEnv config.LookupEnv) ([]config.Entry, []con
 		}
 	}
 	return entries, warnings, abs, nil
+}
+
+// parseConfig parses data, the Config read from path, into its Document
+// and all of its entries, with its warnings.
+func parseConfig(path string, data []byte, lookupEnv config.LookupEnv) (*config.Document, []config.Entry, []config.Warning, error) {
+	doc, err := config.ParseDocument(data)
+	var (
+		entries  []config.Entry
+		warnings []config.Warning
+	)
+	if err == nil {
+		entries, warnings, err = doc.Entries(lookupEnv)
+	}
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	return doc, entries, warnings, nil
 }

@@ -109,10 +109,7 @@ var upstreams = map[config.Transport]string{config.Stdio: "a stdio upstream", co
 // error rather than a field serve would ignore, and so are a client secret
 // without a client ID and an empty OAuth value, which would write nothing.
 func setFields(cmd *ucli.Command, def *config.Definition) error {
-	transport := config.Stdio
-	if def.URL != "" {
-		transport = config.HTTP
-	}
+	transport := def.Transport()
 	for _, f := range transportFlags {
 		if f.transport != transport && cmd.IsSet(f.name) {
 			return fmt.Errorf("%s applies only to %s", f.usage, upstreams[f.transport])
