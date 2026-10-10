@@ -1,0 +1,98 @@
+# h and help are valid Upstream names: every sprut upstream command that
+# takes a name acts on the Upstream so named, not on urfave/cli's help
+# subcommand. --no-check keeps add and enable offline.
+env XDG_STATE_HOME=$WORK/state
+
+# add adds them.
+sprut upstream add -c config.json --no-check h -- fake-upstream
+stdout '^added upstream "h"$'
+sprut upstream add -c config.json --no-check help https://help.invalid/mcp --header 'Authorization: Bearer x'
+stdout '^added upstream "help"$'
+cmp config.json added.golden
+
+# disable and enable switch them.
+sprut upstream disable -c config.json h
+stdout '^disabled upstream "h"$'
+sprut upstream disable -c config.json help
+stdout '^disabled upstream "help"$'
+sprut upstream enable -c config.json --no-check h
+stdout '^enabled upstream "h"$'
+sprut upstream enable -c config.json --no-check help
+stdout '^enabled upstream "help"$'
+cmp config.json added.golden
+
+# login and logout act on them, which here means refusing them.
+! sprut upstream login -c config.json h
+status 1
+stderr 'OAuth is only for HTTP upstreams'
+! sprut upstream login -c config.json help --no-browser
+status 1
+stderr 'upstream "help"'
+stderr 'Authorization header'
+! sprut upstream logout -c config.json h
+status 1
+stderr 'upstream "h"'
+! exists state/sprut
+
+# remove removes them.
+sprut upstream remove -c config.json h
+stdout '^removed upstream "h"$'
+sprut upstream remove -c config.json help
+stdout '^removed upstream "help"$'
+cmp config.json empty.golden
+
+# On a Config without them, each command fails and names the Upstream.
+! sprut upstream remove -c config.json h
+status 1
+stderr 'upstream "h": not in the config'
+! sprut upstream enable -c config.json help
+status 1
+stderr 'upstream "help": not in the config'
+! sprut upstream disable -c config.json h
+status 1
+stderr 'upstream "h": not in the config'
+! sprut upstream login -c config.json help
+status 1
+stderr 'upstream "help": not in the config'
+! sprut upstream logout -c config.json h
+status 1
+stderr 'upstream "h": not in the config'
+! stdout .
+cmp config.json empty.golden
+
+# --help still prints each command's help, as -h does in
+# version_and_help.txtar.
+sprut upstream add --help
+stdout 'sprut upstream add'
+sprut upstream remove --help
+stdout 'sprut upstream remove'
+sprut upstream enable --help
+stdout 'sprut upstream enable'
+sprut upstream disable --help
+stdout 'sprut upstream disable'
+sprut upstream list --help
+stdout 'sprut upstream list'
+sprut upstream login --help
+stdout 'sprut upstream login'
+sprut upstream logout --help
+stdout 'sprut upstream logout'
+! stderr .
+
+-- added.golden --
+{
+  "mcpServers": {
+    "h": {
+      "command": "fake-upstream"
+    },
+    "help": {
+      "url": "https://help.invalid/mcp",
+      "headers": {
+        "Authorization": "Bearer x"
+      }
+    }
+  }
+}
+-- empty.golden --
+{
+  "mcpServers": {}
+}

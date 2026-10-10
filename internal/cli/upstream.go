@@ -20,21 +20,27 @@ import (
 )
 
 func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
+	commands := []*ucli.Command{
+		addCommand(args, env, stdout, stderr),
+		removeCommand(env, stdout, stderr),
+		switchCommand(false, env, stdout, stderr),
+		switchCommand(true, env, stdout, stderr),
+		listCommand(env, stdout),
+		loginCommand(env, stderr),
+		logoutCommand(env, stdout, stderr),
+	}
+	// h and help are valid Upstream names, and urfave/cli's help
+	// subcommand would take them; --help and -h stay.
+	for _, c := range commands {
+		c.HideHelpCommand = true
+	}
 	return &ucli.Command{
 		Name:  "upstream",
 		Usage: "manage the upstreams in the config",
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			return usageError(ctx, cmd, nil)
 		},
-		Commands: []*ucli.Command{
-			addCommand(args, env, stdout, stderr),
-			removeCommand(env, stdout, stderr),
-			switchCommand(false, env, stdout, stderr),
-			switchCommand(true, env, stdout, stderr),
-			listCommand(env, stdout),
-			loginCommand(env, stderr),
-			logoutCommand(env, stdout, stderr),
-		},
+		Commands: commands,
 	}
 }
 

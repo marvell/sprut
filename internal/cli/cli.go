@@ -80,7 +80,7 @@ func strictUsage(c *ucli.Command, helpErr *error) {
 		return usageError(ctx, cmd, err)
 	}
 	// Decided now: by the time an Action runs, urfave/cli has given every
-	// command a help subcommand.
+	// command not under a HideHelpCommand a help subcommand.
 	unexpected := "unexpected argument"
 	if len(c.Commands) > 0 {
 		unexpected = "unknown command"
