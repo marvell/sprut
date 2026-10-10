@@ -129,7 +129,7 @@ func loadEntries(flag string, lookupEnv config.LookupEnv) ([]config.Entry, []con
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", configError(path, err)
 	}
 	if named {
 		for _, e := range entries {
@@ -153,7 +153,13 @@ func parseConfig(path string, data []byte, lookupEnv config.LookupEnv) (*config.
 		entries, warnings, err = doc.Entries(lookupEnv)
 	}
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("config %s: %w", path, err)
+		return nil, nil, nil, configError(path, err)
 	}
 	return doc, entries, warnings, nil
+}
+
+// configError is err, a problem with the Config at path, as sprut reports
+// it.
+func configError(path string, err error) error {
+	return fmt.Errorf("config %s: %w", path, err)
 }

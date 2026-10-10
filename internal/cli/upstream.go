@@ -99,6 +99,7 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 // work.
 func checkStates(ctx context.Context, entries []config.Entry, states []string, env []string, startupTimeout time.Duration) bool {
 	upstreams := config.Started(entries)
+	// By name, which is unique in a Config.
 	health := make(map[string]gateway.Health, len(upstreams))
 	for i, h := range check(ctx, upstreams, env, startupTimeout) {
 		health[upstreams[i].Name] = h
@@ -146,6 +147,7 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name str
 	if cmd.Bool("no-check") {
 		return
 	}
+	// The edit has already printed the warnings about the Upstream.
 	u, err := loadUpstream(cmd.String("config"), config.LookupIn(env), slog.New(slog.DiscardHandler), name)
 	if errors.Is(err, config.ErrNotFound) {
 		return
