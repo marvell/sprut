@@ -32,6 +32,10 @@ stderr 'Authorization header'
 ! sprut upstream logout -c config.json h
 status 1
 stderr 'upstream "h"'
+! sprut upstream logout -c config.json help
+status 1
+stderr 'upstream "help"'
+stderr 'Authorization header'
 ! exists state/sprut
 
 # remove removes them.
@@ -64,16 +68,22 @@ cmp config.json empty.golden
 # version_and_help.txtar.
 sprut upstream add --help
 stdout 'sprut upstream add'
+! stderr .
 sprut upstream remove --help
 stdout 'sprut upstream remove'
+! stderr .
 sprut upstream enable --help
 stdout 'sprut upstream enable'
+! stderr .
 sprut upstream disable --help
 stdout 'sprut upstream disable'
+! stderr .
 sprut upstream list --help
 stdout 'sprut upstream list'
+! stderr .
 sprut upstream login --help
 stdout 'sprut upstream login'
+! stderr .
 sprut upstream logout --help
 stdout 'sprut upstream logout'
 ! stderr .

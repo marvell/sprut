@@ -30,7 +30,8 @@ func upstreamCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command
 		logoutCommand(env, stdout, stderr),
 	}
 	// h and help are valid Upstream names, and urfave/cli's help
-	// subcommand would take them; --help and -h stay.
+	// subcommand would take them. Every leaf drops it, list too, so that
+	// none reads h or help differently; --help and -h stay.
 	for _, c := range commands {
 		c.HideHelpCommand = true
 	}
