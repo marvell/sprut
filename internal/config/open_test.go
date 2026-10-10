@@ -24,7 +24,7 @@ func writeFile(t *testing.T, path, data string) {
 	}
 }
 
-const openConfig = `{"mcpServers": {
+const everyStateConfig = `{"mcpServers": {
 	"on": {"url": "https://example.com/on"},
 	"off": {"url": "https://example.com/off", "disabled": true},
 	"unset": {"url": "https://example.com/${MISSING}"},
@@ -35,7 +35,7 @@ func TestOpenNamedConfigGivesEveryResolvedUpstreamItsAbsolutePath(t *testing.T) 
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	writeFile(t, path, openConfig)
+	writeFile(t, path, everyStateConfig)
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestOpenConfigAtTheDefaultLocationLeavesConfigPathEmpty(t *testing.T) {
 	t.Parallel()
 	xdg := t.TempDir()
 	path := filepath.Join(xdg, "sprut", "config.json")
-	writeFile(t, path, openConfig)
+	writeFile(t, path, everyStateConfig)
 
 	c, err := config.Open("", lookup(map[string]string{"XDG_CONFIG_HOME": xdg}))
 	if err != nil {
@@ -162,7 +162,7 @@ func TestOpenFailures(t *testing.T) {
 func TestConfigLookupCoversEveryEntry(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.json")
-	writeFile(t, path, openConfig)
+	writeFile(t, path, everyStateConfig)
 	c, err := config.Open(path, lookup(nil))
 	if err != nil {
 		t.Fatalf("Open: unexpected error: %v", err)
@@ -204,7 +204,7 @@ func TestConfigLookupCoversEveryEntry(t *testing.T) {
 func TestConfigDocumentEditsLeaveTheConfigAsOpened(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.json")
-	writeFile(t, path, openConfig)
+	writeFile(t, path, everyStateConfig)
 	c, err := config.Open(path, lookup(nil))
 	if err != nil {
 		t.Fatalf("Open: unexpected error: %v", err)

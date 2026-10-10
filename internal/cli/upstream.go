@@ -144,20 +144,13 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name str
 		return
 	}
 	// The edit has already printed the warnings about the Upstream.
-	notChecked := func(err error) {
-		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
-	}
 	c, err := config.Open(cmd.String("config"), config.LookupIn(env))
 	if err != nil {
-		notChecked(err)
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
 		return
 	}
 	e, err := c.Lookup(name)
-	if err != nil {
-		notChecked(err)
-		return
-	}
-	if !e.Starts() {
+	if err != nil || !e.Starts() {
 		return
 	}
 	h := check(ctx, []config.Upstream{*e.Upstream}, env, cmd.Duration("startup-timeout"))[0]
