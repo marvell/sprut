@@ -66,23 +66,21 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 			if err != nil {
 				return err
 			}
-			states := make([]string, len(c.Entries))
-			for i, e := range c.Entries {
-				states[i] = state(e)
-			}
-			healthy := true
+			var check *gateway.CheckOptions
 			if cmd.Bool("check") {
-				healthy = checkStates(ctx, c, states, env, cmd.Duration("startup-timeout"))
+				check = checkOptions(cmd, env)
 			}
+			reports := gateway.Reports(ctx, c.Entries, store, check)
 			w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "NAME\tTRANSPORT\tTARGET\tSTATE\tAUTH")
-			for i, e := range c.Entries {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Name, orDash(string(e.Transport)), orDash(target(e)), states[i], authState(store, e))
+			for _, r := range reports {
+				e := r.Entry
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Name, orDash(string(e.Transport)), orDash(target(e)), state(r), auth(r.Auth))
 			}
 			if err := w.Flush(); err != nil {
 				return err
 			}
-			if !healthy {
+			if !gateway.AllWork(reports) {
 				return ucli.Exit("", 1)
 			}
 			return nil
@@ -90,38 +88,23 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 	}
 }
 
-// checkStates starts every enabled entry of c, as serve would, sets
-// its state in states to how it fared, and reports whether all of them
-// work.
-func checkStates(ctx context.Context, c *config.Config, states []string, env []string, startupTimeout time.Duration) bool {
-	upstreams := c.Upstreams()
-	// By name, which is unique in a Config.
-	health := make(map[string]gateway.Health, len(upstreams))
-	for i, h := range check(ctx, upstreams, env, startupTimeout) {
-		health[upstreams[i].Name] = h
+// checkOptions are how cmd checks Upstreams, with their failures not
+// logged: the caller reports them.
+func checkOptions(cmd *ucli.Command, env []string) *gateway.CheckOptions {
+	return &gateway.CheckOptions{
+		Env:            env,
+		StartupTimeout: cmd.Duration("startup-timeout"),
+		Version:        version(),
+		Log:            slog.New(slog.DiscardHandler),
 	}
-	healthy := true
-	for i, e := range c.Entries {
-		if h, ok := health[e.Name]; ok {
-			healthy = healthy && h.Err == nil
-			states[i] = healthState(h)
-		}
-	}
-	return healthy
 }
 
-// check is gateway.Check with its failures not logged: the caller reports
-// them.
-func check(ctx context.Context, upstreams []config.Upstream, env []string, startupTimeout time.Duration) []gateway.Health {
-	return gateway.Check(ctx, upstreams, env, startupTimeout, version(), slog.New(slog.DiscardHandler))
-}
-
-// healthState is how h fared, as list --check shows it in STATE.
-func healthState(h gateway.Health) string {
-	switch {
-	case h.Err == nil:
+// health is how h fared, as list --check shows it in STATE.
+func health(h *gateway.Health) string {
+	switch h.State {
+	case gateway.HealthWorks:
 		return fmt.Sprintf("ok (%d tools)", h.Tools)
-	case h.NeedsLogin():
+	case gateway.HealthNeedsLogin:
 		return "needs login"
 	}
 	return "failed: " + oneLine(h.Err.Error())
@@ -143,18 +126,21 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, c *config.Config, env 
 		return
 	}
 	e, err := c.Lookup(name)
-	if err != nil || !e.Starts() {
+	if err != nil {
 		return
 	}
-	h := check(ctx, []config.Upstream{*e.Upstream}, env, cmd.Duration("startup-timeout"))[0]
-	state, hint := healthState(h), h.Hint()
+	// Only the Health is shown, so Credentials that can't be located don't
+	// matter here; the check reports them itself.
+	store, _ := credentials.NewStore(config.LookupIn(env))
+	h := gateway.Reports(ctx, []config.Entry{e}, store, checkOptions(cmd, env))[0].Health
 	switch {
-	case h.Err == nil:
-		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, state)
-	case hint != "":
-		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, state, hint)
+	case h == nil:
+	case h.State == gateway.HealthWorks:
+		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, health(h))
+	case h.Remedy != "":
+		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, health(h), h.Remedy)
 	default:
-		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, state)
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, health(h))
 	}
 }
 
@@ -172,30 +158,48 @@ func target(e config.Entry) string {
 	return e.URL
 }
 
-// state is whether the Gateway starts the entry e, or why not.
-func state(e config.Entry) string {
-	switch {
-	case e.Disabled:
+// state is what list shows in STATE for r: how it fared if checked, else
+// whether the Gateway starts it, or why not.
+func state(r gateway.Report) string {
+	if r.Health != nil {
+		return health(r.Health)
+	}
+	switch r.Start {
+	case gateway.StartDisabled:
 		return "disabled"
-	case e.Skipped != "":
-		return "skipped: " + e.Skipped
+	case gateway.StartSkipped:
+		return "skipped: " + r.Entry.Skipped
 	}
 	return "enabled"
 }
 
-// authState describes the Credentials of the entry e, or is "-" if it is
-// not an OAuth Upstream, or can't be told to be one: a skipped entry has no
-// URL to bind Credentials to. Credentials that can't be read are one
+// auth is what list shows in AUTH for a: the state of the Credentials, or
+// "-" where OAuth doesn't apply. Credentials that can't be read are one
 // entry's problem, so they don't fail the list.
-func authState(store *credentials.Store, e config.Entry) string {
-	if e.Upstream == nil || gateway.CheckOAuthUpstream(*e.Upstream) != nil {
+func auth(a gateway.Auth) string {
+	switch a.State {
+	case gateway.AuthNotOAuth:
 		return "-"
+	case gateway.AuthNoCredentials:
+		return "no credentials"
+	case gateway.AuthDead:
+		return a.Reason + "; " + a.Remedy
+	case gateway.AuthUnreadable:
+		return "error: " + a.Err.Error()
 	}
-	status, err := gateway.Status(store, *e.Upstream)
-	if err != nil {
-		return "error: " + err.Error()
+	s := "logged in, access token "
+	switch {
+	case a.Expiry.IsZero():
+		s += "does not expire"
+	case a.Expired:
+		s += "expired " + a.Expiry.Local().Format(time.RFC3339)
+	default:
+		s += "expires " + a.Expiry.Local().Format(time.RFC3339)
 	}
-	return status
+	if !a.Renewable {
+		return s + ", not renewable"
+	}
+	return s + ", renewable"
 }
 
 func orDash(s string) string {

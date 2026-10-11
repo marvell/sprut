@@ -12,39 +12,52 @@ import (
 
 // Health is how an Upstream fared when started as serve starts it.
 type Health struct {
-	// Tools is how many tools it listed, if it started.
+	State HealthState
+	// Tools is how many tools a HealthWorks Upstream listed.
 	Tools int
-	// Err is why it failed to start, nil if it started.
+	// Err is why the Upstream failed to start, nil if it works.
 	Err error
+	// Remedy is what the user runs to make a HealthNeedsLogin Upstream work.
+	Remedy string
 }
 
-// NeedsLogin reports whether the Upstream failed because it is an OAuth
-// Upstream without Credentials it can use: it has none, they are dead, or
-// the Upstream rejected them with a 401.
-func (h Health) NeedsLogin() bool {
-	return errors.As(h.Err, new(*credentials.LoginNeededError))
+// HealthState is how an Upstream fared.
+type HealthState int
+
+const (
+	HealthWorks HealthState = iota
+	// HealthNeedsLogin is an OAuth Upstream without Credentials it can use:
+	// it has none, they are dead, or the Upstream rejected them with a 401.
+	HealthNeedsLogin
+	HealthFailed
+)
+
+// CheckOptions are how Reports starts the entries that the Gateway starts:
+// Env and StartupTimeout as for Start, Version as the Gateway's, and their
+// failures logged to Log.
+type CheckOptions struct {
+	Env            []string
+	StartupTimeout time.Duration
+	Version        string
+	Log            *slog.Logger
 }
 
-// Check starts every Upstream in configured concurrently, as Start does,
+// check starts every Upstream in configured concurrently, as Start does,
 // lists its tools and stops it again, and returns how each fared, in
-// Config order. env and startupTimeout are as for Start; failures are
-// logged to log.
-func Check(ctx context.Context, configured []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) []Health {
-	s := newUpstreams(env, startupTimeout, version, log)
+// Config order.
+func check(ctx context.Context, configured []config.Upstream, o *CheckOptions) []Health {
+	s := newUpstreams(o.Env, o.StartupTimeout, o.Version, o.Log)
 	defer s.close()
 	health := make([]Health, len(configured))
 	for i, res := range s.start(ctx, configured) {
-		if res.err != nil {
-			health[i].Err = res.err
-			continue
+		switch {
+		case res.err == nil:
+			health[i] = Health{State: HealthWorks, Tools: len(res.r.tools)}
+		case errors.As(res.err, new(*credentials.LoginNeededError)):
+			health[i] = Health{State: HealthNeedsLogin, Err: res.err, Remedy: hint(res.err)}
+		default:
+			health[i] = Health{State: HealthFailed, Err: res.err}
 		}
-		health[i].Tools = len(res.r.tools)
 	}
 	return health
-}
-
-// Hint is the remedy of the Upstream's failure, such as the command that
-// logs in to it, or "" if there is none.
-func (h Health) Hint() string {
-	return hint(h.Err)
 }
