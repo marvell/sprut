@@ -43,10 +43,10 @@ type CheckOptions struct {
 }
 
 // check starts every Upstream in configured concurrently, as Start does,
-// lists its tools and stops it again, and returns how each fared, in
+// with its Credentials from auths, lists its tools and stops it again, and returns how each fared, in
 // Config order.
-func check(ctx context.Context, configured []config.Upstream, o *CheckOptions) []Health {
-	s := newUpstreams(o.Env, o.StartupTimeout, o.Version, o.Log)
+func check(ctx context.Context, configured []config.Upstream, auths *Auths, o *CheckOptions) []Health {
+	s := newUpstreams(o.Env, auths, o.StartupTimeout, o.Version, o.Log)
 	defer s.close()
 	health := make([]Health, len(configured))
 	for i, res := range s.start(ctx, configured) {

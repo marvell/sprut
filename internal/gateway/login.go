@@ -35,21 +35,18 @@ const (
 	maxMetadataBytes = 1 << 20
 )
 
-// Login runs the Login for u and stores the Credentials it gets. It uses
-// the client that u's Config names, or registers one with Dynamic Client
-// Registration, prints the Authorization Server's issuer, the scopes and the
-// authorization URL to prompt, opens the URL if browser is set, and waits up
-// to callbackTimeout for the Authorization Server to redirect the user's
-// browser to a callback on a loopback port. env is where the proxy and the Credentials' directory come
-// from.
-func Login(ctx context.Context, u config.Upstream, env []string, browser bool, prompt io.Writer, version string, log *slog.Logger) error {
-	if err := CheckOAuthUpstream(u); err != nil {
-		return err
-	}
-	store, err := credentials.NewStore(config.LookupIn(env))
+// Login runs the Login for the OAuth Upstream and stores the Credentials it
+// gets. It uses the client that its Config names, or registers one with
+// Dynamic Client Registration, prints the Authorization Server's issuer, the
+// scopes and the authorization URL to prompt, opens the URL if browser is
+// set, and waits up to callbackTimeout for the Authorization Server to
+// redirect the user's browser to a callback on a loopback port.
+func (a *Auth) Login(ctx context.Context, browser bool, prompt io.Writer, version string, log *slog.Logger) error {
+	store, err := a.store()
 	if err != nil {
 		return err
 	}
+	u, env := a.upstream, a.auths.env
 
 	// A new Login keeps the scopes that the last one got, so that one
 	// after a step-up keeps those it had before.
@@ -65,7 +62,7 @@ func Login(ctx context.Context, u config.Upstream, env []string, browser bool, p
 	}
 	defer callbacks.Close()
 
-	t, err := newHTTPTransport(u, env)
+	t, err := a.transport()
 	if err != nil {
 		return err
 	}

@@ -33,7 +33,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			upstreams := c.Upstreams()
 			log.Info("config loaded", "path", c.Path, "upstreams", len(upstreams))
 
-			gw := gateway.Start(ctx, upstreams, env, startupTimeout, version(), log)
+			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, version(), log)
 			defer gw.Close()
 
 			if cmd.Bool("dry-run") {

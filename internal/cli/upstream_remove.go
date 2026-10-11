@@ -8,7 +8,6 @@ import (
 	ucli "github.com/urfave/cli/v3"
 
 	"github.com/marvell/sprut/internal/config"
-	"github.com/marvell/sprut/internal/credentials"
 )
 
 func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
@@ -21,11 +20,11 @@ func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			lookupEnv := config.LookupIn(env)
 			// Before the Config changes, so that a Store it can't find
 			// leaves the Config as it was.
-			store, err := credentials.NewStore(lookupEnv)
-			if err != nil {
+			auths := openAuths(env)
+			if err := auths.Located(); err != nil {
 				return err
 			}
-			_, err = config.Edit(cmd.String("config"), lookupEnv, func(doc *config.Document) (bool, error) {
+			_, err := config.Edit(cmd.String("config"), lookupEnv, func(doc *config.Document) (bool, error) {
 				return true, doc.Remove(name)
 			})
 			if err != nil {
@@ -33,7 +32,7 @@ func removeCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			}
 			// Only once the Config is saved, so that a Config that can't be
 			// saved keeps an Upstream with its Credentials.
-			had, err := store.Delete(ctx, name)
+			had, err := auths.Forget(ctx, name)
 			format := "removed upstream %q"
 			if had {
 				format += " and deleted its credentials"

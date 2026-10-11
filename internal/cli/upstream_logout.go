@@ -8,8 +8,6 @@ import (
 	ucli "github.com/urfave/cli/v3"
 
 	"github.com/marvell/sprut/internal/config"
-	"github.com/marvell/sprut/internal/credentials"
-	"github.com/marvell/sprut/internal/gateway"
 )
 
 func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
@@ -19,8 +17,7 @@ func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
-			lookupEnv := config.LookupIn(env)
-			c, err := openConfig(cmd.String("config"), lookupEnv, newLogger(stderr, false))
+			c, err := openConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
 			if err != nil {
 				return err
 			}
@@ -28,14 +25,7 @@ func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 			if err != nil {
 				return err
 			}
-			if err := gateway.CheckOAuthUpstream(u); err != nil {
-				return fmt.Errorf("upstream %q: %w", name, err)
-			}
-			store, err := credentials.NewStore(lookupEnv)
-			if err != nil {
-				return err
-			}
-			had, err := store.Delete(ctx, name)
+			had, err := openAuths(env).For(u).Logout(ctx)
 			if err != nil {
 				return fmt.Errorf("upstream %q: %w", name, err)
 			}

@@ -258,56 +258,66 @@ func TestTheLoginHintNamesTheConfigAsAShellElsewhereFindsIt(t *testing.T) {
 	}
 }
 
-// The fake is reached through a proxy, so that its URL can be plain HTTP
-// on a host that is not a loopback address.
-func TestOAuthOverPlainHTTPToANonLoopbackHostIsRefused(t *testing.T) {
-	t.Parallel()
-	u := mcptest.StartOAuth(t)
-	config := writeConfig(t, map[string]any{"remote": map[string]any{"url": "http://remote.invalid/mcp"}})
-	env := []string{"HTTP_PROXY=" + u.Base, "XDG_STATE_HOME=" + t.TempDir()}
-
-	t.Run("serve", func(t *testing.T) {
-		t.Parallel()
-		g := startGateway(t, config, env)
-		g.wantTools(t)
-		g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=remote", "OAuth requires HTTPS")
-		g.closeAgent(t)
-	})
-	t.Run("upstream login", func(t *testing.T) {
-		t.Parallel()
-		code, _, stderr := runSprut(t, env, "upstream", "login", "remote", "--no-browser", "-c", config)
-		if code != 1 || !strings.Contains(stderr, "OAuth requires HTTPS") {
-			t.Errorf("exit code = %d, want 1 saying OAuth requires HTTPS", code)
-		}
-	})
-}
-
-func TestUpstreamLoginExits1ForAnUpstreamThatIsNotAnOAuthUpstream(t *testing.T) {
+// list shows no Credentials for an Upstream that is not an OAuth Upstream,
+// and login, logout and serve, when it answers 401, all refuse it with the
+// one reason why. The plain HTTP one is reached through a proxy, so that
+// its URL can be on a host that is not a loopback address.
+func TestAnUpstreamThatIsNotAnOAuthUpstreamIsRefusedForTheSameReasonEverywhere(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)
 	for _, tc := range []struct {
 		name   string
 		entry  map[string]any
 		reason string
+		// whether serve gets a 401 from it
+		asks bool
 	}{
-		{"stdio", mcptest.Stdio{}.Entry(t), "OAuth is only for HTTP upstreams"},
-		{"static header", map[string]any{"url": u.URL, "headers": map[string]any{"authorization": "Bearer x"}}, "Authorization header"},
-		{"never answers 401", map[string]any{"url": mcptest.StartHTTP(t, "").URL}, "did not ask for authorization"},
+		{"stdio", mcptest.Stdio{}.Entry(t), "uses stdio, and OAuth is only for HTTP upstreams", false},
+		{"static header", map[string]any{"url": u.URL, "headers": map[string]any{"authorization": "Bearer x"}}, "sends an Authorization header from the config, so it does not use OAuth", true},
+		{"plain HTTP", map[string]any{"url": "http://remote.invalid/mcp"}, "OAuth requires HTTPS", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			config := writeConfig(t, map[string]any{"up": tc.entry})
 			state := t.TempDir()
+			env := []string{"HTTP_PROXY=" + u.Base, "XDG_STATE_HOME=" + state}
 
-			code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "upstream", "login", "up", "--no-browser", "-c", config)
-
-			if code != 1 || !strings.Contains(stderr, tc.reason) {
-				t.Errorf("exit code = %d, want 1 with a reason containing %q", code, tc.reason)
+			code, stdout, _ := runSprut(t, env, "upstream", "list", "-c", config)
+			if code != 0 {
+				t.Errorf("list: exit code = %d, want 0", code)
+			}
+			wantRows(t, stdout, `^up +\S+ +.+ +enabled +-$`)
+			for _, args := range [][]string{{"login", "--no-browser"}, {"logout"}} {
+				code, _, stderr := runSprut(t, env, append(append([]string{"upstream"}, args...), "up", "-c", config)...)
+				if want := `upstream "up": ` + tc.reason; code != 1 || !strings.Contains(stderr, want) {
+					t.Errorf("%s: exit code = %d, stderr = %q; want 1 saying %q", args[0], code, stderr, want)
+				}
 			}
 			if _, err := os.Stat(filepath.Join(state, "sprut", "credentials", "up.json")); err == nil {
 				t.Error("Credentials were written")
 			}
+			if tc.asks {
+				g := startGateway(t, config, env)
+				g.wantTools(t)
+				g.wantLogLine(t, "WARN", `msg="upstream failed; skipped"`, "upstream=up", tc.reason)
+				g.closeAgent(t)
+			}
 		})
+	}
+}
+
+func TestUpstreamLoginExits1ForAnUpstreamThatNeverAsksForAuthorization(t *testing.T) {
+	t.Parallel()
+	config := writeConfig(t, map[string]any{"up": map[string]any{"url": mcptest.StartHTTP(t, "").URL}})
+	state := t.TempDir()
+
+	code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + state}, "upstream", "login", "up", "--no-browser", "-c", config)
+
+	if code != 1 || !strings.Contains(stderr, "did not ask for authorization") {
+		t.Errorf("exit code = %d, want 1 saying it did not ask for authorization", code)
+	}
+	if _, err := os.Stat(filepath.Join(state, "sprut", "credentials", "up.json")); err == nil {
+		t.Error("Credentials were written")
 	}
 }
 

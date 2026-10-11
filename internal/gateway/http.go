@@ -14,34 +14,31 @@ import (
 	"golang.org/x/net/http/httpproxy"
 
 	"github.com/marvell/sprut/internal/config"
-	"github.com/marvell/sprut/internal/credentials"
 )
 
-// connectHTTP connects to u over Streamable HTTP and lists its tools. env
-// is where the proxy comes from, and store holds the Credentials.
-func connectHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, store *credentials.Store, log *slog.Logger) (*ready, error) {
-	session, err := dialHTTP(ctx, client, u, env, store, log)
+// connectHTTP connects to the Upstream of a over Streamable HTTP, with its
+// Credentials, and lists its tools.
+func connectHTTP(ctx context.Context, client *mcp.Client, a *Auth, log *slog.Logger) (*ready, error) {
+	session, err := dialHTTP(ctx, client, a, log)
 	if err != nil {
 		return nil, err
 	}
 	return list(ctx, session)
 }
 
-// dialHTTP connects to u over Streamable HTTP, with its stored Credentials
-// if it is an OAuth Upstream.
-func dialHTTP(ctx context.Context, client *mcp.Client, u config.Upstream, env []string, store *credentials.Store, log *slog.Logger) (*mcp.ClientSession, error) {
-	t, err := newHTTPTransport(u, env)
+// dialHTTP connects to the Upstream of a over Streamable HTTP, with its
+// stored Credentials if it is an OAuth Upstream.
+func dialHTTP(ctx context.Context, client *mcp.Client, a *Auth, log *slog.Logger) (*mcp.ClientSession, error) {
+	t, err := a.transport()
 	if err != nil {
 		return nil, err
 	}
-	h := newStoredCredentials(u, store, t.HTTPClient.Transport, log)
-	if h != nil {
-		t.OAuthHandler = h
-		t.HTTPClient.Transport = h.wrap(t.HTTPClient.Transport)
-	}
+	h := a.serving(t.HTTPClient.Transport, log)
+	t.OAuthHandler = h
+	t.HTTPClient.Transport = h.wrap(t.HTTPClient.Transport)
 	session, err := client.Connect(ctx, t, nil)
 	if err != nil {
-		if h != nil && h.Err() != nil {
+		if h.Err() != nil {
 			return nil, h.Err()
 		}
 		// The SDK never falls back to the deprecated HTTP+SSE transport, and
@@ -73,13 +70,9 @@ func newHTTPTransport(u config.Upstream, env []string) (*mcp.StreamableClientTra
 	}
 	// No Timeout: the Gateway sets none on tool calls, and startup is
 	// bounded by the ctx given to Connect.
-	client := &http.Client{Transport: rt}
-	if CheckOAuthUpstream(u) == nil {
-		client.CheckRedirect = sameOriginRedirects(endpoint)
-	}
 	return &mcp.StreamableClientTransport{
 		Endpoint:   u.URL,
-		HTTPClient: client,
+		HTTPClient: &http.Client{Transport: rt},
 		// The tool list is fixed at startup, so there is nothing for a
 		// stream of server-initiated messages to deliver.
 		DisableStandaloneSSE: true,

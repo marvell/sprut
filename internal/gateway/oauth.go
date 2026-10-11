@@ -16,42 +16,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 
-	"github.com/marvell/sprut/internal/config"
 	"github.com/marvell/sprut/internal/credentials"
 )
-
-// CheckOAuthUpstream reports why u is not an OAuth Upstream, or nil if it
-// is: an HTTP Upstream without an Authorization header, over HTTPS or over
-// plain HTTP on a loopback address. Whether it actually uses OAuth is up
-// to the Upstream, which asks for it by answering 401.
-func CheckOAuthUpstream(u config.Upstream) error {
-	if u.Transport != config.HTTP {
-		return fmt.Errorf("uses %s, and OAuth is only for HTTP upstreams", u.Transport)
-	}
-	if hasAuthorization(u) {
-		return errors.New("sends an Authorization header from the config, so it does not use OAuth")
-	}
-	endpoint, err := url.Parse(u.URL)
-	if err != nil {
-		return err
-	}
-	if isSecure(endpoint) {
-		return nil
-	}
-	// Its tokens would cross the network in the clear.
-	return errors.New("OAuth requires HTTPS")
-}
-
-// hasAuthorization reports whether u's Config headers include an
-// Authorization header, which rules OAuth out.
-func hasAuthorization(u config.Upstream) bool {
-	for k := range u.Headers {
-		if http.CanonicalHeaderKey(k) == "Authorization" {
-			return true
-		}
-	}
-	return false
-}
 
 // isSecure reports whether u is HTTPS, or plain HTTP to a loopback address,
 // which never crosses the network.
@@ -71,30 +37,13 @@ func isLoopback(host string) bool {
 // it can use, with its remedy.
 type needsLoginError struct {
 	credentials.LoginNeededError
-	hint string // the Upstream's loginHint
+	hint string // the Upstream's Auth.Remedy
 }
 
 func (e *needsLoginError) Hint() string { return e.hint }
 
 // Unwrap lets errors.As find the *credentials.LoginNeededError in e.
 func (e *needsLoginError) Unwrap() error { return &e.LoginNeededError }
-
-// loginHint is the remedy of an Upstream that needs a Login.
-func loginHint(u config.Upstream) string {
-	cmd := "run: sprut upstream login "
-	if u.ConfigPath != "" {
-		cmd += "-c " + shellQuote(u.ConfigPath) + " "
-	}
-	return cmd + u.Name // a valid name needs no quoting
-}
-
-// shellQuote quotes s for a POSIX shell, unless it needs no quoting.
-func shellQuote(s string) string {
-	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:@%+=,") == "" {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
 
 // storedCredentials is the OAuth handler of an HTTP Upstream in serve. It
 // sends the stored access token, if there is one, from the first request
@@ -107,14 +56,15 @@ func shellQuote(s string) string {
 // Server would hold the call up past its cancellation, and it ends the
 // whole connection when Authorize fails on a cancelled call.
 type storedCredentials struct {
-	upstream config.Upstream
+	auth     *Auth
 	endpoint *url.URL // the Upstream's
 	// the client that the Config registers, if any, which the Credentials
 	// don't hold
 	preregistered *oauthex.ClientCredentials
 	source        *credentials.Source // nil when refused
-	// refused is why the Upstream can't use OAuth, if it can't. It matters
-	// only once the server asks for authorization.
+	// refused is why the Upstream can't use OAuth, if it can't: it is not an
+	// OAuth Upstream, or there is no Store. It matters only once the server
+	// asks for authorization.
 	refused error
 	oauth   http.RoundTripper // for requests to the Authorization Server and the metadata
 	log     *slog.Logger
@@ -123,34 +73,21 @@ type storedCredentials struct {
 	err error // the last error a request or Authorize ended with
 }
 
-// openStore returns the Store that env points at, or nil if there is none
-// (credentials.ErrNoHome). Every connection that one owner makes shares it,
-// and the owner waits for its renewals before the process exits.
-func openStore(env []string) *credentials.Store {
-	store, _ := credentials.NewStore(config.LookupIn(env))
-	return store
-}
-
-// newStoredCredentials returns the OAuth handler of u, with its Credentials
-// in store, nil if there is none. oauth carries its requests to the
-// Authorization Server. It returns nil for an Upstream that has an
-// Authorization header, which never uses OAuth.
-func newStoredCredentials(u config.Upstream, store *credentials.Store, oauth http.RoundTripper, log *slog.Logger) *storedCredentials {
-	if hasAuthorization(u) {
-		return nil
-	}
+// serving returns the OAuth handler of the HTTP Upstream in serve, which
+// carries its requests to the Authorization Server through oauth. An
+// Upstream that is not an OAuth Upstream gets one too, which sends no token
+// and refuses a 401 with why it is not one.
+func (a *Auth) serving(oauth http.RoundTripper, log *slog.Logger) *storedCredentials {
 	h := &storedCredentials{
-		upstream: u, preregistered: preregisteredClient(u), refused: CheckOAuthUpstream(u), oauth: oauth, log: log,
+		auth: a, preregistered: preregisteredClient(a.upstream), oauth: oauth, log: log,
 	}
-	h.endpoint, _ = url.Parse(u.URL) // parsed already by newHTTPTransport
-	if h.refused != nil {
+	h.endpoint, _ = url.Parse(a.upstream.URL) // parsed already by newHTTPTransport
+	store, err := a.store()
+	if err != nil {
+		h.refused = err
 		return h
 	}
-	if store == nil {
-		h.refused = credentials.ErrNoHome
-		return h
-	}
-	h.source = store.Source(u, h.renewToken, log)
+	h.source = store.Source(a.upstream, h.renewToken, log)
 	return h
 }
 
@@ -163,6 +100,12 @@ func (h *storedCredentials) TokenSource(context.Context) (oauth2.TokenSource, er
 // and the 403s.
 func (h *storedCredentials) Authorize(_ context.Context, _ *http.Request, resp *http.Response) error {
 	discard(resp)
+	if h.refused != nil {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return h.fail(h.refused)
+		}
+		return nil
+	}
 	if resp.StatusCode == http.StatusForbidden && insufficientScope(resp) {
 		return h.fail(&credentials.LoginNeededError{Reason: "the credentials lack a scope that the upstream needs"})
 	}
@@ -170,9 +113,6 @@ func (h *storedCredentials) Authorize(_ context.Context, _ *http.Request, resp *
 		// Any other 403 is the server's answer to give; the request is
 		// retried and fails as it is.
 		return nil
-	}
-	if h.refused != nil {
-		return h.fail(h.refused)
 	}
 	return h.fail(h.source.Unauthorized())
 }
@@ -287,7 +227,7 @@ func (h *storedCredentials) renewToken(ctx context.Context, c *credentials.Crede
 
 	renewed := *c
 	renewed.Token, renewed.Scopes = *tok, grantedScopes(tok, c.Scopes)
-	h.log.Debug("credentials renewed", "upstream", h.upstream.Name, "expires", renewed.Expiry)
+	h.log.Debug("credentials renewed", "upstream", h.auth.upstream.Name, "expires", renewed.Expiry)
 	return &renewed, nil
 }
 
@@ -382,7 +322,7 @@ func sameIssuer(a, b string) bool {
 
 // needsLogin is the error of the Upstream needing a Login, for reason.
 func (h *storedCredentials) needsLogin(reason string) error {
-	return &needsLoginError{LoginNeededError: credentials.LoginNeededError{Reason: reason}, hint: loginHint(h.upstream)}
+	return &needsLoginError{LoginNeededError: credentials.LoginNeededError{Reason: reason}, hint: h.auth.Remedy()}
 }
 
 // oauthClient is the HTTP client of requests to an Authorization Server
@@ -424,7 +364,7 @@ func (t errorBodies) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // fail records err, if any, as the last error, and returns it, with the
-// Upstream's loginHint if it is a *credentials.LoginNeededError.
+// Upstream's Auth.Remedy if it is a *credentials.LoginNeededError.
 func (h *storedCredentials) fail(err error) error {
 	var e *credentials.LoginNeededError
 	if errors.As(err, &e) {

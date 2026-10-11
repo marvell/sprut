@@ -14,7 +14,6 @@ import (
 	ucli "github.com/urfave/cli/v3"
 
 	"github.com/marvell/sprut/internal/config"
-	"github.com/marvell/sprut/internal/credentials"
 	"github.com/marvell/sprut/internal/gateway"
 )
 
@@ -54,23 +53,18 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 			startupTimeoutFlag(),
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
-			lookupEnv := config.LookupIn(env)
-			c, err := config.Open(cmd.String("config"), lookupEnv)
+			c, err := config.Open(cmd.String("config"), config.LookupIn(env))
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 			if len(c.Entries) == 0 {
 				return nil
 			}
-			store, err := credentials.NewStore(lookupEnv)
-			if err != nil {
-				return err
-			}
 			var check *gateway.CheckOptions
 			if cmd.Bool("check") {
 				check = checkOptions(cmd, env)
 			}
-			reports := gateway.Reports(ctx, c.Entries, store, check)
+			reports := gateway.Reports(ctx, c.Entries, openAuths(env), check)
 			w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "NAME\tTRANSPORT\tTARGET\tSTATE\tAUTH")
 			for _, r := range reports {
@@ -129,10 +123,7 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, c *config.Config, env 
 	if err != nil {
 		return
 	}
-	// Only the Health is shown, so Credentials that can't be located don't
-	// matter here; the check reports them itself.
-	store, _ := credentials.NewStore(config.LookupIn(env))
-	h := gateway.Reports(ctx, []config.Entry{e}, store, checkOptions(cmd, env))[0].Health
+	h := gateway.Reports(ctx, []config.Entry{e}, openAuths(env), checkOptions(cmd, env))[0].Health
 	switch {
 	case h == nil:
 	case h.State == gateway.HealthWorks:
@@ -176,7 +167,7 @@ func state(r gateway.Report) string {
 // auth is what list shows in AUTH for a: the state of the Credentials, or
 // "-" where OAuth doesn't apply. Credentials that can't be read are one
 // entry's problem, so they don't fail the list.
-func auth(a gateway.Auth) string {
+func auth(a gateway.AuthStatus) string {
 	switch a.State {
 	case gateway.AuthNotOAuth:
 		return "-"

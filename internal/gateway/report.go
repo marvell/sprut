@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/marvell/sprut/internal/config"
-	"github.com/marvell/sprut/internal/credentials"
 )
 
 // Report is how one entry of the Config is doing: whether the Gateway
@@ -13,7 +12,7 @@ import (
 type Report struct {
 	Entry config.Entry
 	Start StartState
-	Auth  Auth
+	Auth  AuthStatus
 	// Health is how the entry fared when started, nil if it wasn't: no
 	// check was asked for, or the Gateway doesn't start it.
 	Health *Health
@@ -30,23 +29,22 @@ const (
 	StartSkipped
 )
 
-// Reports returns a Report of each of entries, in their order, with the
-// Credentials as store holds them; a nil store is one that can't be located
-// (credentials.ErrNoHome). Unless checkOpts is nil, it also starts every
+// Reports returns a Report of each of entries, in their order, with their
+// Credentials from auths. Unless checkOpts is nil, it also starts every
 // entry the Gateway starts, concurrently, to say how it fares.
-func Reports(ctx context.Context, entries []config.Entry, store *credentials.Store, checkOpts *CheckOptions) []Report {
+func Reports(ctx context.Context, entries []config.Entry, auths *Auths, checkOpts *CheckOptions) []Report {
 	reports := make([]Report, len(entries))
 	var started []config.Upstream
 	var at []int // the index in reports of each of started
 	for i, e := range entries {
-		reports[i] = Report{Entry: e, Start: startState(e), Auth: authOf(store, e)}
+		reports[i] = Report{Entry: e, Start: startState(e), Auth: statusOf(auths, e)}
 		if e.Starts() {
 			started = append(started, *e.Upstream)
 			at = append(at, i)
 		}
 	}
 	if checkOpts != nil && len(started) > 0 {
-		for i, h := range check(ctx, started, checkOpts) {
+		for i, h := range check(ctx, started, auths, checkOpts) {
 			reports[at[i]].Health = &h
 		}
 	}
@@ -73,10 +71,10 @@ func startState(e config.Entry) StartState {
 	return StartEnabled
 }
 
-// Auth is the state of an entry's Credentials, as the store holds them. It
-// is read without contacting any server, so Credentials that the
+// AuthStatus is the state of an entry's Credentials, as the Store holds
+// them. It is read without contacting any server, so Credentials that the
 // Authorization Server would reject read as good.
-type Auth struct {
+type AuthStatus struct {
 	State AuthState
 	// Expiry is when the access token of AuthLoggedIn expires, zero if it
 	// doesn't.
@@ -98,9 +96,9 @@ type Auth struct {
 type AuthState int
 
 const (
-	// AuthNotOAuth is an entry that is not an OAuth Upstream (see
-	// CheckOAuthUpstream), or can't be told to be one: a skipped entry has
-	// no URL to bind Credentials to. A disabled one is judged as if enabled.
+	// AuthNotOAuth is an entry that is not an OAuth Upstream, or can't be
+	// told to be one: a skipped entry has no URL to bind Credentials to. A
+	// disabled one is judged as if enabled.
 	AuthNotOAuth AuthState = iota
 	AuthNoCredentials
 	AuthLoggedIn
@@ -110,29 +108,10 @@ const (
 	AuthUnreadable
 )
 
-// authOf is the Auth of e in store, as for Reports.
-func authOf(store *credentials.Store, e config.Entry) Auth {
-	if e.Upstream == nil || CheckOAuthUpstream(*e.Upstream) != nil {
-		return Auth{State: AuthNotOAuth}
+// statusOf is the AuthStatus of e: that of its Auth, unless it is skipped.
+func statusOf(auths *Auths, e config.Entry) AuthStatus {
+	if e.Upstream == nil {
+		return AuthStatus{State: AuthNotOAuth}
 	}
-	if store == nil {
-		return Auth{State: AuthUnreadable, Err: credentials.ErrNoHome}
-	}
-	c, err := store.Load(*e.Upstream)
-	switch {
-	case err != nil:
-		return Auth{State: AuthUnreadable, Err: err}
-	case c == nil:
-		// No remedy: an Upstream that never asks for authorization has
-		// none either, and needs no Login.
-		return Auth{State: AuthNoCredentials}
-	case c.Dead():
-		return Auth{State: AuthDead, Reason: credentials.ReasonExpired, Remedy: loginHint(*e.Upstream)}
-	}
-	return Auth{
-		State:     AuthLoggedIn,
-		Expiry:    c.Expiry,
-		Expired:   !c.Expiry.IsZero() && time.Now().After(c.Expiry),
-		Renewable: c.RefreshToken != "",
-	}
+	return auths.For(*e.Upstream).Status()
 }

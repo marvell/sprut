@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	ucli "github.com/urfave/cli/v3"
 
@@ -32,10 +33,34 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 			if err != nil {
 				return err
 			}
-			if err := gateway.Login(ctx, u, env, !cmd.Bool("no-browser"), stderr, version(), log); err != nil {
+			if err := openAuths(env).For(u).Login(ctx, !cmd.Bool("no-browser"), stderr, version(), log); err != nil {
 				return fmt.Errorf("upstream %q: %w", name, err)
 			}
 			return nil
 		},
 	}
+}
+
+// openAuths returns the Logins and Credentials of every Upstream, in the
+// Store that env points at.
+func openAuths(env []string) *gateway.Auths {
+	return gateway.OpenAuths(env, loginRemedy)
+}
+
+// loginRemedy is what the user runs to log in to u: the login command
+// above, with -c unless u's Config is where sprut looks by default.
+func loginRemedy(u config.Upstream) string {
+	cmd := "run: sprut upstream login "
+	if u.ConfigPath != "" {
+		cmd += "-c " + shellQuote(u.ConfigPath) + " "
+	}
+	return cmd + u.Name // a valid name needs no quoting
+}
+
+// shellQuote quotes s for a POSIX shell, unless it needs no quoting.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:@%+=,") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

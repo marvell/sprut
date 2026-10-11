@@ -32,6 +32,26 @@ func TestUpstreamListReportsTheCredentialsOfEachOAuthUpstream(t *testing.T) {
 	wantNoSecrets(t, "upstream list stdout", stdout, mcptest.Secrets...)
 }
 
+// Credentials that can't be located are each OAuth Upstream's problem, as
+// any that can't be read are, and an Upstream that isn't one has none.
+func TestUpstreamListWithoutAHomeDirectorySaysSoForEachOAuthUpstream(t *testing.T) {
+	t.Parallel()
+	config := writeConfig(t, map[string]any{
+		"oauth": map[string]any{"url": "https://oauth.invalid/mcp"},
+		"local": mcptest.Stdio{}.Entry(t),
+	})
+
+	code, stdout, _ := runSprut(t, nil, "upstream", "list", "-c", config)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	wantRows(t, stdout,
+		`^local +stdio +.+ +enabled +-$`,
+		`^oauth +http +\S+ +enabled +error: cannot locate the credentials: HOME is not set$`,
+	)
+}
+
 func TestUpstreamListCheckReportsWhetherEachHTTPUpstreamWorksBeforeAndAfterALogin(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)

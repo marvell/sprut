@@ -18,7 +18,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/marvell/sprut/internal/config"
-	"github.com/marvell/sprut/internal/credentials"
 )
 
 // separator joins an Upstream's name and a tool's name into a Namespaced tool.
@@ -48,10 +47,11 @@ type skippedUpstream struct {
 // returns a Gateway ready to serve them. env is the environment Upstream
 // processes inherit. Each Upstream gets startupTimeout to connect and list
 // its tools; one that fails or runs out of time is logged, left out and
-// listed in the instructions the Agent gets.
-func Start(ctx context.Context, configured []config.Upstream, env []string, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
+// listed in the instructions the Agent gets. auths holds the Credentials
+// of every OAuth Upstream; Close waits for their renewals in progress.
+func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
 	g := &Gateway{
-		upstreams: newUpstreams(env, startupTimeout, version, log),
+		upstreams: newUpstreams(env, auths, startupTimeout, version, log),
 		tools:     map[string]bool{},
 		log:       log,
 	}
@@ -167,11 +167,11 @@ type ready struct {
 // upstreams starts the Upstreams and stops them again. Each gets timeout
 // to connect and list its tools. env is the environment sprut was given: a
 // stdio Upstream's process inherits it, and an HTTP Upstream's proxy comes
-// from it. store holds the Credentials of every OAuth Upstream.
+// from it. auths holds the Credentials of every OAuth Upstream.
 type upstreams struct {
 	client  *mcp.Client
 	env     []string
-	store   *credentials.Store
+	auths   *Auths
 	timeout time.Duration
 	log     *slog.Logger
 
@@ -220,8 +220,8 @@ func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []s
 
 // newUpstreams returns the starter of Upstreams for a sprut of version,
 // whose environment is env.
-func newUpstreams(env []string, timeout time.Duration, version string, log *slog.Logger) *upstreams {
-	return &upstreams{client: newClient(version), env: env, store: openStore(env), timeout: timeout, log: log}
+func newUpstreams(env []string, auths *Auths, timeout time.Duration, version string, log *slog.Logger) *upstreams {
+	return &upstreams{client: newClient(version), env: env, auths: auths, timeout: timeout, log: log}
 }
 
 // startOne starts u, giving up on it once the timeout runs out.
@@ -271,7 +271,7 @@ func (s *upstreams) close() {
 	}
 	wg.Wait()
 	s.starting.Wait()
-	s.store.Wait()
+	s.auths.Wait()
 }
 
 // connect connects to u over its Transport and lists its tools.
@@ -280,7 +280,7 @@ func (s *upstreams) connect(ctx context.Context, u config.Upstream) (*ready, err
 	case config.Stdio:
 		return connectStdio(ctx, s.client, u, s.env, s.log)
 	case config.HTTP:
-		return connectHTTP(ctx, s.client, u, s.env, s.store, s.log)
+		return connectHTTP(ctx, s.client, s.auths.For(u), s.log)
 	}
 	return nil, fmt.Errorf("unknown transport %q", u.Transport)
 }

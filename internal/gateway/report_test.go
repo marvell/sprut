@@ -26,7 +26,7 @@ func TestReportsSayWhetherTheGatewayStartsEachEntry(t *testing.T) {
 		"legacy": map[string]any{"type": "sse", "url": "https://legacy.invalid/sse"},
 	})
 
-	reports := gateway.Reports(t.Context(), c.Entries, newStore(t), nil)
+	reports := gateway.Reports(t.Context(), c.Entries, openAuths(t), nil)
 
 	want := map[string]struct {
 		start   gateway.StartState
@@ -78,9 +78,9 @@ func TestReportsDescribeTheCredentialsOfEachOAuthUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reports := gateway.Reports(t.Context(), c.Entries, store, nil)
+	reports := gateway.Reports(t.Context(), c.Entries, gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy), nil)
 
-	want := map[string]gateway.Auth{
+	want := map[string]gateway.AuthStatus{
 		"local":    {State: gateway.AuthNotOAuth},
 		"static":   {State: gateway.AuthNotOAuth},
 		"plain":    {State: gateway.AuthNotOAuth},
@@ -89,7 +89,7 @@ func TestReportsDescribeTheCredentialsOfEachOAuthUpstream(t *testing.T) {
 		"valid":    {State: gateway.AuthLoggedIn, Expiry: future, Renewable: true},
 		"stale":    {State: gateway.AuthLoggedIn, Expiry: past, Expired: true, Renewable: true},
 		"forever":  {State: gateway.AuthLoggedIn},
-		"dead":     {State: gateway.AuthDead, Reason: credentials.ReasonExpired, Remedy: "run: sprut upstream login -c " + c.Path + " dead"},
+		"dead":     {State: gateway.AuthDead, Reason: credentials.ReasonExpired, Remedy: "log in to dead"},
 		"paused":   {State: gateway.AuthLoggedIn, Expiry: future, Renewable: true},
 		"loopback": {State: gateway.AuthNoCredentials},
 	}
@@ -112,14 +112,14 @@ func TestReportsDescribeTheCredentialsOfEachOAuthUpstream(t *testing.T) {
 	}
 }
 
-func TestReportsSayTheCredentialsOfAnOAuthUpstreamCantBeReadWithoutAStore(t *testing.T) {
+func TestReportsSayTheCredentialsOfAnOAuthUpstreamCantBeReadWithoutAHomeDirectory(t *testing.T) {
 	t.Parallel()
 	c := openConfig(t, map[string]any{
 		"oauth": map[string]any{"url": "https://oauth.invalid/mcp"},
 		"local": map[string]any{"command": "fake-upstream"},
 	})
 
-	reports := gateway.Reports(t.Context(), c.Entries, nil, nil)
+	reports := gateway.Reports(t.Context(), c.Entries, gateway.OpenAuths(nil, remedy), nil)
 
 	// Config order is sorted by name: local, then oauth.
 	if got := reports[1].Auth; got.State != gateway.AuthUnreadable || !errors.Is(got.Err, credentials.ErrNoHome) {
@@ -143,14 +143,15 @@ func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 	})
 	store, state := newStoreIn(t)
 	save(t, store, c, "dead", oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(-time.Hour)})
+	env := []string{"XDG_STATE_HOME=" + state}
 	check := &gateway.CheckOptions{
-		Env:            []string{"XDG_STATE_HOME=" + state},
+		Env:            env,
 		StartupTimeout: 10 * time.Second,
 		Version:        "test",
 		Log:            slog.New(slog.DiscardHandler),
 	}
 
-	reports := gateway.Reports(t.Context(), c.Entries, store, check)
+	reports := gateway.Reports(t.Context(), c.Entries, gateway.OpenAuths(env, remedy), check)
 
 	if len(reports) != 6 {
 		t.Fatalf("got %d reports, want 6", len(reports))
@@ -163,7 +164,7 @@ func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 				t.Errorf("plain: health = %+v, want it to work with 2 tools", h)
 			}
 		case "oauth", "dead":
-			if want := "run: sprut upstream login -c " + c.Path + " " + r.Entry.Name; h == nil || h.State != gateway.HealthNeedsLogin || h.Err == nil || h.Remedy != want {
+			if want := "log in to " + r.Entry.Name; h == nil || h.State != gateway.HealthNeedsLogin || h.Err == nil || h.Remedy != want {
 				t.Errorf("%s: health = %+v, want it to need a Login, with remedy %q", r.Entry.Name, h, want)
 			}
 		case "refused":
@@ -220,14 +221,14 @@ func openConfig(t *testing.T, servers map[string]any) *config.Config {
 	return c
 }
 
-// newStore is an empty Credentials Store of a test's own.
-func newStore(t *testing.T) *credentials.Store {
+// openAuths are the Auths of an empty Credentials Store of a test's own.
+func openAuths(t *testing.T) *gateway.Auths {
 	t.Helper()
-	s, _ := newStoreIn(t)
-	return s
+	return gateway.OpenAuths([]string{"XDG_STATE_HOME=" + t.TempDir()}, remedy)
 }
 
-// newStoreIn is newStore, and also returns its $XDG_STATE_HOME.
+// newStoreIn is an empty Credentials Store of a test's own, and its
+// $XDG_STATE_HOME.
 func newStoreIn(t *testing.T) (*credentials.Store, string) {
 	t.Helper()
 	state := t.TempDir()
