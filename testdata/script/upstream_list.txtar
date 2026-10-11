@@ -62,6 +62,7 @@ stderr 'My_Server'
   "linear": {"url": "https://linear.invalid/mcp"},
   "notion": {"url": "https://notion.invalid/mcp"},
   "dead": {"url": "https://dead.invalid/mcp"},
+  "stale": {"url": "https://stale.invalid/mcp"},
   "static": {"url": "https://static.invalid/mcp", "headers": {"authorization": "Bearer x"}},
   "plain": {"url": "http://plain.invalid/mcp"},
   "paused": {"url": "https://paused.invalid/mcp", "disabled": true},
@@ -79,6 +80,11 @@ stderr 'My_Server'
  "token_url": "https://dead.invalid/token", "auth_style": 0,
  "resource": "https://dead.invalid/mcp", "issuer": "https://dead.invalid",
  "config": {"url": "https://dead.invalid/mcp", "scopes": null}}
+-- state/sprut/credentials/stale.json --
+{"access_token": "a", "token_type": "Bearer", "refresh_token": "r", "expiry": "2000-01-01T00:00:00Z",
+ "token_url": "https://stale.invalid/token", "auth_style": 0,
+ "resource": "https://stale.invalid/mcp", "issuer": "https://stale.invalid",
+ "config": {"url": "https://stale.invalid/mcp", "scopes": null}}
 -- state/sprut/credentials/paused.json --
 {"access_token": "a", "token_type": "Bearer",
  "token_url": "https://paused.invalid/token", "auth_style": 0,
@@ -90,6 +96,7 @@ memory  stdio      npx -y @modelcontextprotocol/server-memory    enabled        
 linear  http       https://linear.invalid/mcp                    enabled                                  logged in, access token expires 2099-01-01T00:00:00Z, renewable
 notion  http       https://notion.invalid/mcp                    enabled                                  no credentials
 dead    http       https://dead.invalid/mcp                      enabled                                  the credentials expired and cannot be renewed; run: sprut upstream login dead
+stale   http       https://stale.invalid/mcp                     enabled                                  logged in, access token expired 2000-01-01T00:00:00Z, renewable
 static  http       https://static.invalid/mcp                    enabled                                  -
 plain   http       http://plain.invalid/mcp                      enabled                                  -
 paused  http       https://paused.invalid/mcp                    disabled                                 logged in, access token does not expire, not renewable

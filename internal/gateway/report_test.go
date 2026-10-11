@@ -132,14 +132,17 @@ func TestReportsSayTheCredentialsOfAnOAuthUpstreamCantBeReadWithoutAStore(t *tes
 
 func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 	t.Parallel()
+	oauth := mcptest.StartOAuth(t)
 	c := openConfig(t, map[string]any{
 		"plain":   map[string]any{"url": mcptest.StartHTTP(t, "").URL},
-		"oauth":   map[string]any{"url": mcptest.StartOAuth(t).URL},
+		"oauth":   map[string]any{"url": oauth.URL},
+		"dead":    map[string]any{"url": oauth.URL},
 		"refused": map[string]any{"url": mcptest.RefusingURL()},
 		"off":     map[string]any{"url": mcptest.RefusingURL(), "disabled": true},
 		"unset":   map[string]any{"url": "https://unset.invalid/mcp?key=${SPRUT_TEST_UNSET}"},
 	})
 	store, state := newStoreIn(t)
+	save(t, store, c, "dead", oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(-time.Hour)})
 	check := &gateway.CheckOptions{
 		Env:            []string{"XDG_STATE_HOME=" + state},
 		StartupTimeout: 10 * time.Second,
@@ -149,8 +152,8 @@ func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 
 	reports := gateway.Reports(t.Context(), c.Entries, store, check)
 
-	if len(reports) != 5 {
-		t.Fatalf("got %d reports, want 5", len(reports))
+	if len(reports) != 6 {
+		t.Fatalf("got %d reports, want 6", len(reports))
 	}
 	for _, r := range reports {
 		h := r.Health
@@ -159,9 +162,9 @@ func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 			if h == nil || h.State != gateway.HealthWorks || h.Tools != 2 || h.Err != nil || h.Remedy != "" {
 				t.Errorf("plain: health = %+v, want it to work with 2 tools", h)
 			}
-		case "oauth":
-			if want := "run: sprut upstream login -c " + c.Path + " oauth"; h == nil || h.State != gateway.HealthNeedsLogin || h.Err == nil || h.Remedy != want {
-				t.Errorf("oauth: health = %+v, want it to need a Login, with remedy %q", h, want)
+		case "oauth", "dead":
+			if want := "run: sprut upstream login -c " + c.Path + " " + r.Entry.Name; h == nil || h.State != gateway.HealthNeedsLogin || h.Err == nil || h.Remedy != want {
+				t.Errorf("%s: health = %+v, want it to need a Login, with remedy %q", r.Entry.Name, h, want)
 			}
 		case "refused":
 			if h == nil || h.State != gateway.HealthFailed || h.Err == nil || h.Remedy != "" {

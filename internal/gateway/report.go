@@ -73,7 +73,7 @@ func startState(e config.Entry) StartState {
 	return StartEnabled
 }
 
-// Auth is the state of an entry's Credentials, as the Store holds them. It
+// Auth is the state of an entry's Credentials, as the store holds them. It
 // is read without contacting any server, so Credentials that the
 // Authorization Server would reject read as good.
 type Auth struct {
