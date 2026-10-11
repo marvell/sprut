@@ -26,7 +26,7 @@ func TestReportsSayWhetherTheGatewayStartsEachEntry(t *testing.T) {
 		"legacy": map[string]any{"type": "sse", "url": "https://legacy.invalid/sse"},
 	})
 
-	reports := gateway.Reports(t.Context(), c.Entries, openAuths(t), nil)
+	reports := gateway.Reports(t.Context(), c.Entries, openAuths(t.TempDir()), nil)
 
 	want := map[string]struct {
 		start   gateway.StartState
@@ -78,7 +78,7 @@ func TestReportsDescribeTheCredentialsOfEachOAuthUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reports := gateway.Reports(t.Context(), c.Entries, gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy), nil)
+	reports := gateway.Reports(t.Context(), c.Entries, openAuths(state), nil)
 
 	want := map[string]gateway.AuthStatus{
 		"local":    {State: gateway.AuthNotOAuth},
@@ -221,10 +221,10 @@ func openConfig(t *testing.T, servers map[string]any) *config.Config {
 	return c
 }
 
-// openAuths are the Auths of an empty Credentials Store of a test's own.
-func openAuths(t *testing.T) *gateway.Auths {
-	t.Helper()
-	return gateway.OpenAuths([]string{"XDG_STATE_HOME=" + t.TempDir()}, remedy)
+// openAuths are the Auths whose Store is under the $XDG_STATE_HOME state,
+// with remedy.
+func openAuths(state string) *gateway.Auths {
+	return gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy)
 }
 
 // newStoreIn is an empty Credentials Store of a test's own, and its

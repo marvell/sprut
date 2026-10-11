@@ -25,7 +25,7 @@ func TestLogoutDeletesTheCredentialsAndKeepsTheLock(t *testing.T) {
 	c := openConfig(t, map[string]any{"oauth": map[string]any{"url": "https://oauth.invalid/mcp"}})
 	store, state := newStoreIn(t)
 	save(t, store, c, "oauth", oauth2.Token{AccessToken: "a"})
-	a := gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy).For(upstream(t, c, "oauth"))
+	a := openAuths(state).For(upstream(t, c, "oauth"))
 
 	had, err := a.Logout(t.Context())
 	if err != nil || !had {
@@ -56,7 +56,7 @@ func TestAnUpstreamThatIsNotAnOAuthUpstreamHasNoCredentialsAndRefusesLoginAndLog
 		"plain":  map[string]any{"url": "http://plain.invalid/mcp"},
 	})
 	_, state := newStoreIn(t)
-	auths := gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy)
+	auths := openAuths(state)
 	for name, reason := range map[string]string{
 		"local":  "uses stdio, and OAuth is only for HTTP upstreams",
 		"static": "sends an Authorization header from the config, so it does not use OAuth",
@@ -80,7 +80,7 @@ func TestADisabledOAuthUpstreamIsJudgedAsIfEnabled(t *testing.T) {
 	c := openConfig(t, map[string]any{"paused": map[string]any{"url": "https://paused.invalid/mcp", "disabled": true}})
 	store, state := newStoreIn(t)
 	save(t, store, c, "paused", oauth2.Token{AccessToken: "a"})
-	a := gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy).For(upstream(t, c, "paused"))
+	a := openAuths(state).For(upstream(t, c, "paused"))
 
 	if got := a.Status(); got.State != gateway.AuthLoggedIn {
 		t.Errorf("status = %+v, want logged in", got)
@@ -131,7 +131,7 @@ func TestForgetDeletesCredentialsWhateverTheEntry(t *testing.T) {
 	c := openConfig(t, map[string]any{"oauth": map[string]any{"url": "https://oauth.invalid/mcp"}})
 	store, state := newStoreIn(t)
 	save(t, store, c, "oauth", oauth2.Token{AccessToken: "a"})
-	auths := gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy)
+	auths := openAuths(state)
 
 	if err := auths.Located(); err != nil {
 		t.Errorf("Located = %v, want nil", err)
@@ -149,7 +149,7 @@ func TestDeadCredentialsGiveTheRemedyTheAuthsWereOpenedWith(t *testing.T) {
 	c := openConfig(t, map[string]any{"dead": map[string]any{"url": "https://dead.invalid/mcp"}})
 	store, state := newStoreIn(t)
 	save(t, store, c, "dead", oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(-time.Hour)})
-	a := gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy).For(upstream(t, c, "dead"))
+	a := openAuths(state).For(upstream(t, c, "dead"))
 
 	if got := a.Status(); got.State != gateway.AuthDead || got.Reason != credentials.ReasonExpired || got.Remedy != "log in to dead" {
 		t.Errorf("status = %+v, want dead, expired, with the remedy %q", got, "log in to dead")
