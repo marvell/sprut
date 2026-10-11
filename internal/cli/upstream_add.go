@@ -51,7 +51,7 @@ func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 			if err := setFields(cmd, &def); err != nil {
 				return usageError(ctx, cmd, err)
 			}
-			err = editConfig(cmd.String("config"), config.LookupIn(env), stderr, name, func(doc *config.Document) (bool, error) {
+			c, err := config.Edit(cmd.String("config"), config.LookupIn(env), func(doc *config.Document) (bool, error) {
 				return true, doc.Add(name, def, cmd.Bool("force"))
 			})
 			if errors.Is(err, config.ErrExists) {
@@ -60,8 +60,9 @@ func addCommand(args, env []string, stdout, stderr io.Writer) *ucli.Command {
 			if err != nil {
 				return err
 			}
+			warn(stderr, c, name)
 			changed(stdout, stderr, "added upstream %q", name)
-			checkWritten(ctx, cmd, env, name, stdout, stderr)
+			checkWritten(ctx, cmd, c, env, name, stdout, stderr)
 			return nil
 		},
 	}

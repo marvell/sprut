@@ -27,7 +27,7 @@ func switchCommand(disabled bool, env []string, stdout, stderr io.Writer) *ucli.
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			upstream := cmd.StringArg("name")
 			var switched bool
-			err := editConfig(cmd.String("config"), config.LookupIn(env), stderr, upstream, func(doc *config.Document) (bool, error) {
+			c, err := config.Edit(cmd.String("config"), config.LookupIn(env), func(doc *config.Document) (bool, error) {
 				var err error
 				switched, err = doc.SetDisabled(upstream, disabled)
 				return switched, err
@@ -39,9 +39,10 @@ func switchCommand(disabled bool, env []string, stdout, stderr io.Writer) *ucli.
 				_, _ = fmt.Fprintf(stdout, "upstream %q is already %s\n", upstream, done)
 				return nil
 			}
+			warn(stderr, c, upstream)
 			changed(stdout, stderr, "%s upstream %q", done, upstream)
 			if !disabled {
-				checkWritten(ctx, cmd, env, upstream, stdout, stderr)
+				checkWritten(ctx, cmd, c, env, upstream, stdout, stderr)
 			}
 			return nil
 		},

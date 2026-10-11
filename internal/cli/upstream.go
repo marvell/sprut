@@ -133,20 +133,13 @@ func noCheckFlag() *ucli.BoolFlag {
 	return &ucli.BoolFlag{Name: "no-check", Usage: "don't start the upstream to check that it works"}
 }
 
-// checkWritten starts the Upstream called name, just written to the Config
-// that cmd's --config and env point at, as list --check would, unless
-// --no-check, and says how it fared: on stdout if it works, else on stderr
-// with the remedy, if any. It checks nothing the Gateway wouldn't start.
-// Whatever it finds, the Config stays written, so nothing it finds is an
-// error.
-func checkWritten(ctx context.Context, cmd *ucli.Command, env []string, name string, stdout, stderr io.Writer) {
+// checkWritten starts the Upstream called name in c, the Config just
+// written, as list --check would, unless cmd has --no-check, and says how
+// it fared: on stdout if it works, else on stderr with the remedy, if any.
+// It checks nothing the Gateway wouldn't start. Whatever it finds, the
+// Config stays written, so nothing it finds is an error.
+func checkWritten(ctx context.Context, cmd *ucli.Command, c *config.Config, env []string, name string, stdout, stderr io.Writer) {
 	if cmd.Bool("no-check") {
-		return
-	}
-	// The edit has already printed the warnings about the Upstream.
-	c, err := config.Open(cmd.String("config"), config.LookupIn(env))
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: not checked: %v\n", name, err)
 		return
 	}
 	e, err := c.Lookup(name)
@@ -212,34 +205,14 @@ func orDash(s string) string {
 	return s
 }
 
-// editConfig applies edit to the Config that flag and the environment
-// point at, and writes it back if the result parses, printing the
-// warnings about the Upstream name to stderr. It refuses to edit a Config
-// that already fails to parse. A missing Config is created. edit reports
-// whether it changed the Config; if not, the file is left as it is.
-func editConfig(flag string, lookupEnv config.LookupEnv, stderr io.Writer, name string, edit func(*config.Document) (bool, error)) error {
-	c, err := config.Open(flag, lookupEnv)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	doc := c.Document()
-	edited, err := edit(doc)
-	if err != nil || !edited {
-		return err
-	}
-	_, warnings, err := doc.Entries(lookupEnv)
-	if err != nil {
-		return err
-	}
-	for _, w := range warnings {
+// warn prints to stderr the warnings c has about the Upstream name, just
+// written.
+func warn(stderr io.Writer, c *config.Config, name string) {
+	for _, w := range c.Warnings {
 		if w.Upstream == name {
 			_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, w.Message)
 		}
 	}
-	if err := config.WriteFile(c.Path, doc.Bytes()); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-	return nil
 }
 
 // changed reports a change to the Config: what changed on stdout, and on

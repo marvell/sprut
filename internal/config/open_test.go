@@ -200,20 +200,3 @@ func TestConfigLookupCoversEveryEntry(t *testing.T) {
 		}
 	}
 }
-
-func TestConfigDocumentEditsLeaveTheConfigAsOpened(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.json")
-	writeFile(t, path, everyStateConfig)
-	c, err := config.Open(path, lookup(nil))
-	if err != nil {
-		t.Fatalf("Open: unexpected error: %v", err)
-	}
-	if err := c.Document().Remove("on"); err != nil {
-		t.Fatalf("Remove: unexpected error: %v", err)
-	}
-	entries, _, err := config.ParseEntries(c.Document().Bytes(), lookup(nil))
-	if err != nil || len(entries) != 4 || entries[0].Name != "on" {
-		t.Errorf("a second Document has %d entries (%v), want all 4, starting with on", len(entries), err)
-	}
-}
