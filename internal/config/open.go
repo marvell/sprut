@@ -65,8 +65,8 @@ func Open(flag string, lookupEnv LookupEnv) (*Config, error) {
 // Config as written. A missing Config is edited as an empty one, and so
 // created; a Config that fails to parse is refused, and so is a result
 // that does, leaving the file as it was. edit reports whether it changed
-// the Config; if not, the file is left as it is and Edit returns the
-// Config as opened.
+// the Config, and must leave it as it was if not: then the file is left
+// as it is and Edit returns the Config as opened.
 func Edit(flag string, lookupEnv LookupEnv, edit func(*Document) (bool, error)) (*Config, error) {
 	c, err := Open(flag, lookupEnv)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
