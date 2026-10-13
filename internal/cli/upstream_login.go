@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	ucli "github.com/urfave/cli/v3"
@@ -22,23 +23,32 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
-			name := cmd.StringArg("upstream")
 			log := newLogger(stderr, cmd.Bool("verbose"))
-			c, err := openConfig(cmd.String("config"), config.LookupIn(env), log)
+			a, err := upstreamAuth(cmd, env, log)
 			if err != nil {
 				return err
 			}
-			// A disabled Upstream too, so that it can be enabled logged in.
-			u, err := c.Upstream(name)
-			if err != nil {
-				return err
-			}
-			if err := openAuths(env).For(u).Login(ctx, !cmd.Bool("no-browser"), stderr, version(), log); err != nil {
-				return fmt.Errorf("upstream %q: %w", name, err)
+			if err := a.Login(ctx, !cmd.Bool("no-browser"), stderr, version(), log); err != nil {
+				return fmt.Errorf("upstream %q: %w", cmd.StringArg("upstream"), err)
 			}
 			return nil
 		},
 	}
+}
+
+// upstreamAuth returns the Auth of the Upstream that cmd's argument names
+// in its Config: a disabled Upstream too, so that it can be enabled logged
+// in.
+func upstreamAuth(cmd *ucli.Command, env []string, log *slog.Logger) (*gateway.Auth, error) {
+	c, err := openConfig(cmd.String("config"), config.LookupIn(env), log)
+	if err != nil {
+		return nil, err
+	}
+	u, err := c.Upstream(cmd.StringArg("upstream"))
+	if err != nil {
+		return nil, err
+	}
+	return openAuths(env).For(u), nil
 }
 
 // openAuths returns the Logins and Credentials of every Upstream, in the

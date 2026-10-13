@@ -7,27 +7,15 @@ import (
 	"github.com/marvell/sprut/internal/config"
 )
 
-// Report is how one entry of the Config is doing: whether the Gateway
-// starts it, the state of its Credentials and, if checked, how it fared.
+// Report is how one entry of the Config is doing: the state of its
+// Credentials and, if checked, how it fared.
 type Report struct {
 	Entry config.Entry
-	Start StartState
 	Auth  AuthStatus
 	// Health is how the entry fared when started, nil if it wasn't: no
 	// check was asked for, or the Gateway doesn't start it.
 	Health *Health
 }
-
-// StartState is whether the Gateway starts an entry.
-type StartState int
-
-const (
-	StartEnabled StartState = iota
-	StartDisabled
-	// StartSkipped is an enabled entry that the Gateway skips, for the
-	// reason in its Skipped.
-	StartSkipped
-)
 
 // Reports returns a Report of each of entries, in their order, with their
 // Credentials from auths. Unless checkOpts is nil, it also starts every
@@ -37,7 +25,7 @@ func Reports(ctx context.Context, entries []config.Entry, auths *Auths, checkOpt
 	var started []config.Upstream
 	var at []int // the index in reports of each of started
 	for i, e := range entries {
-		reports[i] = Report{Entry: e, Start: startState(e), Auth: statusOf(auths, e)}
+		reports[i] = Report{Entry: e, Auth: statusOf(auths, e)}
 		if e.Starts() {
 			started = append(started, *e.Upstream)
 			at = append(at, i)
@@ -59,16 +47,6 @@ func AllWork(reports []Report) bool {
 		}
 	}
 	return true
-}
-
-func startState(e config.Entry) StartState {
-	switch {
-	case e.Disabled:
-		return StartDisabled
-	case e.Skipped != "":
-		return StartSkipped
-	}
-	return StartEnabled
 }
 
 // AuthStatus is the state of an entry's Credentials, as the Store holds

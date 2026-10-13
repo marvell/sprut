@@ -29,21 +29,21 @@ func TestReportsSayWhetherTheGatewayStartsEachEntry(t *testing.T) {
 	reports := gateway.Reports(t.Context(), c.Entries, openAuths(t.TempDir()), nil)
 
 	want := map[string]struct {
-		start   gateway.StartState
+		starts  bool
 		skipped string
 	}{
-		"on":     {gateway.StartEnabled, ""},
-		"off":    {gateway.StartDisabled, ""},
-		"unset":  {gateway.StartSkipped, "unset variable SPRUT_TEST_UNSET"},
-		"legacy": {gateway.StartSkipped, "SSE transport is not supported"},
+		"on":     {true, ""},
+		"off":    {false, ""},
+		"unset":  {false, "unset variable SPRUT_TEST_UNSET"},
+		"legacy": {false, "SSE transport is not supported"},
 	}
 	if len(reports) != len(want) {
 		t.Fatalf("got %d reports, want %d", len(reports), len(want))
 	}
 	for _, r := range reports {
 		w := want[r.Entry.Name]
-		if r.Start != w.start || r.Entry.Skipped != w.skipped {
-			t.Errorf("%s: start = %v, skipped %q; want %v, skipped %q", r.Entry.Name, r.Start, r.Entry.Skipped, w.start, w.skipped)
+		if r.Entry.Starts() != w.starts || r.Entry.Skipped != w.skipped {
+			t.Errorf("%s: starts = %v, skipped %q; want %v, skipped %q", r.Entry.Name, r.Entry.Starts(), r.Entry.Skipped, w.starts, w.skipped)
 		}
 		if r.Health != nil {
 			t.Errorf("%s: health = %+v without a check, want none", r.Entry.Name, r.Health)
@@ -143,15 +143,14 @@ func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 	})
 	store, state := newStoreIn(t)
 	save(t, store, c, "dead", oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(-time.Hour)})
-	env := []string{"XDG_STATE_HOME=" + state}
 	check := &gateway.CheckOptions{
-		Env:            env,
+		Env:            stateEnv(state),
 		StartupTimeout: 10 * time.Second,
 		Version:        "test",
 		Log:            slog.New(slog.DiscardHandler),
 	}
 
-	reports := gateway.Reports(t.Context(), c.Entries, gateway.OpenAuths(env, remedy), check)
+	reports := gateway.Reports(t.Context(), c.Entries, openAuths(state), check)
 
 	if len(reports) != 6 {
 		t.Fatalf("got %d reports, want 6", len(reports))
@@ -224,7 +223,12 @@ func openConfig(t *testing.T, servers map[string]any) *config.Config {
 // openAuths are the Auths whose Store is under the $XDG_STATE_HOME state,
 // with remedy.
 func openAuths(state string) *gateway.Auths {
-	return gateway.OpenAuths([]string{"XDG_STATE_HOME=" + state}, remedy)
+	return gateway.OpenAuths(stateEnv(state), remedy)
+}
+
+// stateEnv is the env whose $XDG_STATE_HOME is state.
+func stateEnv(state string) []string {
+	return []string{"XDG_STATE_HOME=" + state}
 }
 
 // newStoreIn is an empty Credentials Store of a test's own, and its
@@ -232,7 +236,7 @@ func openAuths(state string) *gateway.Auths {
 func newStoreIn(t *testing.T) (*credentials.Store, string) {
 	t.Helper()
 	state := t.TempDir()
-	s, err := credentials.NewStore(config.LookupIn([]string{"XDG_STATE_HOME=" + state}))
+	s, err := credentials.NewStore(config.LookupIn(stateEnv(state)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,11 +246,7 @@ func newStoreIn(t *testing.T) (*credentials.Store, string) {
 // save stores token as the Credentials of the Upstream name of c.
 func save(t *testing.T, store *credentials.Store, c *config.Config, name string, token oauth2.Token) {
 	t.Helper()
-	u, err := c.Upstream(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	creds := &credentials.Credentials{Token: token, Config: credentials.BindingOf(u)}
+	creds := &credentials.Credentials{Token: token, Config: credentials.BindingOf(upstream(t, c, name))}
 	if err := store.Save(t.Context(), name, creds); err != nil {
 		t.Fatal(err)
 	}

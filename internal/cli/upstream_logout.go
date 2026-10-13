@@ -6,8 +6,6 @@ import (
 	"io"
 
 	ucli "github.com/urfave/cli/v3"
-
-	"github.com/marvell/sprut/internal/config"
 )
 
 func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
@@ -17,15 +15,11 @@ func logoutCommand(env []string, stdout, stderr io.Writer) *ucli.Command {
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			name := cmd.StringArg("upstream")
-			c, err := openConfig(cmd.String("config"), config.LookupIn(env), newLogger(stderr, false))
+			a, err := upstreamAuth(cmd, env, newLogger(stderr, false))
 			if err != nil {
 				return err
 			}
-			u, err := c.Upstream(name)
-			if err != nil {
-				return err
-			}
-			had, err := openAuths(env).For(u).Logout(ctx)
+			had, err := a.Logout(ctx)
 			if err != nil {
 				return fmt.Errorf("upstream %q: %w", name, err)
 			}

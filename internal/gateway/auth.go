@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -84,11 +83,10 @@ func (a *Auth) store() (*credentials.Store, error) {
 // Logout deletes the Credentials of an OAuth Upstream, under their lock,
 // and reports whether there were any. The lock file stays (ADR 0003).
 func (a *Auth) Logout(ctx context.Context) (bool, error) {
-	store, err := a.store()
-	if err != nil {
-		return false, err
+	if a.refused != nil {
+		return false, a.refused
 	}
-	return store.Delete(ctx, a.upstream.Name)
+	return a.auths.Forget(ctx, a.upstream.Name)
 }
 
 // Remedy is what the user runs to log in to the Upstream.
@@ -102,11 +100,10 @@ func (a *Auth) Status() AuthStatus {
 	if a.refused != nil {
 		return AuthStatus{State: AuthNotOAuth}
 	}
-	store, err := a.store()
-	if err != nil {
-		return AuthStatus{State: AuthUnreadable, Err: err}
+	if a.auths.storeErr != nil {
+		return AuthStatus{State: AuthUnreadable, Err: a.auths.storeErr}
 	}
-	c, err := store.Load(a.upstream)
+	c, err := a.auths.store.Load(a.upstream)
 	switch {
 	case err != nil:
 		return AuthStatus{State: AuthUnreadable, Err: err}
@@ -120,7 +117,7 @@ func (a *Auth) Status() AuthStatus {
 	return AuthStatus{
 		State:     AuthLoggedIn,
 		Expiry:    c.Expiry,
-		Expired:   !c.Expiry.IsZero() && time.Now().After(c.Expiry),
+		Expired:   c.Expired(),
 		Renewable: c.RefreshToken != "",
 	}
 }

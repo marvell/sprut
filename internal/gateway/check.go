@@ -32,7 +32,7 @@ const (
 	HealthFailed
 )
 
-// CheckOptions are how Reports starts the entries that the Gateway starts:
+// CheckOptions are how Reports and Check start the entries that the Gateway starts:
 // Env and StartupTimeout as for Start, Version as the Gateway's, and their
 // failures logged to Log.
 type CheckOptions struct {
@@ -40,6 +40,12 @@ type CheckOptions struct {
 	StartupTimeout time.Duration
 	Version        string
 	Log            *slog.Logger
+}
+
+// Check starts u as Start does, with its Credentials from auths, lists its
+// tools and stops it again, and returns how it fared.
+func Check(ctx context.Context, u config.Upstream, auths *Auths, o *CheckOptions) Health {
+	return check(ctx, []config.Upstream{u}, auths, o)[0]
 }
 
 // check starts every Upstream in configured concurrently, as Start does,

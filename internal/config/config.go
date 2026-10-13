@@ -220,9 +220,6 @@ func parseServers(data []byte) (servers, error) {
 	return s, nil
 }
 
-// errNotObject is the error of decoding JSON other than an object or null.
-var errNotObject = errors.New("not a JSON object")
-
 // decodeObject decodes the valid JSON data, an object or null, into its
 // members in order, repeated keys included.
 func decodeObject(data []byte) ([]member, error) {
@@ -232,7 +229,7 @@ func decodeObject(data []byte) ([]member, error) {
 		return nil, nil
 	case json.Delim('{'):
 	default:
-		return nil, errNotObject
+		return nil, errors.New("not a JSON object")
 	}
 	var members []member
 	for dec.More() {

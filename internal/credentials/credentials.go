@@ -43,7 +43,12 @@ type Credentials struct {
 // Dead reports whether c can't be used any more without a new Login: the
 // access token has expired, and there is no refresh token to renew it with.
 func (c *Credentials) Dead() bool {
-	return c.RefreshToken == "" && !c.Expiry.IsZero() && time.Now().After(c.Expiry)
+	return c.RefreshToken == "" && c.Expired()
+}
+
+// Expired reports whether the access token of c has expired.
+func (c *Credentials) Expired() bool {
+	return !c.Expiry.IsZero() && time.Now().After(c.Expiry)
 }
 
 // Binding is what an Upstream's Config said when its Credentials were

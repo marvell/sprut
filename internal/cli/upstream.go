@@ -120,18 +120,17 @@ func checkWritten(ctx context.Context, cmd *ucli.Command, c *config.Config, env 
 		return
 	}
 	e, err := c.Lookup(name)
-	if err != nil {
+	if err != nil || !e.Starts() {
 		return
 	}
-	h := gateway.Reports(ctx, []config.Entry{e}, openAuths(env), checkOptions(cmd, env))[0].Health
+	h := gateway.Check(ctx, *e.Upstream, openAuths(env), checkOptions(cmd, env))
 	switch {
-	case h == nil:
 	case h.State == gateway.HealthWorks:
-		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, health(h))
+		_, _ = fmt.Fprintf(stdout, "upstream %q: %s\n", name, health(&h))
 	case h.Remedy != "":
-		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, health(h), h.Remedy)
+		_, _ = fmt.Fprintf(stderr, "upstream %q: %s; %s\n", name, health(&h), h.Remedy)
 	default:
-		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, health(h))
+		_, _ = fmt.Fprintf(stderr, "warning: upstream %q: %s\n", name, health(&h))
 	}
 }
 
@@ -155,10 +154,10 @@ func state(r gateway.Report) string {
 	if r.Health != nil {
 		return health(r.Health)
 	}
-	switch r.Start {
-	case gateway.StartDisabled:
+	switch {
+	case r.Entry.Disabled:
 		return "disabled"
-	case gateway.StartSkipped:
+	case r.Entry.Skipped != "":
 		return "skipped: " + r.Entry.Skipped
 	}
 	return "enabled"
