@@ -58,6 +58,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
 
       - name: warm Go module proxy
         run: GOPROXY=https://proxy.golang.org go list -m github.com/marvell/sprut@${{ github.ref_name }}

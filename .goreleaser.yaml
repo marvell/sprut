@@ -20,3 +20,25 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+# A cask in marvell/homebrew-tap, so `brew install marvell/tap/sprut` works.
+# GITHUB_TOKEN can't push to another repository: the release job passes the
+# private half of a deploy key with write access to the tap as
+# HOMEBREW_TAP_DEPLOY_KEY.
+homebrew_casks:
+  - repository:
+      owner: marvell
+      name: homebrew-tap
+      git:
+        url: git@github.com:marvell/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
+    homepage: https://github.com/marvell/sprut
+    description: One MCP config for every AI agent
+    # The binaries are not notarized: without this, macOS refuses to run one
+    # that brew downloaded.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sprut"]
+          end

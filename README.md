@@ -1,10 +1,15 @@
 # sprut
 
+[![Release](https://img.shields.io/github/v/release/marvell/sprut)](https://github.com/marvell/sprut/releases)
+[![CI](https://github.com/marvell/sprut/actions/workflows/ci.yml/badge.svg)](https://github.com/marvell/sprut/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/marvell/sprut.svg)](https://pkg.go.dev/github.com/marvell/sprut)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Set up your MCP servers once. Use them from every AI Agent.**
 
 You use Claude Code, and Codex, and Cursor. Each keeps its own list of MCP servers in its own format, so adding a server means editing three files, logging in to Notion three times, and watching the lists drift apart.
 
-sprut is an MCP Gateway that ends this. You list your MCP servers once, in one Config file, and give each Agent a single MCP server entry: `sprut serve`. Every Agent then sees all of your MCP servers' tools.
+sprut is an MCP Gateway (an MCP proxy, or aggregator) that ends this. You list your MCP servers once, in one Config file, and give each Agent a single MCP server entry: `sprut serve`. Every Agent then sees all of your MCP servers' tools.
 
 ```
 Claude Code ── sprut serve ──┐            ┌── memory  (stdio)
@@ -16,6 +21,7 @@ Cursor      ── sprut serve ──┘            └── linear  (HTTP + OA
 
 - **One place for every server.** `sprut upstream add` writes it into the Config, checks that it starts, and every Agent gets it on its next restart.
 - **Paste snippets as they are.** The Config uses the `mcpServers` JSON shape that MCP READMEs already show.
+- **Share MCP servers between Claude Code, Codex and Cursor.** Every Agent connected to sprut gets the same servers, with nothing to keep in sync.
 - **Log in once.** OAuth for HTTP Upstreams such as Notion, Linear or Atlassian: run `sprut upstream login` once, and every Agent's sprut keeps the tokens renewed.
 - **No name clashes.** Tools are exposed as `<upstream>__<tool>`, so tools from different Upstreams never collide.
 - **One broken server breaks nothing else.** An Upstream that fails to start is skipped with a log line; the rest keep working.
@@ -27,7 +33,7 @@ Cursor      ── sprut serve ──┘            └── linear  (HTTP + OA
 
 ```sh
 # 1. Install
-go install github.com/marvell/sprut@latest
+brew install marvell/tap/sprut
 
 # 2. Add your MCP servers
 sprut upstream add memory -- npx -y @modelcontextprotocol/server-memory
@@ -41,6 +47,12 @@ claude mcp add --scope user sprut -- sprut serve
 That's it: Claude Code now has `memory__*` and `linear__*` tools. Connect [Codex, Cursor, VS Code and others](#add-sprut-to-your-agents) the same way, and they share the same servers and the same Login. `sprut upstream list --check` shows at any time which servers work.
 
 ## Install
+
+With Homebrew, on macOS or Linux:
+
+```sh
+brew install marvell/tap/sprut
+```
 
 From source (Go 1.27 or later):
 
