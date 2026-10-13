@@ -59,6 +59,25 @@ func TestServeRenewsCredentialsBeforeTheyExpireWithTheResource(t *testing.T) {
 	g.closeAgent(t)
 }
 
+func TestServeRenewsCredentialsThatHaveExpired(t *testing.T) {
+	t.Parallel()
+	l := logIn(t, 3600)
+	l.makeStale(t)
+	l.RevokeAccessTokens() // as the Upstream would, past the expiry
+	rejected := l.Rejected()
+
+	g := startGateway(t, l.config, l.env)
+	g.wantEcho(t)
+
+	if n := l.Rejected() - rejected; n != 0 {
+		t.Errorf("the Upstream answered 401 to %d requests from serve, want none", n)
+	}
+	if n := len(l.Refreshes()); n != 1 {
+		t.Errorf("refreshes = %d, want 1", n)
+	}
+	g.closeAgent(t)
+}
+
 func TestServeRenewsOnceForConcurrentCalls(t *testing.T) {
 	t.Parallel()
 	l := logIn(t, 3600)
@@ -108,7 +127,7 @@ func TestServeSkipsAnUpstreamWhoseCredentialsExpiredWithoutARefreshToken(t *test
 	u := mcptest.StartOAuth(t)
 	u.IssueNoRefreshToken()
 	l := logInTo(t, u, 3600)
-	l.makeStale(t)
+	l.makeDead(t)
 
 	g := startGateway(t, l.config, l.env)
 
