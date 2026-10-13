@@ -1,13 +1,44 @@
 # sprut
 
-sprut is an MCP Gateway. You list your MCP servers once, in one Config file, and give each AI Agent (Claude Code, Codex, Cursor, …) a single MCP server entry: `sprut serve`. Every Agent then sees all of your MCP servers' tools.
+**Set up your MCP servers once. Use them from every AI Agent.**
 
-- One Config in the `mcpServers` JSON shape that MCP READMEs already show, so you can paste their snippets unchanged.
-- Tools are exposed as `<upstream>__<tool>`, so tools from different Upstreams never collide.
-- An Upstream that fails to start is skipped with a log line; the rest keep working.
-- OAuth for HTTP Upstreams such as Notion, Linear or Atlassian: log in once with `sprut upstream login`, and every Agent's sprut keeps the tokens renewed.
-- stdio and Streamable HTTP Upstreams. Legacy and modern (`2026-07-28`) MCP Agents and Upstreams work in any combination.
-- One static binary. Each Agent runs its own `sprut serve` over stdio, with no daemon.
+You use Claude Code, and Codex, and Cursor. Each keeps its own list of MCP servers in its own format, so adding a server means editing three files, logging in to Notion three times, and watching the lists drift apart.
+
+sprut is an MCP Gateway that ends this. You list your MCP servers once, in one Config file, and give each Agent a single MCP server entry: `sprut serve`. Every Agent then sees all of your MCP servers' tools.
+
+```
+Claude Code ── sprut serve ──┐            ┌── memory  (stdio)
+Codex       ── sprut serve ──┼── Config ──┼── github  (HTTP)
+Cursor      ── sprut serve ──┘            └── linear  (HTTP + OAuth)
+```
+
+## Why sprut
+
+- **One place for every server.** `sprut upstream add` writes it into the Config, checks that it starts, and every Agent gets it on its next restart.
+- **Paste snippets as they are.** The Config uses the `mcpServers` JSON shape that MCP READMEs already show.
+- **Log in once.** OAuth for HTTP Upstreams such as Notion, Linear or Atlassian: run `sprut upstream login` once, and every Agent's sprut keeps the tokens renewed.
+- **No name clashes.** Tools are exposed as `<upstream>__<tool>`, so tools from different Upstreams never collide.
+- **One broken server breaks nothing else.** An Upstream that fails to start is skipped with a log line; the rest keep working.
+- **Secrets stay out of the file.** `${VAR}` references are filled in from the environment when sprut runs.
+- **Nothing running in the background.** One static binary; each Agent runs its own `sprut serve` over stdio, with no daemon and no open port.
+- **Old and new MCP alike.** stdio and Streamable HTTP Upstreams; legacy and modern (`2026-07-28`) MCP Agents and Upstreams work in any combination.
+
+## Quick start
+
+```sh
+# 1. Install
+go install github.com/marvell/sprut@latest
+
+# 2. Add your MCP servers
+sprut upstream add memory -- npx -y @modelcontextprotocol/server-memory
+sprut upstream add linear https://mcp.linear.app/mcp
+sprut upstream login linear
+
+# 3. Connect an Agent (Claude Code here; others below)
+claude mcp add --scope user sprut -- sprut serve
+```
+
+That's it: Claude Code now has `memory__*` and `linear__*` tools. Connect [Codex, Cursor, VS Code and others](#add-sprut-to-your-agents) the same way, and they share the same servers and the same Login. `sprut upstream list --check` shows at any time which servers work.
 
 ## Install
 
