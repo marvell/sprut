@@ -204,9 +204,15 @@ func sameOriginRedirects(endpoint *url.URL) func(*http.Request, []*http.Request)
 		if !sameOrigin(req.URL, endpoint) {
 			return fmt.Errorf("refused a redirect to another origin, %s://%s", req.URL.Scheme, req.URL.Host)
 		}
-		if len(via) >= maxRedirects {
-			return fmt.Errorf("stopped after %d redirects", maxRedirects)
-		}
-		return nil
+		return tooManyRedirects(via)
 	}
+}
+
+// tooManyRedirects is the error of a redirect after via, if it is one too
+// many.
+func tooManyRedirects(via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	return nil
 }

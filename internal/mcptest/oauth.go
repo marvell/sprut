@@ -67,7 +67,7 @@ type OAuthUpstream struct {
 	requireScope   string     // the scope /mcp answers 403 insufficient_scope without, if any
 
 	prmIssuer string               // the issuer the Protected Resource Metadata names, if not Base
-	slash     bool                 // whether the issuer is Base with a trailing slash
+	asIssuer  string               // the issuer of both metadata, if not Base
 	expiresIn int                  // of each access token issued, in seconds
 	live      map[string]liveToken // access tokens issued and not revoked
 	refresh   string               // the one refresh token that works
@@ -109,7 +109,7 @@ func StartOAuthOn(t testing.TB, host string) *OAuthUpstream {
 		u.mu.Lock()
 		meta := map[string]any{
 			"resource":              u.URL,
-			"authorization_servers": []string{cmp.Or(u.prmIssuer, u.issuer())},
+			"authorization_servers": []string{cmp.Or(u.prmIssuer, u.asIssuer, u.Base)},
 		}
 		if u.supported != nil {
 			meta["scopes_supported"] = u.supported
@@ -125,7 +125,7 @@ func StartOAuthOn(t testing.TB, host string) *OAuthUpstream {
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
 		u.mu.Lock()
 		issParam := u.issParam
-		issuer := u.issuer()
+		issuer := cmp.Or(u.asIssuer, u.Base)
 		scopes := []string{Scope}
 		if u.offline {
 			scopes = append(scopes, "offline_access")
@@ -414,15 +414,7 @@ func (u *OAuthUpstream) NameIssuer(issuer string) {
 func (u *OAuthUpstream) SlashIssuer() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.slash = true
-}
-
-// issuer is the Authorization Server's issuer. u.mu must be held.
-func (u *OAuthUpstream) issuer() string {
-	if u.slash {
-		return u.Base + "/"
-	}
-	return u.Base
+	u.asIssuer = u.Base + "/"
 }
 
 // Refreshes returns the form of each refresh request so far.

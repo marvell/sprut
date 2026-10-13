@@ -337,8 +337,8 @@ func oauthClient(rt http.RoundTripper) *http.Client {
 // oauthRedirects is the CheckRedirect of oauthClient: the SDK's own, less
 // its refusal of private addresses.
 func oauthRedirects(req *http.Request, via []*http.Request) error {
-	if len(via) >= maxRedirects {
-		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	if err := tooManyRedirects(via); err != nil {
+		return err
 	}
 	if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
 		return fmt.Errorf("refused a redirect from HTTPS to %s", req.URL.Scheme)

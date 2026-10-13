@@ -78,11 +78,8 @@ func TestUpstreamLoginFollowsARedirectOfMetadataDiscoveryToAPrivateAddress(t *te
 	t.Parallel()
 	u := mcptest.StartOAuth(t)
 	u.SlashIssuer()
-	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
-	env := []string{"XDG_STATE_HOME=" + t.TempDir()}
-
-	mustLogin(t, u, env, config)
-	g := startGateway(t, config, env)
+	l := logInTo(t, u, 3600)
+	g := startGateway(t, l.config, l.env)
 	g.wantEcho(t)
 	g.closeAgent(t)
 }
