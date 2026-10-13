@@ -44,9 +44,7 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 	for _, how := range []string{"5xx", "text", "invalid_grant"} {
 		t.Run("refresh at startup, "+how, func(t *testing.T) {
 			t.Parallel()
-			// Always within the 5 minutes before expiry, so serve renews
-			// first.
-			l := logIn(t, 2)
+			l := logIn(t, 60) // renewed at startup
 			l.FailRefresh(how)
 
 			g := startGateway(t, l.config, l.env, "-v")

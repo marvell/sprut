@@ -28,16 +28,17 @@ func TestServeRenewsCredentialsWhenTheUpstreamAnswers401(t *testing.T) {
 	wantNoSecrets(t, "serve stderr", g.stderr.String(), mcptest.Secrets...)
 }
 
-// Access tokens that live for 2s are always within the 5 minutes before
+// Access tokens that live for 60s are always within the 5 minutes before
 // expiry in which they are renewed, so every request renews first.
 func TestServeRenewsCredentialsBeforeTheyExpireWithTheResource(t *testing.T) {
 	t.Parallel()
-	l := logIn(t, 2)
+	l := logIn(t, 60)
 	rejected := l.Rejected()
 	g := startGateway(t, l.config, l.env)
 	g.wantEcho(t)
 
-	time.Sleep(2200 * time.Millisecond) // past the expiry of every token so far
+	// Only a token renewed after this is accepted.
+	l.RevokeAccessTokens()
 	g.wantEcho(t)
 
 	if n := l.Rejected() - rejected; n != 0 {
@@ -106,8 +107,8 @@ func TestServeSkipsAnUpstreamWhoseCredentialsExpiredWithoutARefreshToken(t *test
 	t.Parallel()
 	u := mcptest.StartOAuth(t)
 	u.IssueNoRefreshToken()
-	l := logInTo(t, u, 1)
-	time.Sleep(1100 * time.Millisecond) // past its expiry
+	l := logInTo(t, u, 3600)
+	l.makeStale(t)
 
 	g := startGateway(t, l.config, l.env)
 
