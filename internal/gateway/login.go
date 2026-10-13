@@ -66,6 +66,10 @@ func (a *Auth) Login(ctx context.Context, browser bool, prompt io.Writer, versio
 	if err != nil {
 		return err
 	}
+	if log.Enabled(ctx, slog.LevelDebug) {
+		upstreamURL, _ := url.Parse(u.URL) // parsed by a.transport
+		t.HTTPClient.Transport = exchangeLog{next: t.HTTPClient.Transport, log: log.With("upstream", u.Name), upstream: upstreamURL}
+	}
 	// The SDK's discovery adds its SSRF checks only to a bare
 	// *http.Transport; a wrapped one, like this, is used as it is.
 	recorder := &issuerRecorder{next: t.HTTPClient.Transport}
@@ -175,6 +179,10 @@ func (a *Auth) Login(ctx context.Context, browser bool, prompt io.Writer, versio
 		// The SDK's own wrapping of it quotes its requests.
 		if loginErr := once.Err(); loginErr != nil {
 			err = loginErr
+		}
+		if status := recorder.RegistrationRefused(); status != 0 {
+			return fmt.Errorf("client registration refused (HTTP %d): the authorization server may register only clients it knows; "+
+				"log in as a pre-registered client, which `sprut upstream add --oauth-client-id` or the config's oauth.clientId names", status)
 		}
 		return oauthError(err)
 	}
@@ -408,19 +416,33 @@ func oauthError(err error) error {
 
 // issuerRecorder sends requests through next and keeps the issuer, and
 // whether it sends iss, from the Authorization Server metadata that the SDK fetched, which it
-// doesn't pass on.
+// doesn't pass on. It also keeps the status with which the registration
+// endpoint there refused to register a client, which the SDK quotes only
+// in its message.
 type issuerRecorder struct {
 	next http.RoundTripper
 
-	mu          sync.Mutex
-	issuer      string
-	issRequired bool
+	mu           sync.Mutex
+	issuer       string
+	issRequired  bool
+	registration string
+	refused      int
 }
 
 func (r *issuerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := r.next.RoundTrip(req)
-	if err != nil || resp.StatusCode != http.StatusOK || !isAuthServerMetadata(req.URL.Path) {
+	if err != nil {
 		return resp, err
+	}
+	if req.Method == http.MethodPost && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		r.mu.Lock()
+		if r.registration != "" && req.URL.String() == r.registration {
+			r.refused = resp.StatusCode
+		}
+		r.mu.Unlock()
+	}
+	if resp.StatusCode != http.StatusOK || !isAuthServerMetadata(req.URL.Path) {
+		return resp, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBytes))
 	_ = resp.Body.Close()
@@ -432,9 +454,18 @@ func (r *issuerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	if json.Unmarshal(body, &meta) == nil && meta.Issuer != "" {
 		r.mu.Lock()
 		r.issuer, r.issRequired = meta.Issuer, meta.AuthorizationResponseIssParameterSupported
+		r.registration = meta.RegistrationEndpoint
 		r.mu.Unlock()
 	}
 	return resp, nil
+}
+
+// RegistrationRefused returns the status, 401 or 403, with which the
+// registration endpoint refused to register a client, or 0 if it did not.
+func (r *issuerRecorder) RegistrationRefused() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refused
 }
 
 // IssRequired reports whether the metadata says the Authorization Server

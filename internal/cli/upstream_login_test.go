@@ -84,6 +84,89 @@ func TestUpstreamLoginFollowsARedirectOfMetadataDiscoveryToAPrivateAddress(t *te
 	g.closeAgent(t)
 }
 
+// -v shows what was said to the Upstream and its Authorization Server: each
+// request with its status, the bodies of discovery and registration, which
+// carry no secret of sprut's, and of the rest only the challenge or error
+// code.
+func TestUpstreamLoginVerboseLogsEachHTTPExchangeWithoutSecrets(t *testing.T) {
+	t.Parallel()
+	u := mcptest.StartOAuth(t)
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+
+	stderr := mustLogin(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, config, "-v")
+
+	for _, tc := range []struct {
+		method, path string
+		want         []string
+		notWant      []string
+	}{
+		{"POST", "/mcp", []string{"status=401", "www_authenticate=", "oauth-protected-resource"}, []string{"request=", "response="}},
+		{"GET", "/.well-known/oauth-protected-resource/mcp", []string{"status=200", `authorization_servers`}, nil},
+		{"GET", "/.well-known/oauth-authorization-server", []string{"status=200", `registration_endpoint`}, nil},
+		{"POST", "/register", []string{"status=201", `\"client_name\":\"sprut\"`, `\"client_secret\":\"<redacted>\"`}, nil},
+		{"POST", "/token", []string{"status=200"}, []string{"request=", "response="}},
+	} {
+		line := exchangeLine(stderr, tc.method, u.Base+tc.path)
+		if line == "" {
+			t.Errorf("no exchange %s %s logged:\n%s", tc.method, tc.path, stderr)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(line, want) {
+				t.Errorf("exchange %s %s lacks %s:\n%s", tc.method, tc.path, want, line)
+			}
+		}
+		for _, notWant := range tc.notWant {
+			if strings.Contains(line, notWant) {
+				t.Errorf("exchange %s %s has %s:\n%s", tc.method, tc.path, notWant, line)
+			}
+		}
+	}
+	wantNoSecrets(t, "upstream login stderr", stderr, mcptest.Secrets...)
+
+	quiet := mustLogin(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, config)
+	if strings.Contains(quiet, "http exchange") {
+		t.Errorf("without -v, stderr logs exchanges:\n%s", quiet)
+	}
+}
+
+// exchangeLine returns the first line of stderr that logs an exchange of
+// method with url, or "".
+func exchangeLine(stderr, method, url string) string {
+	for line := range strings.Lines(stderr) {
+		if strings.Contains(line, `msg="http exchange"`) && strings.Contains(line, " method="+method+" ") &&
+			strings.Contains(line, " url="+url+" ") {
+			return line
+		}
+	}
+	return ""
+}
+
+// A server that registers only the clients it knows refuses the rest, as
+// Figma's does, with a bare 403; the user is told how to log in anyway.
+func TestUpstreamLoginRefusedClientRegistrationSuggestsAPreregisteredClient(t *testing.T) {
+	t.Parallel()
+	u := mcptest.StartOAuth(t)
+	u.FailRegistration("403")
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+
+	code, _, stderr := runSprut(t, []string{"XDG_STATE_HOME=" + t.TempDir()},
+		"upstream", "login", "fake", "--no-browser", "-v", "-c", config)
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	for _, want := range []string{"client registration refused (HTTP 403)", "--oauth-client-id"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr)
+		}
+	}
+	if line := exchangeLine(stderr, "POST", u.Base+"/register"); !strings.Contains(line, "status=403") {
+		t.Errorf("registration exchange = %q, want it logged with status=403", line)
+	}
+	wantNoSecrets(t, "upstream login stderr", stderr, leakySecrets...)
+}
+
 func TestUpstreamLoginIgnoresCallbacksThatAreNotTheOneItWaitsFor(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)

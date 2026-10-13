@@ -539,8 +539,9 @@ var echoed = "refresh token " + RefreshToken + " of client " + ClientSecret + " 
 
 // writeEcho fails a request to the Authorization Server, echoing its
 // secrets: as how is "json" or "5xx", with a 400 or a 502 OAuth error whose
-// code is code and whose error_description echoes them; as it is "text",
-// with a 502 whose plain-text body does.
+// code is code and whose error_description echoes them; as it is "text"
+// or "403", with a 502 or a 403 whose plain-text body does: a server that
+// registers only the clients it knows refuses the rest with a 403.
 func writeEcho(w http.ResponseWriter, how, code string) {
 	switch how {
 	case "json":
@@ -550,8 +551,12 @@ func writeEcho(w http.ResponseWriter, how, code string) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": code, "error_description": echoed})
 		return
 	}
+	status := http.StatusBadGateway
+	if how == "403" {
+		status = http.StatusForbidden
+	}
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusBadGateway)
+	w.WriteHeader(status)
 	_, _ = io.WriteString(w, echoed)
 }
 

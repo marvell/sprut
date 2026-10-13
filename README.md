@@ -263,6 +263,8 @@ sprut prints the authorization server and the scopes it requests before the URL,
 
 **Over ssh**, `--no-browser` only prints the URL. The callback goes to the machine sprut runs on, so forward its port: start the Login, note the port in the URL's `redirect_uri`, and in another terminal run `ssh -L <port>:127.0.0.1:<port> <host>` before opening the URL in your local browser.
 
+**When a Login fails**, `-v` logs each HTTP exchange at DEBUG: method, URL and status, the `WWW-Authenticate` challenge, the bodies of discovery and Dynamic Client Registration, and of any other error response only its OAuth error code. No secret is logged: URL queries, client secrets and tokens are redacted, and token requests are logged without their bodies. A server that registers only the clients it knows, such as Figma's, refuses registration with a 401 or 403; log in to it as a pre-registered client (`oauth.clientId`).
+
 ### Log out
 
 ```console

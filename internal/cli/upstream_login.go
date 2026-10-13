@@ -20,7 +20,7 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 		Arguments: []ucli.Argument{&ucli.StringArg{Name: "upstream", UsageText: "<upstream>", Required: true}},
 		Flags: []ucli.Flag{
 			&ucli.BoolFlag{Name: "no-browser", Usage: "only print the authorization URL, without opening a browser"},
-			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level"},
+			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every HTTP exchange, without secrets"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			log := newLogger(stderr, cmd.Bool("verbose"))

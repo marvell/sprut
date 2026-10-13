@@ -360,14 +360,11 @@ func (t errorBodies) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil || resp.StatusCode < 400 {
 		return resp, err
 	}
-	var body struct {
-		Error string `json:"error"`
-	}
-	_ = json.NewDecoder(io.LimitReader(resp.Body, maxErrorBytes)).Decode(&body)
+	code := oauthErrorCode(resp.Body)
 	_ = resp.Body.Close()
 	reduced := "{}"
-	if body.Error != "" {
-		data, _ := json.Marshal(map[string]string{"error": body.Error})
+	if code != "" {
+		data, _ := json.Marshal(map[string]string{"error": code})
 		reduced = string(data)
 	}
 	resp.Header = resp.Header.Clone()
@@ -376,6 +373,16 @@ func (t errorBodies) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp.Body = io.NopCloser(strings.NewReader(reduced))
 	resp.ContentLength = int64(len(reduced))
 	return resp, nil
+}
+
+// oauthErrorCode returns the OAuth error code in the error response body r,
+// or "" if it has none; it reads at most maxErrorBytes.
+func oauthErrorCode(r io.Reader) string {
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r, maxErrorBytes)).Decode(&body)
+	return body.Error
 }
 
 // fail records err, if any, as the last error, and returns it, with the
