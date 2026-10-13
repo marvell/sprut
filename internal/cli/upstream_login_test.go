@@ -71,6 +71,22 @@ func TestUpstreamLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
 	}
 }
 
+// The SDK refuses a discovery redirect to a private address unless the
+// client decides on redirects itself; the fake's loopback address stands in
+// for one.
+func TestUpstreamLoginFollowsARedirectOfMetadataDiscoveryToAPrivateAddress(t *testing.T) {
+	t.Parallel()
+	u := mcptest.StartOAuth(t)
+	u.SlashIssuer()
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+	env := []string{"XDG_STATE_HOME=" + t.TempDir()}
+
+	mustLogin(t, u, env, config)
+	g := startGateway(t, config, env)
+	g.wantEcho(t)
+	g.closeAgent(t)
+}
+
 func TestUpstreamLoginIgnoresCallbacksThatAreNotTheOneItWaitsFor(t *testing.T) {
 	t.Parallel()
 	u := mcptest.StartOAuth(t)

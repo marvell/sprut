@@ -326,9 +326,24 @@ func (h *storedCredentials) needsLogin(reason string) error {
 }
 
 // oauthClient is the HTTP client of requests to an Authorization Server
-// and of metadata lookups, through rt.
+// and of metadata lookups, through rt. It sets CheckRedirect so that the
+// SDK's discovery follows a redirect to a private address, as it would one
+// to a public address: an Upstream on a private network has its metadata
+// there too.
 func oauthClient(rt http.RoundTripper) *http.Client {
-	return &http.Client{Transport: errorBodies{next: rt}, Timeout: oauthTimeout}
+	return &http.Client{Transport: errorBodies{next: rt}, Timeout: oauthTimeout, CheckRedirect: oauthRedirects}
+}
+
+// oauthRedirects is the CheckRedirect of oauthClient: the SDK's own, less
+// its refusal of private addresses.
+func oauthRedirects(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refused a redirect from HTTPS to %s", req.URL.Scheme)
+	}
+	return nil
 }
 
 // errorBodies reduces the body of every error response it gets from next

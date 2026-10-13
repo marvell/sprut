@@ -67,6 +67,7 @@ type OAuthUpstream struct {
 	requireScope   string     // the scope /mcp answers 403 insufficient_scope without, if any
 
 	prmIssuer string               // the issuer the Protected Resource Metadata names, if not Base
+	slash     bool                 // whether the issuer is Base with a trailing slash
 	expiresIn int                  // of each access token issued, in seconds
 	live      map[string]liveToken // access tokens issued and not revoked
 	refresh   string               // the one refresh token that works
@@ -108,7 +109,7 @@ func StartOAuthOn(t testing.TB, host string) *OAuthUpstream {
 		u.mu.Lock()
 		meta := map[string]any{
 			"resource":              u.URL,
-			"authorization_servers": []string{cmp.Or(u.prmIssuer, u.Base)},
+			"authorization_servers": []string{cmp.Or(u.prmIssuer, u.issuer())},
 		}
 		if u.supported != nil {
 			meta["scopes_supported"] = u.supported
@@ -116,9 +117,15 @@ func StartOAuthOn(t testing.TB, host string) *OAuthUpstream {
 		u.mu.Unlock()
 		writeJSON(w, http.StatusOK, meta)
 	})
+	// A trailing slash on the issuer makes clients ask for this path, which
+	// the server redirects, as Starlette does, to the one without it.
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, u.Base+"/.well-known/oauth-authorization-server", http.StatusTemporaryRedirect)
+	})
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
 		u.mu.Lock()
 		issParam := u.issParam
+		issuer := u.issuer()
 		scopes := []string{Scope}
 		if u.offline {
 			scopes = append(scopes, "offline_access")
@@ -127,7 +134,7 @@ func StartOAuthOn(t testing.TB, host string) *OAuthUpstream {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scopes_supported": scopes,
 			"authorization_response_iss_parameter_supported": issParam,
-			"issuer":                                u.Base,
+			"issuer":                                issuer,
 			"authorization_endpoint":                u.Base + "/authorize",
 			"token_endpoint":                        u.Base + "/token",
 			"registration_endpoint":                 u.Base + "/register",
@@ -400,6 +407,22 @@ func (u *OAuthUpstream) NameIssuer(issuer string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.prmIssuer = issuer
+}
+
+// SlashIssuer makes the issuer Base with a trailing slash, in the metadata
+// of both the Protected Resource and the Authorization Server.
+func (u *OAuthUpstream) SlashIssuer() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.slash = true
+}
+
+// issuer is the Authorization Server's issuer. u.mu must be held.
+func (u *OAuthUpstream) issuer() string {
+	if u.slash {
+		return u.Base + "/"
+	}
+	return u.Base
 }
 
 // Refreshes returns the form of each refresh request so far.
