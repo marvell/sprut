@@ -58,3 +58,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: warm Go module proxy
+        run: GOPROXY=https://proxy.golang.org go list -m github.com/marvell/sprut@${{ github.ref_name }}
