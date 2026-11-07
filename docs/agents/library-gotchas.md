@@ -1,6 +1,6 @@
 # Library gotchas
 
-Behaviour of go-sdk, urfave/cli, net/http and os/exec that no signature reveals. For the API itself, prefer `go doc` to reading source. Each item names the version it was verified against. When `go.mod` moves past that version, re-verify the item before relying on it, and then update or delete it.
+Behaviour of go-sdk, urfave/cli, quickjs, net/http and os/exec that no signature reveals. For the API itself, prefer `go doc` to reading source. Each item names the version it was verified against. When `go.mod` moves past that version, re-verify the item before relying on it, and then update or delete it.
 
 When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. The module cache on this machine is not under `~/go`.
 
@@ -46,6 +46,13 @@ When you do need the source, find it with `go list -m -f '{{.Dir}}' <module>`. T
 - **An unknown help topic exits 3** (v3.14.0): `app help foo`, `app -h foo` and `app sub --help foo` print `No help topic for 'foo'` and return `ucli.Exit(..., 3)`, with no usage. A command's `CommandNotFound` replaces that, but it returns nothing and the run then ends with no error, so `cli.Run` keeps the usage error it reports aside.
 - **A slice flag splits its values at commas** (v3.14.0): `--flag a,b` gives two values. A command's `DisableSliceFlagSeparator` turns that off only for the flags it declares, not its subcommands', so `cli.strictUsage` sets it on every command: `-e 'LIST=a,b'` stays one value.
 - **Typed `Arguments` are parsed before the `Action`** (v3.14.0): `cmd.Args()` then holds only what is left over, so `cli.strictUsage`'s check for unexpected arguments still applies. A missing `Required` argument goes through `OnUsageError`, like a bad flag. Read the value with `cmd.StringArg(name)`.
+
+## quickjs (`modernc.org/quickjs`)
+
+- **A `HostFunc` that returns `quickjs.UndefinedValue` panics** (v0.27.0) with a nil dereference inside the engine, which then repanics in the Go code that called into JavaScript. Return `nil` (JavaScript `null`) instead.
+- **A new VM has no host API** (v0.27.0): no `console`, `print`, `std`, `os`, timers or module loader, only standard JavaScript. `StdAddHelpers` and `SetDefaultModuleLoader` add some; `sandbox.Run` calls neither.
+- **A Promise rejected with no handler is dropped silently** (v0.27.0): nothing is printed and `ExecutePendingJobs` returns no error. Only a rejection that reaches a handler, such as the Script's own Promise, is seen.
+- **Only a syntax error carries `Error.LineNumber`** (v0.27.0). For a runtime error the line is only in `Error.Stack`, as `<eval>:line:column` in each frame.
 
 ## net/http
 

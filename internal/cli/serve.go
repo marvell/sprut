@@ -22,6 +22,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			startupTimeoutFlag(),
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every upstream as usual, then shut down; exit 1 if any failed"},
+			&ucli.BoolFlag{Name: "code-mode", Usage: "also offer the execute tool, which runs a javascript script in a sandbox"},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			startupTimeout := cmd.Duration("startup-timeout")
@@ -33,7 +34,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			upstreams := c.Upstreams()
 			log.Info("config loaded", "path", c.Path, "upstreams", len(upstreams))
 
-			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, version(), log)
+			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, cmd.Bool("code-mode"), version(), log)
 			defer gw.Close()
 
 			if cmd.Bool("dry-run") {

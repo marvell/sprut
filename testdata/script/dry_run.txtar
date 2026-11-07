@@ -6,6 +6,16 @@ stderr 'msg="upstream ready" upstream=two tools=2 '
 stderr 'msg="gateway started" ready=2 failed=0 tools=4'
 ! stdout .
 
+# --code-mode changes nothing about a dry run.
+sprut serve --code-mode --dry-run -c healthy.json
+stderr 'msg="gateway started" ready=2 failed=0 tools=4'
+! stdout .
+
+! sprut serve --code-mode --dry-run --startup-timeout 1s -c broken.json
+status 1
+stderr 'msg="gateway started" ready=1 failed=1 tools=2'
+! stdout .
+
 ! sprut serve --dry-run --startup-timeout 1s -c broken.json
 status 1
 stderr 'level=WARN .*upstream=failing'

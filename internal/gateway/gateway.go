@@ -49,7 +49,8 @@ type skippedUpstream struct {
 // its tools; one that fails or runs out of time is logged, left out and
 // listed in the instructions the Agent gets. auths holds the Credentials
 // of every OAuth Upstream; Close waits for their renewals in progress.
-func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, version string, log *slog.Logger) *Gateway {
+// With codeMode, the Gateway also serves the execute tool of Code mode.
+func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, codeMode bool, version string, log *slog.Logger) *Gateway {
 	g := &Gateway{
 		upstreams: newUpstreams(env, auths, startupTimeout, version, log),
 		tools:     map[string]bool{},
@@ -83,6 +84,9 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, auth
 		log.Info("upstream ready", "upstream", r.name, "tools", added,
 			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
+	}
+	if codeMode {
+		g.addExecute()
 	}
 	log.Info("gateway started", "ready", len(running), "failed", len(skips), "tools", tools)
 	return g

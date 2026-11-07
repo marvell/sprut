@@ -27,6 +27,7 @@ stdout '--config'
 stdout '--startup-timeout'
 stdout '--verbose'
 stdout '--dry-run'
+stdout '--code-mode'
 ! stdout $GLOSSARY
 ! stderr .
 
