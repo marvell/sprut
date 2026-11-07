@@ -60,7 +60,7 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 			if len(c.Entries) == 0 {
 				return nil
 			}
-			var check *gateway.CheckOptions
+			var check *gateway.StartOptions
 			if cmd.Bool("check") {
 				check = checkOptions(cmd, env)
 			}
@@ -84,8 +84,8 @@ func listCommand(env []string, stdout io.Writer) *ucli.Command {
 
 // checkOptions are how cmd checks Upstreams, with their failures not
 // logged: the caller reports them.
-func checkOptions(cmd *ucli.Command, env []string) *gateway.CheckOptions {
-	return &gateway.CheckOptions{
+func checkOptions(cmd *ucli.Command, env []string) *gateway.StartOptions {
+	return &gateway.StartOptions{
 		Env:            env,
 		StartupTimeout: cmd.Duration("startup-timeout"),
 		Version:        version(),

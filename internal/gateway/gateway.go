@@ -49,21 +49,38 @@ type skippedUpstream struct {
 	err  error
 }
 
-// Start launches every Upstream concurrently, collects their tools and
-// returns a Gateway ready to serve them. env is the environment Upstream
-// processes inherit. Each Upstream gets startupTimeout to connect and list
-// its tools; one that fails or runs out of time is logged, left out and
-// listed in the instructions the Agent gets. auths holds the Credentials
-// of every OAuth Upstream; Close waits for their renewals in progress.
-// With a codeMode, the Gateway also serves the execute tool of Code mode.
-// With an auditLog, it writes the Agent's session, its calls and its
-// Scripts there.
-func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, codeMode *CodeMode, auditLog *audit.Log, version string, log *slog.Logger) *Gateway {
+// StartOptions are how Start, Check and Reports start Upstreams: Env is the
+// environment Upstream processes inherit, StartupTimeout how long each
+// Upstream gets to connect and list its tools, Version sprut's own, and
+// Log where the Gateway logs.
+type StartOptions struct {
+	Env            []string
+	StartupTimeout time.Duration
+	Version        string
+	Log            *slog.Logger
+}
+
+// Features are the Gateway's opt-in features, each off when nil.
+type Features struct {
+	// CodeMode has the Gateway also serve the execute tool of Code mode.
+	CodeMode *CodeMode
+	// Audit has it write the Agent's session, its calls and its Scripts to
+	// this Audit log.
+	Audit *audit.Log
+}
+
+// Start launches every Upstream concurrently, as o says, collects their
+// tools and returns a Gateway ready to serve them, with features f. An
+// Upstream that fails or runs out of time is logged, left out and listed
+// in the instructions the Agent gets. auths holds the Credentials of every
+// OAuth Upstream; Close waits for their renewals in progress.
+func Start(ctx context.Context, configured []config.Upstream, auths *Auths, o *StartOptions, f Features) *Gateway {
+	log, version := o.Log, o.Version
 	g := &Gateway{
-		upstreams: newUpstreams(env, auths, startupTimeout, version, log),
+		upstreams: newUpstreams(auths, o),
 		catalog:   catalog{},
 		version:   version,
-		audit:     auditLog,
+		audit:     f.Audit,
 		log:       log,
 	}
 	// In Config order, so the log and the instructions don't depend on
@@ -95,8 +112,8 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, auth
 			"protocol", r.session.InitializeResult().ProtocolVersion, "duration", r.took)
 		tools += added
 	}
-	if codeMode != nil {
-		g.addExecute(codeMode)
+	if f.CodeMode != nil {
+		g.addExecute(f.CodeMode)
 	}
 	log.Info("gateway started", "ready", len(running), "failed", len(skips), "tools", tools)
 	return g
@@ -232,10 +249,10 @@ func (s *upstreams) start(ctx context.Context, configured []config.Upstream) []s
 	return results
 }
 
-// newUpstreams returns the starter of Upstreams for a sprut of version,
-// whose environment is env.
-func newUpstreams(env []string, auths *Auths, timeout time.Duration, version string, log *slog.Logger) *upstreams {
-	return &upstreams{client: newClient(version), env: env, auths: auths, timeout: timeout, log: log}
+// newUpstreams returns the starter of Upstreams that o describes, with
+// their Credentials from auths.
+func newUpstreams(auths *Auths, o *StartOptions) *upstreams {
+	return &upstreams{client: newClient(o.Version), env: o.Env, auths: auths, timeout: o.StartupTimeout, log: o.Log}
 }
 
 // startOne starts u, giving up on it once the timeout runs out.

@@ -143,7 +143,7 @@ func TestReportsWithACheckSayHowEachEntryTheGatewayStartsFares(t *testing.T) {
 	})
 	store, state := newStoreIn(t)
 	save(t, store, c, "dead", oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(-time.Hour)})
-	check := &gateway.CheckOptions{
+	check := &gateway.StartOptions{
 		Env:            stateEnv(state),
 		StartupTimeout: 10 * time.Second,
 		Version:        "test",

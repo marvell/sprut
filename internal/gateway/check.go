@@ -3,8 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"time"
 
 	"github.com/marvell/sprut/internal/config"
 	"github.com/marvell/sprut/internal/credentials"
@@ -32,27 +30,17 @@ const (
 	HealthFailed
 )
 
-// CheckOptions are how Reports and Check start the entries that the Gateway starts:
-// Env and StartupTimeout as for Start, Version as the Gateway's, and their
-// failures logged to Log.
-type CheckOptions struct {
-	Env            []string
-	StartupTimeout time.Duration
-	Version        string
-	Log            *slog.Logger
-}
-
 // Check starts u as Start does, with its Credentials from auths, lists its
 // tools and stops it again, and returns how it fared.
-func Check(ctx context.Context, u config.Upstream, auths *Auths, o *CheckOptions) Health {
+func Check(ctx context.Context, u config.Upstream, auths *Auths, o *StartOptions) Health {
 	return check(ctx, []config.Upstream{u}, auths, o)[0]
 }
 
 // check starts every Upstream in configured concurrently, as Start does,
 // with its Credentials from auths, lists its tools and stops it again, and
 // returns how each fared, in Config order.
-func check(ctx context.Context, configured []config.Upstream, auths *Auths, o *CheckOptions) []Health {
-	s := newUpstreams(o.Env, auths, o.StartupTimeout, o.Version, o.Log)
+func check(ctx context.Context, configured []config.Upstream, auths *Auths, o *StartOptions) []Health {
+	s := newUpstreams(auths, o)
 	defer s.close()
 	health := make([]Health, len(configured))
 	for i, res := range s.start(ctx, configured) {

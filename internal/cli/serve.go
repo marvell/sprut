@@ -30,7 +30,6 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			started := time.Now()
-			startupTimeout := cmd.Duration("startup-timeout")
 			log := newLogger(stderr, cmd.Bool("verbose"))
 			c, err := openConfig(cmd.String("config"), config.LookupIn(env), log)
 			if err != nil {
@@ -48,7 +47,9 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 				auditLog = audit.New(config.LookupIn(env), started, log)
 				defer func() { _ = auditLog.Close() }()
 			}
-			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, codeMode, auditLog, version(), log)
+			gw := gateway.Start(ctx, upstreams, openAuths(env),
+				&gateway.StartOptions{Env: env, StartupTimeout: cmd.Duration("startup-timeout"), Version: version(), Log: log},
+				gateway.Features{CodeMode: codeMode, Audit: auditLog})
 			defer gw.Close()
 
 			if cmd.Bool("dry-run") {

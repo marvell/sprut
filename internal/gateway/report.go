@@ -20,7 +20,7 @@ type Report struct {
 // Reports returns a Report of each of entries, in their order, with their
 // Credentials from auths. Unless checkOpts is nil, it also starts every
 // entry the Gateway starts, concurrently, to say how it fares.
-func Reports(ctx context.Context, entries []config.Entry, auths *Auths, checkOpts *CheckOptions) []Report {
+func Reports(ctx context.Context, entries []config.Entry, auths *Auths, checkOpts *StartOptions) []Report {
 	reports := make([]Report, len(entries))
 	var started []config.Upstream
 	var at []int // the index in reports of each of started
