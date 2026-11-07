@@ -6,14 +6,12 @@ disable-model-invocation: true
 
 Implement the work described by the user in the spec or tickets.
 
-1. Start by moving the issue to In Progress and assigning it to the user (`me`), before any other work, so the tracker records when work began.
+If the user passes a ticket reference, fetch it from the issue tracker and state its title before starting. If the reference is ambiguous, ask.
 
-2. Call the Skill tool with "tdd" where possible, at pre-agreed seams. Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+Call the Skill tool with "tdd" where possible, at pre-agreed seams.
 
-3. Once every acceptance criterion has a passing test, call the Skill tool with "simplify", then commit to the current branch.
+Run typechecking regularly, single test files regularly, and the full test suite once at the end.
 
-4. Call the Skill tool with "code-review" from the commit before this work's first commit. It diffs commits, so uncommitted and untracked files escape it. Review fixes go in a follow-up commit.
+Once done, call the Skill tool with "code-review" to review the work.
 
-5. Post the decisions the ticket left open as a comment on the issue, so the reviewer and later tickets see them. Where a decision departs from the spec's wording, also edit the spec to match: later tickets and the Spec review read it as the source of truth.
-
-6. Finish by moving the issue to Done with a closing comment.
+Commit your work to the current branch.
