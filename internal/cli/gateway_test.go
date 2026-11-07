@@ -21,9 +21,9 @@ import (
 
 // startFakeGateway runs `sprut serve` with a Config holding one well-behaved
 // fake Upstream, "fake".
-func startFakeGateway(t *testing.T) *gateway {
+func startFakeGateway(t *testing.T, args ...string) *gateway {
 	t.Helper()
-	return startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t)}), nil)
+	return startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t)}), nil, args...)
 }
 
 // writeConfig writes a Config with the given Upstreams and returns its path.
@@ -190,10 +190,19 @@ func (g *gateway) wantNoLogLine(t *testing.T, level string, parts ...string) {
 // logged reports whether the Gateway has logged a line at level containing
 // all of parts.
 func (g *gateway) logged(level string, parts ...string) bool {
-	return slices.ContainsFunc(g.stderr.Lines(), func(line string) bool {
-		return strings.Contains(line, "level="+level+" ") &&
-			!slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) })
-	})
+	return g.loggedCount(level, parts...) > 0
+}
+
+// loggedCount counts the stderr lines at level containing all of parts.
+func (g *gateway) loggedCount(level string, parts ...string) int {
+	n := 0
+	for _, line := range g.stderr.Lines() {
+		if strings.Contains(line, "level="+level+" ") &&
+			!slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) }) {
+			n++
+		}
+	}
+	return n
 }
 
 // testLog returns a writer to t's output that marks each line as the

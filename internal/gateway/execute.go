@@ -57,11 +57,7 @@ func execute(log *slog.Logger) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		res, err := runScript(ctx, req.Params.Arguments)
-		attrs := []any{"duration", time.Since(begin)}
-		if err != nil {
-			attrs = append(attrs, "err", err)
-		}
-		log.Debug("script executed", append(attrs, "isError", res != nil && res.IsError)...)
+		logCall(log, "script executed", time.Since(begin), res, err)
 		return res, err
 	}
 }
@@ -86,7 +82,7 @@ func runScript(ctx context.Context, args json.RawMessage) (*mcp.CallToolResult, 
 		if scriptErr.Output != "" {
 			text += "\n" + scriptErr.Output
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}, IsError: true}, nil
+		return errorResult(errors.New(text)), nil
 	case err != nil:
 		return errorResult(err), nil
 	}

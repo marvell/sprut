@@ -139,10 +139,13 @@ func TestFailingScriptGivesErrorWithLineAndOutputSoFar(t *testing.T) {
 func TestScriptStoppedAtTimeLimit(t *testing.T) {
 	t.Parallel()
 	for _, script := range []string{"for (;;) {}", "await 1; for (;;) {}"} {
-		err := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
-		if err.Message != "script timed out after 100ms" || err.Output != "looping\n" {
-			t.Errorf("%q: error %q with output %q, want a timeout after its output", script, err.Message, err.Output)
-		}
+		t.Run(script, func(t *testing.T) {
+			t.Parallel()
+			err := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
+			if err.Message != "script timed out after 100ms" || err.Output != "looping\n" {
+				t.Errorf("error %q with output %q, want a timeout after its output", err.Message, err.Output)
+			}
+		})
 	}
 }
 

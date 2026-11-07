@@ -8,16 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/marvell/sprut/internal/mcptest"
 )
-
-// startCodeModeGateway runs `sprut serve --code-mode` plus args, with the
-// fake Upstream, and connects an Agent to it.
-func startCodeModeGateway(t *testing.T, args ...string) *gateway {
-	t.Helper()
-	return startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t)}), nil, append([]string{"--code-mode"}, args...)...)
-}
 
 // execute calls the execute tool with code and returns its result.
 func (g *gateway) execute(ctx context.Context, t *testing.T, code string) *mcp.CallToolResult {
@@ -32,12 +23,12 @@ func (g *gateway) execute(ctx context.Context, t *testing.T, code string) *mcp.C
 func TestServeOffersExecuteBesideNamespacedToolsOnlyInCodeMode(t *testing.T) {
 	t.Parallel()
 	startFakeGateway(t).wantTools(t, "fake__echo", "fake__fail")
-	startCodeModeGateway(t).wantTools(t, "execute", "fake__echo", "fake__fail")
+	startFakeGateway(t, "--code-mode").wantTools(t, "execute", "fake__echo", "fake__fail")
 }
 
 func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 	t.Parallel()
-	g := startCodeModeGateway(t)
+	g := startFakeGateway(t, "--code-mode")
 	res, err := g.Agent.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
@@ -75,7 +66,7 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 
 func TestExecuteReturnsWhatScriptPrintsThenItsReturnValue(t *testing.T) {
 	t.Parallel()
-	g := startCodeModeGateway(t)
+	g := startFakeGateway(t, "--code-mode")
 	ctx := t.Context()
 
 	tests := []struct {
@@ -103,7 +94,7 @@ func TestExecuteReturnsWhatScriptPrintsThenItsReturnValue(t *testing.T) {
 
 func TestExecuteGivesIsErrorWithLineThenOutputSoFar(t *testing.T) {
 	t.Parallel()
-	g := startCodeModeGateway(t)
+	g := startFakeGateway(t, "--code-mode")
 	ctx := t.Context()
 
 	tests := []struct {
@@ -128,7 +119,7 @@ func TestExecuteGivesIsErrorWithLineThenOutputSoFar(t *testing.T) {
 
 func TestExecuteRejectsCallWithoutCode(t *testing.T) {
 	t.Parallel()
-	g := startCodeModeGateway(t)
+	g := startFakeGateway(t, "--code-mode")
 	res, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: "execute", Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatalf("calling execute: %v", err)
@@ -140,19 +131,13 @@ func TestExecuteRejectsCallWithoutCode(t *testing.T) {
 
 func TestExecuteLoggedOnceUnderVerboseWithDurationAndOutcome(t *testing.T) {
 	t.Parallel()
-	g := startCodeModeGateway(t, "-v")
+	g := startFakeGateway(t, "--code-mode", "-v")
 	g.execute(t.Context(), t, "return 1")
 	g.execute(t.Context(), t, "throw new Error('boom')")
 	g.closeAgent(t)
 
-	var executed []string
-	for _, line := range g.stderr.Lines() {
-		if strings.Contains(line, `msg="script executed"`) {
-			executed = append(executed, line)
-		}
-	}
-	if len(executed) != 2 {
-		t.Fatalf("logged %d script executions, want 2:\n%s", len(executed), strings.Join(executed, "\n"))
+	if n := g.loggedCount("DEBUG", `msg="script executed"`); n != 2 {
+		t.Errorf("logged %d script executions, want 2", n)
 	}
 	g.wantLogLine(t, "DEBUG", `msg="script executed"`, "tool=execute", "duration=", "isError=false")
 	g.wantLogLine(t, "DEBUG", `msg="script executed"`, "tool=execute", "duration=", "isError=true")
@@ -160,7 +145,7 @@ func TestExecuteLoggedOnceUnderVerboseWithDurationAndOutcome(t *testing.T) {
 
 func TestServeStopsScriptWhenAgentCancelsExecute(t *testing.T) {
 	t.Parallel()
-	g := startCodeModeGateway(t, "-v")
+	g := startFakeGateway(t, "--code-mode", "-v")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	called := make(chan error, 1)

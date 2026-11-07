@@ -32,7 +32,7 @@ type Gateway struct {
 	server      *mcp.Server
 	upstreams   *upstreams
 	skipped     []skippedUpstream // Upstreams that failed or timed out at startup
-	tools       map[string]bool   // Namespaced tools served; fixed once Start returns
+	tools       map[string]bool   // tools served, execute included; fixed once Start returns
 	agentLogged atomic.Bool       // whether "agent connected" is logged
 	log         *slog.Logger
 }
@@ -369,10 +369,7 @@ func forward(upstream string, session *mcp.ClientSession, original string, log *
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
-		attrs := []any{"duration", time.Since(begin)}
-		if err != nil {
-			attrs = append(attrs, "err", err)
-		}
+		took, callErr := time.Since(begin), err
 		switch {
 		case res == nil:
 		case res.NeedsInput():
@@ -385,9 +382,19 @@ func forward(upstream string, session *mcp.ClientSession, original string, log *
 		if err != nil && ctx.Err() == nil && !answered(err) {
 			res, err = errorResult(fmt.Errorf("call to upstream %q failed: %w", upstream, err)), nil
 		}
-		log.Debug("tool called", append(attrs, "isError", res != nil && res.IsError)...)
+		logCall(log, "tool called", took, res, callErr)
 		return res, err
 	}
+}
+
+// logCall logs at DEBUG a call that took took and ended in res, or in err
+// on the way there.
+func logCall(log *slog.Logger, msg string, took time.Duration, res *mcp.CallToolResult, err error) {
+	attrs := []any{"duration", took}
+	if err != nil {
+		attrs = append(attrs, "err", err)
+	}
+	log.Debug(msg, append(attrs, "isError", res != nil && res.IsError)...)
 }
 
 // errorResult is an isError result saying err, and the remedy it carries,
