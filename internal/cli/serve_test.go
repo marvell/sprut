@@ -27,13 +27,8 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t)
 
-	res, err := g.Agent.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("tools/list: %v", err)
-	}
-
 	got := map[string]any{}
-	for _, tool := range res.Tools {
+	for _, tool := range g.tools(t) {
 		got[tool.Name] = toJSON(t, tool)
 	}
 	want := map[string]any{

@@ -63,8 +63,10 @@ console.log, console.error and console.warn print to one output: strings as they
 
 Each script starts in a fresh VM, so nothing persists between scripts.
 
-A script that fails to parse, throws or runs past a limit gives an error result: the message with its line, then the output printed so far. Limits: %s of wall time, %d MB of memory, a call depth of about %d, and %d characters of output, past which the output is cut with a line saying how much.`,
-		limits.Time, limits.Memory>>20, limits.Stack, limits.Output) + "\n\n" + tools.scriptTools()
+A script that fails to parse, throws or runs past a limit gives an error result: the message with its line, then the output printed so far. Limits: %s of wall time, %d MB of memory, a call depth of about %d, and %d characters of output, past which the output is cut with a line saying how much.
+
+%s`,
+		limits.Time, limits.Memory>>20, limits.Stack, limits.Output, tools.scriptTools())
 }
 
 // scriptTools lists the tools a Script may call, by Upstream: names only,

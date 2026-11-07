@@ -151,15 +151,21 @@ func (g *gateway) startBlockingCall(ctx context.Context, t *testing.T, progress 
 	return called
 }
 
-// wantTools checks that the Agent's tools are exactly want, by name.
-func (g *gateway) wantTools(t *testing.T, want ...string) {
+// tools is the Agent's tool list.
+func (g *gateway) tools(t *testing.T) []*mcp.Tool {
 	t.Helper()
 	res, err := g.Agent.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
+	return res.Tools
+}
+
+// wantTools checks that the Agent's tools are exactly want, by name.
+func (g *gateway) wantTools(t *testing.T, want ...string) {
+	t.Helper()
 	var got []string
-	for _, tool := range res.Tools {
+	for _, tool := range g.tools(t) {
 		got = append(got, tool.Name)
 	}
 	slices.Sort(got)

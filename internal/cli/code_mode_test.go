@@ -3,6 +3,7 @@ package cli_test
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -59,17 +60,12 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 // executeTool is the execute tool as the Agent lists it.
 func (g *gateway) executeTool(t *testing.T) *mcp.Tool {
 	t.Helper()
-	res, err := g.Agent.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("tools/list: %v", err)
+	tools := g.tools(t)
+	i := slices.IndexFunc(tools, func(tool *mcp.Tool) bool { return tool.Name == "execute" })
+	if i < 0 {
+		t.Fatal("no execute tool")
 	}
-	for _, tool := range res.Tools {
-		if tool.Name == "execute" {
-			return tool
-		}
-	}
-	t.Fatal("no execute tool")
-	return nil
+	return tools[i]
 }
 
 func TestExecuteDescriptionListsReadOnlyToolsByUpstreamAfterScriptContract(t *testing.T) {
