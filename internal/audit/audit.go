@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marvell/sprut/internal/chars"
 	"github.com/marvell/sprut/internal/config"
 	"github.com/marvell/sprut/internal/statedir"
 )
@@ -119,7 +120,7 @@ func (l *Log) Call(c Call) {
 	if l == nil {
 		return
 	}
-	c.Err = cut(c.Err)
+	c.Err, _ = chars.Cut(c.Err, errLimit)
 	ev := struct {
 		header
 		Call
@@ -137,7 +138,7 @@ func (l *Log) Script(s Script) {
 	if l == nil {
 		return
 	}
-	s.Err = cut(s.Err)
+	s.Err, _ = chars.Cut(s.Err, errLimit)
 	l.writeEvent(struct {
 		header
 		Script
@@ -248,19 +249,4 @@ func agentDir(agent string) string {
 		return "unknown"
 	}
 	return name
-}
-
-// cut is s cut to errLimit characters.
-func cut(s string) string {
-	if len(s) <= errLimit {
-		return s
-	}
-	n := 0
-	for i := range s {
-		if n == errLimit {
-			return s[:i]
-		}
-		n++
-	}
-	return s
 }

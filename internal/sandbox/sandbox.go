@@ -18,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"modernc.org/quickjs"
+
+	"github.com/marvell/sprut/internal/chars"
 )
 
 // Limits bound what one Script may use. A zero field sets no limit.
@@ -220,18 +222,10 @@ func (o *output) write(s string) {
 		o.text.WriteString(s)
 		return
 	}
-	room := o.limit - o.kept
-	for i := range s { // i is the byte offset of each character
-		if room == 0 {
-			o.text.WriteString(s[:i])
-			o.kept = o.limit
-			o.cut += utf8.RuneCountInString(s[i:])
-			return
-		}
-		room--
-	}
-	o.text.WriteString(s)
-	o.kept = o.limit - room
+	kept, dropped := chars.Cut(s, o.limit-o.kept)
+	o.text.WriteString(kept)
+	o.kept += utf8.RuneCountInString(kept)
+	o.cut += dropped
 }
 
 // String is the text kept, followed by a line saying how much was cut, if
