@@ -21,15 +21,15 @@ func run(t *testing.T, script string) string {
 }
 
 // runFailing runs script under limits and returns the *sandbox.Error it
-// must fail with.
-func runFailing(t *testing.T, script string, limits sandbox.Limits) *sandbox.Error {
+// must fail with, and the result that comes with it.
+func runFailing(t *testing.T, script string, limits sandbox.Limits) (*sandbox.Error, string) {
 	t.Helper()
 	out, err := sandbox.Run(t.Context(), script, limits)
 	var scriptErr *sandbox.Error
 	if !errors.As(err, &scriptErr) {
 		t.Fatalf("Run(%q) = %q, %v; want a *sandbox.Error", script, out, err)
 	}
-	return scriptErr
+	return scriptErr, out
 }
 
 func TestScriptSeesNoHostAPIBeyondConsole(t *testing.T) {
@@ -50,11 +50,11 @@ func TestScriptSeesNoHostAPIBeyondConsole(t *testing.T) {
 
 func TestScriptCannotLoadModules(t *testing.T) {
 	t.Parallel()
-	err := runFailing(t, `await import("os")`, sandbox.Limits{})
+	err, _ := runFailing(t, `await import("os")`, sandbox.Limits{})
 	if !strings.Contains(err.Message, "could not load module") {
 		t.Errorf("error = %q, want it to say the module could not load", err.Message)
 	}
-	err = runFailing(t, `import * as os from "os"`, sandbox.Limits{})
+	err, _ = runFailing(t, `import * as os from "os"`, sandbox.Limits{})
 	if !strings.Contains(err.Message, "SyntaxError") {
 		t.Errorf("error = %q, want a SyntaxError for a static import", err.Message)
 	}
@@ -122,16 +122,16 @@ func TestFailingScriptGivesErrorWithLineAndOutputSoFar(t *testing.T) {
 		{"console.log('before')\nawait new Promise(() => {})", "the script awaited a promise that never settles"},
 	}
 	for _, tt := range tests {
-		err := runFailing(t, tt.script, sandbox.Limits{})
+		err, out := runFailing(t, tt.script, sandbox.Limits{})
 		if err.Message != tt.want {
 			t.Errorf("%q failed with %q, want %q", tt.script, err.Message, tt.want)
 		}
-		wantOutput := "before\n"
+		wantOut := tt.want + "\nbefore\n"
 		if strings.HasPrefix(tt.want, "SyntaxError") {
-			wantOutput = "" // nothing runs
+			wantOut = tt.want // nothing runs
 		}
-		if err.Output != wantOutput {
-			t.Errorf("%q kept output %q, want %q", tt.script, err.Output, wantOutput)
+		if out != wantOut {
+			t.Errorf("%q gave %q, want %q", tt.script, out, wantOut)
 		}
 	}
 }
@@ -141,9 +141,9 @@ func TestScriptStoppedAtTimeLimit(t *testing.T) {
 	for _, script := range []string{"for (;;) {}", "await 1; for (;;) {}"} {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
-			err := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
-			if err.Message != "script timed out after 100ms" || err.Output != "looping\n" {
-				t.Errorf("error %q with output %q, want a timeout after its output", err.Message, err.Output)
+			err, out := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
+			if err.Message != "script timed out after 100ms" || out != "script timed out after 100ms\nlooping\n" {
+				t.Errorf("error %q with result %q, want a timeout, then its output", err.Message, out)
 			}
 		})
 	}
@@ -151,7 +151,7 @@ func TestScriptStoppedAtTimeLimit(t *testing.T) {
 
 func TestScriptFailsAtMemoryLimit(t *testing.T) {
 	t.Parallel()
-	err := runFailing(t, "const a = []; for (;;) a.push('x'.repeat(1024) + a.length)", sandbox.Limits{Memory: 16 << 20})
+	err, _ := runFailing(t, "const a = []; for (;;) a.push('x'.repeat(1024) + a.length)", sandbox.Limits{Memory: 16 << 20})
 	if !strings.Contains(err.Message, "out of memory") {
 		t.Errorf("error = %q, want out of memory", err.Message)
 	}
@@ -164,5 +164,76 @@ func TestCancelledRunStopsScriptAndReturnsContextError(t *testing.T) {
 	out, err := sandbox.Run(ctx, "for (;;) {}", sandbox.Limits{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Run = %q, %v; want context.Canceled", out, err)
+	}
+}
+
+func TestDeepRecursionFailsAtStackLimit(t *testing.T) {
+	t.Parallel()
+	const recurse = "function depth(n) { return n === 0 ? 0 : 1 + depth(n - 1) }\n"
+	limits := sandbox.Limits{Stack: 200}
+	if out, err := sandbox.Run(t.Context(), recurse+"return depth(50)", limits); err != nil || out != "50\n" {
+		t.Errorf("recursing 50 deep = %q, %v; want 50", out, err)
+	}
+	err, out := runFailing(t, recurse+"console.log('recursing')\nreturn depth(1000)", limits)
+	if !strings.Contains(err.Message, "stack overflow") || out != err.Message+"\nrecursing\n" {
+		t.Errorf("error %q with result %q, want a stack overflow, then its output", err.Message, out)
+	}
+}
+
+func TestUnboundedRecursionFailsWithoutCrashing(t *testing.T) {
+	t.Parallel()
+	err, _ := runFailing(t, "function f() { return f() + 1 }\nf()", sandbox.Limits{})
+	if !strings.Contains(err.Message, "stack overflow") {
+		t.Errorf("error = %q, want a stack overflow", err.Message)
+	}
+}
+
+func TestOutputCutAtLimitWithClosingLine(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		script string
+		want   string
+	}{
+		{`console.log("012345678")`, "012345678\n"},
+		{`console.log("0123456789abcdef")`, "0123456789\n[... 7 more characters cut]\n"},
+		{`console.log("abc"); return "x".repeat(20)`, "abc\n\"xxxxx\n[... 17 more characters cut]\n"},
+		{`console.log("ж".repeat(12))`, "жжжжжжжжжж\n[... 3 more characters cut]\n"},
+		{`for (let i = 0; i < 5; i++) console.log("0123456789")`, "0123456789\n[... 45 more characters cut]\n"},
+	}
+	for _, tt := range tests {
+		out, err := sandbox.Run(t.Context(), tt.script, sandbox.Limits{Output: 10})
+		if err != nil || out != tt.want {
+			t.Errorf("%s gave %q, %v; want %q", tt.script, out, err, tt.want)
+		}
+	}
+}
+
+func TestFailedScriptGivesMessageThenOutputCutAtLimit(t *testing.T) {
+	t.Parallel()
+	out, err := sandbox.Run(t.Context(), "console.log('0123456789'.repeat(3))\nthrow new Error('boom')", sandbox.Limits{Output: 25})
+	var scriptErr *sandbox.Error
+	if !errors.As(err, &scriptErr) || scriptErr.Message != "Error: boom (line 2)" {
+		t.Fatalf("Run = %q, %v; want Error: boom (line 2)", out, err)
+	}
+	if want := "Error: boom (line 2)\n0123\n[... 27 more characters cut]\n"; out != want {
+		t.Errorf("result %q, want %q", out, want)
+	}
+
+	out, _ = sandbox.Run(t.Context(), "throw new Error('x'.repeat(100))", sandbox.Limits{Output: 25})
+	if want := "Error: xxxxxxxxxxxxxxxxxx\n[... 91 more characters cut]\n"; out != want {
+		t.Errorf("result %q, want %q", out, want)
+	}
+}
+
+func TestScriptPrintingWithoutEndKeepsOnlyOutputLimit(t *testing.T) {
+	t.Parallel()
+	out, err := sandbox.Run(t.Context(), "for (;;) console.log('x'.repeat(1 << 20))", sandbox.Limits{Time: 300 * time.Millisecond, Output: 100})
+	var scriptErr *sandbox.Error
+	if !errors.As(err, &scriptErr) || scriptErr.Message != "script timed out after 300ms" {
+		t.Fatalf("Run = %v, want a timeout", err)
+	}
+	head, closing, ok := strings.Cut(out, "\n")
+	if !ok || head != "script timed out after 300ms" || len(closing) > 100+60 || !strings.Contains(closing, "more characters cut]") {
+		t.Errorf("result %.200q, want the timeout, then 100 characters and a closing line", out)
 	}
 }

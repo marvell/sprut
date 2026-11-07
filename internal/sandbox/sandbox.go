@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"modernc.org/quickjs"
 )
@@ -19,13 +20,14 @@ import (
 type Limits struct {
 	Time   time.Duration // wall time, from the start of Run
 	Memory uintptr       // bytes the VM may allocate
+	Stack  uintptr       // call depth, in the engine's stack slots: about one per call
+	Output int           // characters of the result; the rest is cut, and a closing line says how much
 }
 
 // Error is a Script that failed: it didn't parse, threw, or ran out of a
-// limit. Output is what it printed before that.
+// limit. The result Run returns with it says so too, and holds the output.
 type Error struct {
 	Message string // the error, with its line in the Script where known
-	Output  string
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -52,9 +54,11 @@ const prelude = `(() => {
 	globalThis.console = { log: write, error: write, warn: write };
 })();`
 
-// Run runs script under limits and returns what it printed, followed by
-// the JSON of the value it returned unless that is undefined. A Script
-// that fails gives an *Error. Once ctx is done, the Script is stopped and
+// Run runs script under limits and returns its result: what it printed,
+// followed by the JSON of the value it returned unless that is undefined.
+// A Script that fails gives an *Error, and its result is the error's
+// message on a line of its own, then what it printed. Either way the result
+// is cut at the output limit. Once ctx is done, the Script is stopped and
 // Run returns ctx's error.
 func Run(ctx context.Context, script string, limits Limits) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -75,17 +79,25 @@ func Run(ctx context.Context, script string, limits Limits) (string, error) {
 	if limits.Memory > 0 {
 		vm.SetMemoryLimit(limits.Memory)
 	}
+	if limits.Stack > 0 {
+		vm.SetMaxStackSize(limits.Stack)
+	}
 	// Interrupt is the one VM method safe from another goroutine, and does
 	// nothing once the VM is closed.
 	stop := context.AfterFunc(runCtx, vm.Interrupt)
 	defer stop()
 
-	var out strings.Builder
+	// Capped as it is written: the buffer is outside the VM's memory limit.
+	out := output{limit: limits.Output}
 	err = vm.RegisterHostFunc(printFunc, func(args []any) (any, error) {
 		if len(args) > 0 {
-			fmt.Fprint(&out, args[0])
+			text, ok := args[0].(string) // always, from the prelude
+			if !ok {
+				text = fmt.Sprint(args[0])
+			}
+			out.write(text)
 		}
-		out.WriteByte('\n')
+		out.write("\n")
 		return nil, nil
 	})
 	if err != nil {
@@ -100,15 +112,68 @@ func Run(ctx context.Context, script string, limits Limits) (string, error) {
 	case ctx.Err() != nil:
 		return "", ctx.Err()
 	case runCtx.Err() != nil:
-		return "", &Error{Message: fmt.Sprintf("script timed out after %s", limits.Time), Output: out.String()}
+		return failed(fmt.Sprintf("script timed out after %s", limits.Time), &out)
 	case err != nil:
-		return "", &Error{Message: describe(err), Output: out.String()}
+		return failed(describe(err), &out)
 	}
 	if returned != "" {
-		out.WriteString(returned)
-		out.WriteByte('\n')
+		out.write(returned)
+		out.write("\n")
 	}
 	return out.String(), nil
+}
+
+// failed is the result and the *Error of a Script that failed with message
+// after printing out.
+func failed(message string, out *output) (string, error) {
+	res := output{limit: out.limit, cut: out.cut}
+	res.write(message)
+	if printed := out.text.String(); printed != "" {
+		res.write("\n")
+		res.write(printed)
+	}
+	return res.String(), &Error{Message: message}
+}
+
+// output is text kept up to limit characters, or all of it when limit is
+// 0. Beyond the limit, characters are only counted.
+type output struct {
+	text  strings.Builder
+	limit int
+	kept  int // characters in text
+	cut   int // characters dropped
+}
+
+func (o *output) write(s string) {
+	if o.limit <= 0 {
+		o.text.WriteString(s)
+		return
+	}
+	room := o.limit - o.kept
+	for i := range s { // i is the byte offset of each character
+		if room == 0 {
+			o.text.WriteString(s[:i])
+			o.kept = o.limit
+			o.cut += utf8.RuneCountInString(s[i:])
+			return
+		}
+		room--
+	}
+	o.text.WriteString(s)
+	o.kept = o.limit - room
+}
+
+// String is the text kept, followed by a line saying how much was cut, if
+// any.
+func (o *output) String() string {
+	text := o.text.String()
+	if o.cut == 0 {
+		return text
+	}
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return text + fmt.Sprintf("[... %d more characters cut]\n", o.cut)
 }
 
 // run runs script on vm as the body of an async function, and returns the

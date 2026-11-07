@@ -23,6 +23,8 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every upstream as usual, then shut down; exit 1 if any failed"},
 			&ucli.BoolFlag{Name: "code-mode", Usage: "also offer the execute tool, which runs a javascript script in a sandbox"},
+			// For tests only: the limit is fixed, and README doesn't name it.
+			&ucli.DurationFlag{Name: "script-time-limit", Value: gateway.ScriptTimeLimit, Hidden: true, Validator: positive},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			startupTimeout := cmd.Duration("startup-timeout")
@@ -34,7 +36,11 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			upstreams := c.Upstreams()
 			log.Info("config loaded", "path", c.Path, "upstreams", len(upstreams))
 
-			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, cmd.Bool("code-mode"), version(), log)
+			var codeMode *gateway.CodeMode
+			if cmd.Bool("code-mode") {
+				codeMode = &gateway.CodeMode{ScriptTimeLimit: cmd.Duration("script-time-limit")}
+			}
+			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, codeMode, version(), log)
 			defer gw.Close()
 
 			if cmd.Bool("dry-run") {
@@ -57,16 +63,19 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 
 func startupTimeoutFlag() *ucli.DurationFlag {
 	return &ucli.DurationFlag{
-		Name:  "startup-timeout",
-		Value: 30 * time.Second,
-		Usage: "how long each upstream may take to start",
-		Validator: func(d time.Duration) error {
-			if d <= 0 {
-				return errors.New("must be positive")
-			}
-			return nil
-		},
+		Name:      "startup-timeout",
+		Value:     30 * time.Second,
+		Usage:     "how long each upstream may take to start",
+		Validator: positive,
 	}
+}
+
+// positive accepts a duration flag's value above zero.
+func positive(d time.Duration) error {
+	if d <= 0 {
+		return errors.New("must be positive")
+	}
+	return nil
 }
 
 func configFlag() *ucli.StringFlag {

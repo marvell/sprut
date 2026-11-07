@@ -57,7 +57,7 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 	if diff := cmp.Diff(toJSON(t, wantAnnotations), toJSON(t, execute.Annotations)); diff != "" {
 		t.Errorf("annotations (-want +got):\n%s", diff)
 	}
-	for _, part := range []string{"async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB"} {
+	for _, part := range []string{"async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "call depth"} {
 		if !strings.Contains(execute.Description, part) {
 			t.Errorf("description lacks %q:\n%s", part, execute.Description)
 		}
@@ -168,4 +168,23 @@ func TestServeStopsScriptWhenAgentCancelsExecute(t *testing.T) {
 		t.Error(`no "script executed" line with the context's error`)
 	}
 	g.closeAgent(t)
+}
+
+func TestExecuteCutsOutputAt40000Characters(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t, "--code-mode")
+	res := g.execute(t.Context(), t, `console.log("x".repeat(50000))`)
+	want := strings.Repeat("x", 40000) + "\n[... 10001 more characters cut]\n"
+	if got := resultText(t, res); res.IsError || got != want {
+		t.Errorf("result (isError %v) of %d characters ending %q, want 40000 characters and a closing line", res.IsError, len(got), got[max(0, len(got)-40):])
+	}
+}
+
+func TestExecuteGivesIsErrorWhenScriptTimesOutThenOutputSoFar(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t, "--code-mode", "--script-time-limit", "300ms")
+	res := g.execute(t.Context(), t, "console.log('looping')\nfor (;;) {}")
+	if got, want := resultText(t, res), "script timed out after 300ms\nlooping\n"; !res.IsError || got != want {
+		t.Errorf("result (isError %v) %q, want isError %q", res.IsError, got, want)
+	}
 }
