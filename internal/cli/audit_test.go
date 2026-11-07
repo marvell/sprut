@@ -113,6 +113,34 @@ func TestAuditLogStartsWithSessionOfAgentInEitherEra(t *testing.T) {
 	}
 }
 
+func TestAuditLogIsReadableOnlyByItsOwner(t *testing.T) {
+	t.Parallel()
+	g, state := startAuditedGateway(t, mcptest.Stdio{})
+	g.wantEcho(t)
+
+	paths, err := filepath.Glob(filepath.Join(state, "sprut", "audit", "test-agent", "*.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("Audit log files = %v (%v), want one", paths, err)
+	}
+	for _, p := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{filepath.Join(state, "sprut"), 0o700},
+		{filepath.Join(state, "sprut", "audit"), 0o700},
+		{filepath.Join(state, "sprut", "audit", "test-agent"), 0o700},
+		{paths[0], 0o600},
+	} {
+		fi, err := os.Stat(p.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != p.mode {
+			t.Errorf("%s has mode %o, want %o", p.path, got, p.mode)
+		}
+	}
+}
+
 func TestAuditLogRecordsDirectCallsWithOutcomeAndSizes(t *testing.T) {
 	t.Parallel()
 	g, state := startAuditedGateway(t, mcptest.Stdio{})

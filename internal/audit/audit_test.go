@@ -86,23 +86,6 @@ func TestStartWritesSessionEventToFileNamedByAgentAndStartTime(t *testing.T) {
 	if diff := cmp.Diff(want, readEvents(t, path)); diff != "" {
 		t.Errorf("events (-want +got):\n%s", diff)
 	}
-	for _, p := range []struct {
-		path string
-		mode os.FileMode
-	}{
-		{filepath.Join(state, "sprut"), 0o700},
-		{filepath.Join(state, "sprut", "audit"), 0o700},
-		{filepath.Dir(path), 0o700},
-		{path, 0o600},
-	} {
-		fi, err := os.Stat(p.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := fi.Mode().Perm(); got != p.mode {
-			t.Errorf("%s has mode %o, want %o", p.path, got, p.mode)
-		}
-	}
 }
 
 func TestStartMakesExistingDirectoriesPrivate(t *testing.T) {
