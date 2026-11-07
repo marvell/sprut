@@ -124,10 +124,10 @@ func (c catalog) callFromScript(ctx context.Context, name string, args json.RawM
 	switch {
 	case t == nil:
 		return nil, fmt.Errorf("unknown tool %q: a script can call only read-only tools, and any other must be called directly", name)
-	case !t.readOnly():
+	case !t.readOnly:
 		return nil, fmt.Errorf("tool %q is not read-only, so a script can't call it; call it directly", name)
 	}
-	res, err := t.call(ctx, args, t.log.With("via", executeTool))
+	res, err := t.call(ctx, args, t.scriptLog)
 	if err != nil {
 		return nil, err
 	}

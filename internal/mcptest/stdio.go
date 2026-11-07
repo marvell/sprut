@@ -319,8 +319,7 @@ func (s Stdio) addTools(server *mcp.Server, crashed *atomic.Bool) {
 			})
 	}
 	if s.WriteTool {
-		annotations := &mcp.ToolAnnotations{DestructiveHint: new(true)}
-		server.AddTool(&mcp.Tool{Name: "write", InputSchema: ObjectSchema, Annotations: annotations},
+		server.AddTool(&mcp.Tool{Name: "write", InputSchema: ObjectSchema, Annotations: &mcp.ToolAnnotations{DestructiveHint: new(true)}},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "written"}}}, nil
 			})

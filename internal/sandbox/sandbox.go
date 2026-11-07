@@ -77,8 +77,10 @@ const prelude = `(() => {
 
 	const calls = new Map();
 	globalThis.call = (name, args) => {
-		// The stack of where the Script called, without this frame.
-		const site = new Error().stack.split("\n").slice(1).join("\n");
+		// Where the Script called, for the line of an Error the call ends
+		// in. Every eval is "<eval>" to the engine, prelude and Script
+		// alike, so this frame is dropped from the stack when it is used.
+		const site = new Error();
 		return new Promise((resolve, reject) => {
 			const id = start(String(name), args === undefined ? "{}" : JSON.stringify(args));
 			calls.set(id, { resolve, reject, site });
@@ -92,7 +94,7 @@ const prelude = `(() => {
 			return;
 		}
 		const e = new Error(error);
-		e.stack = site;
+		e.stack = site.stack.split("\n").slice(1).join("\n");
 		reject(e);
 	};
 })();`
@@ -119,7 +121,7 @@ func Run(ctx context.Context, script string, caller Caller, limits Limits) (stri
 		runCtx, cancel = context.WithCancel(ctx)
 	}
 	calls := &calls{ctx: runCtx, caller: caller, ended: make(chan ended), turns: make(chan struct{}, inFlight)}
-	defer calls.wait()
+	defer calls.wg.Wait()
 	defer cancel()
 
 	vm, err := quickjs.NewVM()
@@ -298,7 +300,7 @@ type calls struct {
 
 	next    int            // the id of the next call
 	running int            // calls started and not yet settled
-	wg      sync.WaitGroup // the calls' goroutines
+	wg      sync.WaitGroup // the calls' goroutines, which return once ctx is done
 }
 
 // ended is the outcome of the call with id.
@@ -346,10 +348,6 @@ func (c *calls) settleNext() error {
 		return c.ctx.Err()
 	}
 }
-
-// wait waits for the calls' goroutines to return, which they do once the
-// Script's context is done.
-func (c *calls) wait() { c.wg.Wait() }
 
 // frameLine finds the line of the first stack frame in the Script.
 var frameLine = regexp.MustCompile(`<eval>:(\d+):\d+`)

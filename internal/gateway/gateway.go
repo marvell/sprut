@@ -321,12 +321,14 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 			err = fmt.Errorf("%v", p)
 		}
 	}()
+	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
 	t := &namespacedTool{
-		upstream:    upstream,
-		session:     session,
-		original:    original,
-		annotations: tool.Annotations,
-		log:         g.log.With("upstream", upstream, "tool", namespaced.Name),
+		upstream:  upstream,
+		session:   session,
+		original:  original,
+		readOnly:  tool.Annotations != nil && tool.Annotations.ReadOnlyHint,
+		log:       log,
+		scriptLog: log.With("via", executeTool),
 	}
 	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return t.call(ctx, req.Params.Arguments, t.log)
@@ -341,16 +343,12 @@ type catalog map[string]*namespacedTool
 
 // namespacedTool is an Upstream's tool, as the Gateway serves it.
 type namespacedTool struct {
-	upstream    string
-	session     *mcp.ClientSession
-	original    string // the tool's name at the Upstream
-	annotations *mcp.ToolAnnotations
-	log         *slog.Logger
-}
-
-// readOnly reports whether t's Upstream marks it read-only.
-func (t *namespacedTool) readOnly() bool {
-	return t.annotations != nil && t.annotations.ReadOnlyHint
+	upstream  string
+	session   *mcp.ClientSession
+	original  string       // the tool's name at the Upstream
+	readOnly  bool         // whether the Upstream marks it read-only
+	log       *slog.Logger // for direct calls
+	scriptLog *slog.Logger // for calls from a Script
 }
 
 // answerUnknownTools answers a call to a tool the Gateway doesn't serve with
