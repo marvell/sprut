@@ -331,6 +331,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 	}()
 	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
 	t := &namespacedTool{
+		name:      namespaced.Name,
 		upstream:  upstream,
 		session:   session,
 		original:  original,
@@ -340,7 +341,7 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		audit:     g.audit,
 	}
 	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return t.call(ctx, req.Params.Arguments, t.log, 0)
+		return t.call(ctx, req.Params.Arguments, nil)
 	})
 	g.catalog[namespaced.Name] = t
 	t.log.Debug("tool added")
@@ -352,6 +353,7 @@ type catalog map[string]*namespacedTool
 
 // namespacedTool is an Upstream's tool, as the Gateway serves it.
 type namespacedTool struct {
+	name      string // as the Agent sees it
 	upstream  string
 	session   *mcp.ClientSession
 	original  string       // the tool's name at the Upstream
@@ -419,12 +421,12 @@ func (g *Gateway) noteAgent(req mcp.Request, res mcp.Result) {
 	g.audit.Start(s)
 }
 
-// call calls t at its Upstream with args, for the Script numbered script,
-// or directly if it is 0, and logs the call to log and to the Audit log. A
+// call calls t at its Upstream with args, for the Script run, or directly
+// if it is nil, and logs the call, to t's log and to the Audit log. A
 // call the Upstream doesn't answer, such as one to an Upstream that is
 // gone, ends in an isError result naming it, and so does one where it asks
 // for interactive input.
-func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, log *slog.Logger, script int) (*mcp.CallToolResult, error) {
+func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, run *scriptRun) (*mcp.CallToolResult, error) {
 	begin := time.Now()
 	res, err := t.session.CallTool(ctx, &mcp.CallToolParams{Name: t.original, Arguments: args})
 	took, callErr := time.Since(begin), err
@@ -440,10 +442,14 @@ func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, log *sl
 	if err != nil && ctx.Err() == nil && !answered(err) {
 		res, err = errorResult(fmt.Errorf("call to upstream %q failed: %w", t.upstream, err)), nil
 	}
+	log, script := t.log, 0
+	if run != nil {
+		log, script = t.scriptLog, run.n
+	}
 	logCall(log, "tool called", took, res, callErr)
 	if t.audit != nil {
 		outcome, why := outcome(ctx, res, err)
-		t.audit.Call(audit.Call{Tool: t.upstream + separator + t.original, Upstream: t.upstream, Script: script, Took: took,
+		t.audit.Call(audit.Call{Tool: t.name, Upstream: t.upstream, Script: script, Took: took,
 			Outcome: outcome, Err: why, ArgsBytes: len(args), ResultBytes: size(res)})
 	}
 	return res, err
@@ -466,22 +472,26 @@ func outcome(ctx context.Context, res *mcp.CallToolResult, err error) (audit.Out
 // size is the size of res's JSON, or 0 for no res. It leaves out
 // resultType, which the SDK stamps on each hop to a modern peer, so that a
 // result has the same size whichever era its Upstream and Agent are of.
+// The field is unexported, so it is subtracted from the encoding.
 func size(res *mcp.CallToolResult) int {
 	if res == nil {
 		return 0
 	}
 	data, err := json.Marshal(res)
-	var fields map[string]json.RawMessage
-	if err == nil {
-		err = json.Unmarshal(data, &fields)
-	}
 	if err != nil {
 		return 0
 	}
-	delete(fields, "resultType")
-	data, _ = json.Marshal(fields)
-	return len(data)
+	n := len(data)
+	if m := resultTypeField.FindAllIndex(data, -1); m != nil {
+		last := m[len(m)-1] // the SDK's own, which follows the result's fields
+		n -= last[1] - last[0]
+	}
+	return n
 }
+
+// resultTypeField is resultType in a result's JSON, with the comma before
+// it: the SDK writes it after content, which is always there.
+var resultTypeField = regexp.MustCompile(`,"resultType":"[a-z_]*"`)
 
 // logCall logs at DEBUG a call that took took and ended in res, or in err
 // on the way there.

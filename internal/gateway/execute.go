@@ -123,38 +123,40 @@ func (g *Gateway) execute(limits sandbox.Limits, log *slog.Logger) mcp.ToolHandl
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
 		run := &scriptRun{catalog: g.catalog, n: int(g.scripts.Add(1))}
-		code, res, err := runScript(ctx, req.Params.Arguments, run.call, limits)
+		var in struct {
+			Code *string `json:"code"`
+		}
+		var res *mcp.CallToolResult
+		var err error
+		if jerr := json.Unmarshal(req.Params.Arguments, &in); jerr != nil || in.Code == nil {
+			in.Code, res = new(""), errorResult(errors.New(`execute takes {"code": string}`))
+		} else {
+			res, err = runScript(ctx, *in.Code, run.call, limits)
+		}
 		took := time.Since(begin)
 		logCall(log, "script executed", took, res, err)
 		if g.audit != nil {
 			outcome, why := outcome(ctx, res, err)
 			g.audit.Script(audit.Script{N: run.n, Took: took, Outcome: outcome, Err: why,
-				Calls: int(run.calls.Load()), Code: code, ResultBytes: size(res)})
+				Calls: int(run.calls.Load()), Code: *in.Code, ResultBytes: size(res)})
 		}
 		return res, err
 	}
 }
 
-// runScript runs the Script in args under limits, its calls going to
-// caller, and returns its code too. A cancelled Script ends in ctx's
-// error, as a cancelled direct call does; any other failure is an isError
-// result.
-func runScript(ctx context.Context, args json.RawMessage, caller sandbox.Caller, limits sandbox.Limits) (string, *mcp.CallToolResult, error) {
-	var in struct {
-		Code *string `json:"code"`
-	}
-	if err := json.Unmarshal(args, &in); err != nil || in.Code == nil {
-		return "", errorResult(errors.New(`execute takes {"code": string}`)), nil
-	}
+// runScript runs the Script code under limits, its calls going to caller.
+// A cancelled Script ends in ctx's error, as a cancelled direct call does;
+// any other failure is an isError result.
+func runScript(ctx context.Context, code string, caller sandbox.Caller, limits sandbox.Limits) (*mcp.CallToolResult, error) {
 	// The sandbox formats the result, a failed Script's included.
-	out, err := sandbox.Run(ctx, *in.Code, caller, limits)
+	out, err := sandbox.Run(ctx, code, caller, limits)
 	switch {
 	case ctx.Err() != nil:
-		return *in.Code, nil, ctx.Err()
+		return nil, ctx.Err()
 	case err != nil && !errors.As(err, new(*sandbox.Error)):
-		return *in.Code, errorResult(err), nil
+		return errorResult(err), nil
 	}
-	return *in.Code, &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}, IsError: err != nil}, nil
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}, IsError: err != nil}, nil
 }
 
 // scriptRun is one Script being run: its number, and the calls it has made
@@ -179,7 +181,7 @@ func (r *scriptRun) call(ctx context.Context, name string, args json.RawMessage)
 		return nil, fmt.Errorf("tool %q is not read-only, so a script can't call it; call it directly", name)
 	}
 	r.calls.Add(1)
-	res, err := t.call(ctx, args, t.scriptLog, r.n)
+	res, err := t.call(ctx, args, r)
 	if err != nil {
 		return nil, err
 	}

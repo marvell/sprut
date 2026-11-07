@@ -19,6 +19,7 @@ import (
 
 	"github.com/marvell/sprut/internal/atomicfile"
 	"github.com/marvell/sprut/internal/config"
+	"github.com/marvell/sprut/internal/statedir"
 )
 
 // Credentials are what a Login leaves behind for one Upstream: its tokens,
@@ -85,11 +86,11 @@ type Store struct {
 	renewing int       // renew calls in progress
 }
 
-// NewStore returns the Store under $XDG_STATE_HOME/sprut/credentials, or
-// ~/.local/state/sprut/credentials.
+// NewStore returns the Store under sprut's state directory:
+// $XDG_STATE_HOME/sprut/credentials, or ~/.local/state/sprut/credentials.
 func NewStore(lookupEnv config.LookupEnv) (*Store, error) {
-	if dir, ok := config.XDGDir(lookupEnv, "XDG_STATE_HOME", filepath.Join(".local", "state")); ok {
-		s := &Store{dir: filepath.Join(dir, "sprut", "credentials")}
+	if dir, ok := statedir.Dir(lookupEnv); ok {
+		s := &Store{dir: filepath.Join(dir, "credentials")}
 		s.idle.L = &s.mu
 		return s, nil
 	}
@@ -281,7 +282,7 @@ type lock struct {
 // lock on the Credentials file would stay on the inode that a write
 // replaces.
 func (s *Store) lock(ctx context.Context, upstream string) (*lock, error) {
-	if err := s.mkdir(); err != nil {
+	if err := statedir.MkdirPrivate(filepath.Dir(s.dir), s.dir); err != nil {
 		return nil, fmt.Errorf("locking credentials: %w", err)
 	}
 	f, err := os.OpenFile(s.path(upstream, ".lock"), os.O_RDWR|os.O_CREATE, 0o600)
@@ -323,20 +324,6 @@ func (l *lock) save(c *Credentials) error {
 	}
 	if err := atomicfile.Write(l.s.path(l.upstream, ".json"), data, 0o600); err != nil {
 		return fmt.Errorf("writing credentials: %w", err)
-	}
-	return nil
-}
-
-// mkdir makes the Store's directory and its parent, sprut's own, readable
-// only by the user, including when they already exist.
-func (s *Store) mkdir() error {
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
-	}
-	for _, dir := range []string{filepath.Dir(s.dir), s.dir} {
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return err
-		}
 	}
 	return nil
 }
