@@ -14,27 +14,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
+      # Installs and caches the tools mise.toml pins, at mise.lock's checksums.
+      - uses: jdx/mise-action@v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            tools/*/go.sum
+          version: 2026.10.25
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('mise.lock', 'go.sum') }}
+          restore-keys: go-${{ runner.os }}-
 
       - name: gofmt
-        run: make fmt-check
+        run: mise run fmt-check
 
       - name: go vet
-        run: make vet
+        run: mise run vet
 
       - name: golangci-lint (seam rules)
-        run: make lint
+        run: mise run lint
 
       - name: go test -race (repeated, shuffled)
-        run: make test
+        run: mise run test
 
       - name: release config, workflows and snapshot build
-        run: make release-check
+        run: mise run release-check
 
   release:
     needs: check
@@ -48,14 +54,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - uses: jdx/mise-action@v5
         with:
-          go-version-file: go.mod
+          version: 2026.10.25
 
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: "~> v2"
-          args: release --clean
+      - name: goreleaser release
+        run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}

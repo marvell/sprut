@@ -1,6 +1,6 @@
 # Mechanical checks for the process boundary (seam 1 of the Sprut v0.1 spec,
 # the Linear project description; see docs/agents/issue-tracker.md) and for
-# black-box tests (ADR-0004). Run with `make lint`.
+# black-box tests (ADR-0004). Run with `mise run lint`.
 version: "2"
 
 linters:
@@ -42,7 +42,7 @@ linters:
       - path: _test\.go$
         linters: [forbidigo]
 
-# `make fmt` runs these; `make check` runs gofmt only.
+# `mise run fmt` runs these; `mise run check` runs gofmt only.
 formatters:
   enable:
     - goimports

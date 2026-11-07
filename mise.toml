@@ -1,0 +1,88 @@
+# The toolchain and every task the repo runs: CI runs `mise run <task>` with
+# these same pins (jdx/mise-action), so a local `mise run check` is CI.
+# Bump a tool with `mise use <tool>@<version>`, then `mise lock`.
+
+min_version = "2026.10.25"
+
+[settings]
+lockfile = true
+
+[tools]
+go = "1.27.3"
+# Built from source with the Go above, so it always understands go.mod's Go
+# version; a prebuilt binary refuses a go.mod newer than its own Go.
+"go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "2.14.0"
+actionlint = "1.7.12"
+goreleaser = "2.18.2"
+
+# One step after another, not in parallel: the tests depend on timing and
+# must not share the machine with lint or a release build.
+[tasks.check]
+description = "Everything CI checks"
+run = [
+  { task = "fmt-check" },
+  { task = "vet" },
+  { task = "lint" },
+  { task = "test" },
+  { task = "release-check" },
+]
+
+# goimports also adds and removes imports.
+[tasks.fmt]
+description = "Format the code with golangci-lint's formatters"
+run = "golangci-lint fmt"
+
+[tasks.fmt-check]
+description = "Fail on files gofmt would change"
+run = '''
+unformatted=$(gofmt -l .) || exit 1
+if [ -n "$unformatted" ]; then
+  echo "These files are not gofmt-formatted:"
+  echo "$unformatted"
+  exit 1
+fi
+'''
+
+[tasks.vet]
+run = "go vet ./..."
+
+[tasks.lint]
+description = "golangci-lint, including the seam rules"
+run = "golangci-lint run"
+
+# Repeated and shuffled, so a test that depends on timing or order fails here.
+[tasks.test]
+run = "go test -race -count=3 -shuffle=on ./..."
+
+# Statement coverage of the whole module by every test, including the
+# sprut and fake Upstream processes that the scripts and scenarios start.
+# One test at a time: processes of one binary that exit together race to
+# write its coverage metadata, and the loser says so on stderr.
+[tasks.cover]
+run = [
+  "go test -p 1 -parallel 1 -coverpkg=./... -coverprofile=cover.out ./...",
+  "go tool cover -func=cover.out | tail -1",
+]
+
+# Not part of check: a fuzz run finds new inputs for as long as it is let.
+# A failing input lands in testdata/fuzz and is then a regular test case.
+[tasks.fuzz]
+run = "go test -run '^$' -fuzz FuzzParse -fuzztime 60s ./internal/config"
+
+# The release job only runs on a v* tag, so check its config and a snapshot
+# build on every push: the host's binary must report the ldflags version
+# (v...-SNAPSHOT-...), not the ReadBuildInfo fallback.
+[tasks.release-check]
+description = "Check the workflows, the goreleaser config and a snapshot build"
+run = '''
+set -e
+actionlint
+goreleaser check
+goreleaser build --snapshot --clean
+out=$(dist/sprut_$(go env GOOS)_$(go env GOARCH)_*/sprut --version)
+echo "$out"
+case "$out" in
+  "sprut version v"*-SNAPSHOT-*) ;;
+  *) echo "snapshot build does not report the ldflags version"; exit 1 ;;
+esac
+'''
