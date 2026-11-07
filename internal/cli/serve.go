@@ -10,6 +10,7 @@ import (
 
 	ucli "github.com/urfave/cli/v3"
 
+	"github.com/marvell/sprut/internal/audit"
 	"github.com/marvell/sprut/internal/config"
 	"github.com/marvell/sprut/internal/gateway"
 )
@@ -23,10 +24,12 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call, those of scripts included"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every upstream as usual, then shut down; exit 1 if any failed"},
 			&ucli.BoolFlag{Name: "code-mode", Usage: "also offer the execute tool, which runs a javascript script in a sandbox"},
+			&ucli.BoolFlag{Name: "audit", Usage: "write the agent's tool calls and scripts, without their arguments or results, to $XDG_STATE_HOME/sprut/audit/<agent>/<start time>.jsonl"},
 			// For tests only: the limit is fixed, and README doesn't name it.
 			&ucli.DurationFlag{Name: "script-time-limit", Value: gateway.ScriptTimeLimit, Hidden: true, Validator: positive},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
+			started := time.Now()
 			startupTimeout := cmd.Duration("startup-timeout")
 			log := newLogger(stderr, cmd.Bool("verbose"))
 			c, err := openConfig(cmd.String("config"), config.LookupIn(env), log)
@@ -40,7 +43,12 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			if cmd.Bool("code-mode") {
 				codeMode = &gateway.CodeMode{ScriptTimeLimit: cmd.Duration("script-time-limit")}
 			}
-			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, codeMode, version(), log)
+			var auditLog *audit.Log
+			if cmd.Bool("audit") {
+				auditLog = audit.New(config.LookupIn(env), started, log)
+				defer func() { _ = auditLog.Close() }()
+			}
+			gw := gateway.Start(ctx, upstreams, env, openAuths(env), startupTimeout, codeMode, auditLog, version(), log)
 			defer gw.Close()
 
 			if cmd.Bool("dry-run") {

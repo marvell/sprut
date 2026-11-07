@@ -36,6 +36,10 @@ _Avoid_: code execution, sandbox mode
 A JavaScript program an Agent sends to `execute`. It runs inside the Gateway and can call read-only Namespaced tools; only what it prints or returns goes back to the Agent.
 _Avoid_: snippet, code (ambiguous)
 
+**Audit log**:
+The opt-in record that `sprut serve --audit` writes of one Agent session: each Namespaced tool call and Script, with timings, outcomes and sizes, but never arguments or results.
+_Avoid_: trace, telemetry, call log
+
 **Login**:
 The one-time interactive step, done by the user in a browser, that grants the Gateway access to an HTTP Upstream protected by OAuth.
 _Avoid_: auth, authorization, sign-in

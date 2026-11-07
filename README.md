@@ -315,6 +315,30 @@ A Script has no network, no filesystem, no timers, no `require` and no access to
 
 The limits are fixed.
 
+## Audit log
+
+`sprut serve --audit` writes an Audit log: every tool call and Script of the Agent's session, with how long it took, how it ended and how many bytes went each way, to measure what [Code mode](#code-mode) saves. Add the flag to one Agent's `sprut serve` line, with or without `--code-mode`. Each session gets its own file, named by the Agent's MCP client name and the time sprut started:
+
+```
+~/.local/state/sprut/audit/claude-code/2026-11-07T14-03-22.jsonl
+```
+
+(`$XDG_STATE_HOME/sprut/audit/...` if that is set.) Each line is one JSON event:
+
+```jsonl
+{"ts":"2026-11-07T14:03:25.120+03:00","type":"session","sprut":"0.5.0","agent":"claude-code","agent_version":"2.1.0","protocol":"2025-06-18","code_mode":true}
+{"ts":"2026-11-07T14:03:31.402+03:00","type":"call","tool":"linear__get_issue","upstream":"linear","script":null,"ms":412,"outcome":"ok","args_bytes":21,"result_bytes":5120}
+{"ts":"2026-11-07T14:03:40.011+03:00","type":"call","tool":"linear__list_comments","upstream":"linear","script":1,"ms":230,"outcome":"ok","args_bytes":24,"result_bytes":8730}
+{"ts":"2026-11-07T14:03:40.230+03:00","type":"script","script":1,"ms":1840,"outcome":"ok","calls":12,"code":"const { issues } = await call(...)...","code_bytes":610,"result_bytes":900}
+```
+
+- `call` is a Namespaced tool call that reached an Upstream. `script` is the number of the Script that made it, or `null` for a direct call.
+- `script` is one `execute`: its code, how many calls it made, and the size of what it gave back to the Agent.
+- `outcome` is `ok`, `error` (with an `error` field: the message, cut to 1000 characters) or `cancelled`.
+- `result_bytes` is the size of the result's JSON as a direct call sends it to the Agent, also for a call made from a Script. So the sum of a Script's calls' `result_bytes`, minus its own, is roughly how much it kept out of the Agent's context.
+
+Arguments and results are never written, only their sizes; a Script's code is. The directories are readable only by you. Nothing is rotated or deleted. If the Audit log can't be written, `serve` logs one `audit log disabled` error and keeps serving without it.
+
 ## Check your Config
 
 `--dry-run` starts every Upstream exactly as a real run would and logs the same lines, then shuts them down. It exits 0 if every enabled Upstream started, and 1 if any failed:

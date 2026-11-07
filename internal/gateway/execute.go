@@ -9,10 +9,12 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/marvell/sprut/internal/audit"
 	"github.com/marvell/sprut/internal/sandbox"
 )
 
@@ -110,56 +112,74 @@ func (g *Gateway) addExecute(c *CodeMode) {
 			"required": []any{"code"},
 		},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(true)},
-	}, execute(limits, g.catalog.callFromScript, g.log.With("tool", executeTool)))
+	}, g.execute(limits, g.log.With("tool", executeTool)))
 	g.codeMode = true
 }
 
 // execute handles calls to the execute tool by running their Script, whose
-// calls go to caller, and logs each call with its outcome.
-func execute(limits sandbox.Limits, caller sandbox.Caller, log *slog.Logger) mcp.ToolHandler {
+// calls go to the catalog, and logs each call with its outcome, to log and
+// to the Audit log.
+func (g *Gateway) execute(limits sandbox.Limits, log *slog.Logger) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		begin := time.Now()
-		res, err := runScript(ctx, req.Params.Arguments, caller, limits)
-		logCall(log, "script executed", time.Since(begin), res, err)
+		run := &scriptRun{catalog: g.catalog, n: int(g.scripts.Add(1))}
+		code, res, err := runScript(ctx, req.Params.Arguments, run.call, limits)
+		took := time.Since(begin)
+		logCall(log, "script executed", took, res, err)
+		if g.audit != nil {
+			outcome, why := outcome(ctx, res, err)
+			g.audit.Script(audit.Script{N: run.n, Took: took, Outcome: outcome, Err: why,
+				Calls: int(run.calls.Load()), Code: code, ResultBytes: size(res)})
+		}
 		return res, err
 	}
 }
 
 // runScript runs the Script in args under limits, its calls going to
-// caller. A cancelled Script ends in ctx's error, as a cancelled direct
-// call does; any other failure is an isError result.
-func runScript(ctx context.Context, args json.RawMessage, caller sandbox.Caller, limits sandbox.Limits) (*mcp.CallToolResult, error) {
+// caller, and returns its code too. A cancelled Script ends in ctx's
+// error, as a cancelled direct call does; any other failure is an isError
+// result.
+func runScript(ctx context.Context, args json.RawMessage, caller sandbox.Caller, limits sandbox.Limits) (string, *mcp.CallToolResult, error) {
 	var in struct {
 		Code *string `json:"code"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil || in.Code == nil {
-		return errorResult(errors.New(`execute takes {"code": string}`)), nil
+		return "", errorResult(errors.New(`execute takes {"code": string}`)), nil
 	}
 	// The sandbox formats the result, a failed Script's included.
 	out, err := sandbox.Run(ctx, *in.Code, caller, limits)
 	switch {
 	case ctx.Err() != nil:
-		return nil, ctx.Err()
+		return *in.Code, nil, ctx.Err()
 	case err != nil && !errors.As(err, new(*sandbox.Error)):
-		return errorResult(err), nil
+		return *in.Code, errorResult(err), nil
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}, IsError: err != nil}, nil
+	return *in.Code, &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out}}, IsError: err != nil}, nil
 }
 
-// callFromScript calls the Namespaced tool name with args for a Script, by
-// the path a direct call takes, and returns the JSON of the value the
-// Script gets. Only a read-only tool may be called this way: a Script runs
+// scriptRun is one Script being run: its number, and the calls it has made
+// to Upstreams.
+type scriptRun struct {
+	catalog catalog
+	n       int
+	calls   atomic.Int64
+}
+
+// call calls the Namespaced tool name with args for the Script, by the
+// path a direct call takes, and returns the JSON of the value the Script
+// gets. Only a read-only tool may be called this way: a Script runs
 // without the Agent approving each call, and a write must have that
 // approval. A result with isError is an error saying its text.
-func (c catalog) callFromScript(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
-	t := c[name]
+func (r *scriptRun) call(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	t := r.catalog[name]
 	switch {
 	case t == nil:
 		return nil, fmt.Errorf("unknown tool %q: call takes a name listed in execute's description, without any prefix your client adds; a tool not listed there is not read-only, so call it directly", name)
 	case !t.readOnly:
 		return nil, fmt.Errorf("tool %q is not read-only, so a script can't call it; call it directly", name)
 	}
-	res, err := t.call(ctx, args, t.scriptLog)
+	r.calls.Add(1)
+	res, err := t.call(ctx, args, t.scriptLog, r.n)
 	if err != nil {
 		return nil, err
 	}

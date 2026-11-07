@@ -28,6 +28,7 @@ stdout '--startup-timeout'
 stdout '--verbose.*scripts'
 stdout '--dry-run'
 stdout '--code-mode'
+stdout '--audit'
 ! stdout $GLOSSARY
 ! stderr .
 

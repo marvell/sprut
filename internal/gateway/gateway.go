@@ -18,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/marvell/sprut/internal/audit"
 	"github.com/marvell/sprut/internal/config"
 )
 
@@ -36,6 +37,9 @@ type Gateway struct {
 	catalog     catalog           // the Namespaced tools served; fixed once Start returns
 	codeMode    bool              // whether the execute tool is served too
 	agentLogged atomic.Bool       // whether "agent connected" is logged
+	scripts     atomic.Int64      // the Scripts run so far
+	version     string
+	audit       *audit.Log // nil without one
 	log         *slog.Logger
 }
 
@@ -52,10 +56,14 @@ type skippedUpstream struct {
 // listed in the instructions the Agent gets. auths holds the Credentials
 // of every OAuth Upstream; Close waits for their renewals in progress.
 // With a codeMode, the Gateway also serves the execute tool of Code mode.
-func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, codeMode *CodeMode, version string, log *slog.Logger) *Gateway {
+// With an auditLog, it writes the Agent's session, its calls and its
+// Scripts there.
+func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, codeMode *CodeMode, auditLog *audit.Log, version string, log *slog.Logger) *Gateway {
 	g := &Gateway{
 		upstreams: newUpstreams(env, auths, startupTimeout, version, log),
 		catalog:   catalog{},
+		version:   version,
+		audit:     auditLog,
 		log:       log,
 	}
 	// In Config order, so the log and the instructions don't depend on
@@ -78,7 +86,7 @@ func Start(ctx context.Context, configured []config.Upstream, env []string, auth
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		Instructions: instructions(skips),
 	})
-	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.logAgentConnected)
+	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.agentConnected)
 
 	tools := 0
 	for _, r := range running {
@@ -329,9 +337,10 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 		readOnly:  tool.Annotations != nil && tool.Annotations.ReadOnlyHint,
 		log:       log,
 		scriptLog: log.With("via", executeTool),
+		audit:     g.audit,
 	}
 	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return t.call(ctx, req.Params.Arguments, t.log)
+		return t.call(ctx, req.Params.Arguments, t.log, 0)
 	})
 	g.catalog[namespaced.Name] = t
 	t.log.Debug("tool added")
@@ -349,6 +358,7 @@ type namespacedTool struct {
 	readOnly  bool         // whether the Upstream marks it read-only
 	log       *slog.Logger // for direct calls
 	scriptLog *slog.Logger // for calls from a Script
+	audit     *audit.Log
 }
 
 // answerUnknownTools answers a call to a tool the Gateway doesn't serve with
@@ -367,35 +377,54 @@ func (g *Gateway) serves(name string) bool {
 	return g.catalog[name] != nil || (g.codeMode && name == executeTool)
 }
 
-// logAgentConnected logs, once, the protocol version the Agent speaks, as
-// soon as the SDK has settled it: by the initialize handshake for a legacy
-// Agent, or from the first request of a modern one, even one that fails.
-func (g *Gateway) logAgentConnected(next mcp.MethodHandler) mcp.MethodHandler {
+// agentConnected logs, once, the protocol version the Agent speaks, and
+// starts the Audit log of its session, as soon as the SDK has settled it:
+// by the initialize handshake for a legacy Agent, or from the first
+// request of a modern one, even one that fails, before handling it.
+func (g *Gateway) agentConnected(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		g.noteAgent(req, nil)
 		res, err := next(ctx, method, req)
-		if g.agentLogged.Load() {
-			return res, err
-		}
-		var protocol string
-		if init, ok := res.(*mcp.InitializeResult); ok {
-			protocol = init.ProtocolVersion // negotiated, unlike the one asked for
-		} else if ss, ok := req.GetSession().(*mcp.ServerSession); ok {
-			if p := ss.InitializeParams(); p != nil {
-				protocol = p.ProtocolVersion
-			}
-		}
-		if protocol != "" && g.agentLogged.CompareAndSwap(false, true) {
-			g.log.Info("agent connected", "protocol", protocol)
-		}
+		g.noteAgent(req, res)
 		return res, err
 	}
 }
 
-// call calls t at its Upstream with args, and logs the call to log. A
+// noteAgent logs the Agent's protocol version and starts the Audit log,
+// unless they are done or req and its result res, if any, don't settle
+// them yet.
+func (g *Gateway) noteAgent(req mcp.Request, res mcp.Result) {
+	if g.agentLogged.Load() {
+		return
+	}
+	ss, _ := req.GetSession().(*mcp.ServerSession)
+	var params *mcp.InitializeParams
+	if ss != nil {
+		params = ss.InitializeParams()
+	}
+	var protocol string
+	if init, ok := res.(*mcp.InitializeResult); ok {
+		protocol = init.ProtocolVersion // negotiated, unlike the one asked for
+	} else if _, initializing := req.(*mcp.InitializeRequest); params != nil && !initializing {
+		protocol = params.ProtocolVersion
+	}
+	if protocol == "" || !g.agentLogged.CompareAndSwap(false, true) {
+		return
+	}
+	g.log.Info("agent connected", "protocol", protocol)
+	s := audit.Session{Sprut: g.version, Protocol: protocol, CodeMode: g.codeMode}
+	if params != nil && params.ClientInfo != nil {
+		s.Agent, s.AgentVersion = params.ClientInfo.Name, params.ClientInfo.Version
+	}
+	g.audit.Start(s)
+}
+
+// call calls t at its Upstream with args, for the Script numbered script,
+// or directly if it is 0, and logs the call to log and to the Audit log. A
 // call the Upstream doesn't answer, such as one to an Upstream that is
 // gone, ends in an isError result naming it, and so does one where it asks
 // for interactive input.
-func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, log *slog.Logger) (*mcp.CallToolResult, error) {
+func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, log *slog.Logger, script int) (*mcp.CallToolResult, error) {
 	begin := time.Now()
 	res, err := t.session.CallTool(ctx, &mcp.CallToolParams{Name: t.original, Arguments: args})
 	took, callErr := time.Since(begin), err
@@ -412,7 +441,46 @@ func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, log *sl
 		res, err = errorResult(fmt.Errorf("call to upstream %q failed: %w", t.upstream, err)), nil
 	}
 	logCall(log, "tool called", took, res, callErr)
+	if t.audit != nil {
+		outcome, why := outcome(ctx, res, err)
+		t.audit.Call(audit.Call{Tool: t.upstream + separator + t.original, Upstream: t.upstream, Script: script, Took: took,
+			Outcome: outcome, Err: why, ArgsBytes: len(args), ResultBytes: size(res)})
+	}
 	return res, err
+}
+
+// outcome is how a call that ended in res or err, under ctx, went for the
+// Audit log, and why, if it failed.
+func outcome(ctx context.Context, res *mcp.CallToolResult, err error) (audit.Outcome, string) {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return audit.Cancelled, ""
+	case err != nil:
+		return audit.Error, err.Error()
+	case res.IsError:
+		return audit.Error, text(res)
+	}
+	return audit.OK, ""
+}
+
+// size is the size of res's JSON, or 0 for no res. It leaves out
+// resultType, which the SDK stamps on each hop to a modern peer, so that a
+// result has the same size whichever era its Upstream and Agent are of.
+func size(res *mcp.CallToolResult) int {
+	if res == nil {
+		return 0
+	}
+	data, err := json.Marshal(res)
+	var fields map[string]json.RawMessage
+	if err == nil {
+		err = json.Unmarshal(data, &fields)
+	}
+	if err != nil {
+		return 0
+	}
+	delete(fields, "resultType")
+	data, _ = json.Marshal(fields)
+	return len(data)
 }
 
 // logCall logs at DEBUG a call that took took and ended in res, or in err
