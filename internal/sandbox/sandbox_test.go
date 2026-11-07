@@ -149,8 +149,8 @@ func TestScriptStoppedAtTimeLimit(t *testing.T) {
 	for _, script := range []string{"for (;;) {}", "await 1; for (;;) {}"} {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
-			out, err := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
-			if err.Message != "script timed out after 100ms" || out != "script timed out after 100ms\nlooping\n" {
+			out, err := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: time.Second})
+			if err.Message != "script timed out after 1s" || out != "script timed out after 1s\nlooping\n" {
 				t.Errorf("error %q with result %q, want a timeout, then its output", err.Message, out)
 			}
 		})
@@ -168,8 +168,12 @@ func TestScriptFailsAtMemoryLimit(t *testing.T) {
 func TestCancelledRunStopsScriptAndReturnsContextError(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
-	time.AfterFunc(100*time.Millisecond, cancel)
-	out, err := sandbox.Run(ctx, "for (;;) {}", noTools, sandbox.Limits{})
+	// The Script's call cancels the Run, so the Script has started by then.
+	cancelling := func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+		cancel()
+		return nil, nil
+	}
+	out, err := sandbox.Run(ctx, "call('cancel'); for (;;) {}", cancelling, sandbox.Limits{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Run = %q, %v; want context.Canceled", out, err)
 	}
@@ -235,13 +239,13 @@ func TestFailedScriptGivesMessageThenOutputCutAtLimit(t *testing.T) {
 
 func TestScriptPrintingWithoutEndKeepsOnlyOutputLimit(t *testing.T) {
 	t.Parallel()
-	out, err := sandbox.Run(t.Context(), "for (;;) console.log('x'.repeat(1 << 20))", noTools, sandbox.Limits{Time: 300 * time.Millisecond, Output: 100})
+	out, err := sandbox.Run(t.Context(), "for (;;) console.log('x'.repeat(1 << 20))", noTools, sandbox.Limits{Time: time.Second, Output: 100})
 	var scriptErr *sandbox.Error
-	if !errors.As(err, &scriptErr) || scriptErr.Message != "script timed out after 300ms" {
+	if !errors.As(err, &scriptErr) || scriptErr.Message != "script timed out after 1s" {
 		t.Fatalf("Run = %v, want a timeout", err)
 	}
 	head, closing, ok := strings.Cut(out, "\n")
-	if !ok || head != "script timed out after 300ms" || len(closing) > 100+60 || !strings.Contains(closing, "more characters cut]") {
+	if !ok || head != "script timed out after 1s" || len(closing) > 100+60 || !strings.Contains(closing, "more characters cut]") {
 		t.Errorf("result %.200q, want the timeout, then 100 characters and a closing line", out)
 	}
 }
