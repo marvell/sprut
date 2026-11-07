@@ -23,7 +23,14 @@ import (
 // fake Upstream, "fake".
 func startFakeGateway(t *testing.T, args ...string) *gateway {
 	t.Helper()
-	return startGateway(t, writeConfig(t, map[string]any{"fake": mcptest.Stdio{}.Entry(t)}), nil, args...)
+	return startFakeGatewayWith(t, mcptest.Stdio{}, args...)
+}
+
+// startFakeGatewayWith runs `sprut serve` with args and a Config whose one
+// Upstream, fake, is upstream.
+func startFakeGatewayWith(t *testing.T, upstream mcptest.Stdio, args ...string) *gateway {
+	t.Helper()
+	return startGateway(t, writeConfig(t, map[string]any{"fake": upstream.Entry(t)}), nil, args...)
 }
 
 // writeConfig writes a Config with the given Upstreams and returns its path.

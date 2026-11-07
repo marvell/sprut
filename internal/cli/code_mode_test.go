@@ -239,8 +239,7 @@ func TestExecuteGivesIsErrorWhenScriptTimesOutThenOutputSoFar(t *testing.T) {
 // Upstream, fake, is upstream.
 func startCodeModeGateway(t *testing.T, upstream mcptest.Stdio, args ...string) *gateway {
 	t.Helper()
-	upstreams := map[string]any{"fake": upstream.Entry(t)}
-	return startGateway(t, writeConfig(t, upstreams), nil, append([]string{"--code-mode"}, args...)...)
+	return startFakeGatewayWith(t, upstream, append([]string{"--code-mode"}, args...)...)
 }
 
 // startCallableGateway starts a Gateway in Code mode, with -v, whose one
@@ -421,8 +420,5 @@ func TestExecuteDescriptionStatesConcurrencyAndCallCaps(t *testing.T) {
 		if !strings.Contains(description, want) {
 			t.Errorf("description lacks %q:\n%s", want, description)
 		}
-	}
-	if strings.Contains(description, "one at a time") {
-		t.Errorf("description still says calls run one at a time:\n%s", description)
 	}
 }

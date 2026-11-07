@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,8 +54,7 @@ const (
 // prelude defines console, formatting its arguments like console.log in
 // Node: strings as they are, other values as JSON. It also defines call,
 // which starts a call through the host and returns a Promise; when the host
-// refuses the call, giving a message in place of the call's id, call throws
-// an Error saying it. The prelude's value is the function that settles a
+// refuses the call, call throws an Error saying why. The prelude's value is the function that settles a
 // call's Promise once the call ends: with the value of the JSON the call
 // returned, or else with an Error saying what went wrong. Either Error is
 // thrown where the Script called.
@@ -86,8 +86,12 @@ const prelude = `(() => {
 	const calls = new Map();
 	globalThis.call = (name, args) => {
 		const site = new Error();
-		const id = start(String(name), args === undefined ? "{}" : JSON.stringify(args));
-		if (typeof id === "string") throw thrown(id, site);
+		let id;
+		try {
+			id = start(String(name), args === undefined ? "{}" : JSON.stringify(args));
+		} catch (e) {
+			throw thrown(e.message, site); // the host refused the call
+		}
 		return new Promise((resolve, reject) => { calls.set(id, { resolve, reject, site }); });
 	};
 	return (id, error, json) => {
@@ -119,10 +123,11 @@ func Run(ctx context.Context, script string, caller Caller, limits Limits) (stri
 	} else {
 		runCtx, cancel = context.WithCancel(ctx)
 	}
-	calls := &calls{ctx: runCtx, caller: caller, ended: make(chan ended), maxCalls: limits.Calls}
-	if limits.InFlight > 0 {
-		calls.turns = make(chan struct{}, limits.InFlight)
+	inFlight := limits.InFlight
+	if inFlight <= 0 {
+		inFlight = math.MaxInt // free: a channel of struct{} has no buffer to allocate
 	}
+	calls := &calls{ctx: runCtx, caller: caller, ended: make(chan ended), turns: make(chan struct{}, inFlight), maxCalls: limits.Calls}
 	defer calls.wg.Wait()
 	defer cancel()
 
@@ -161,11 +166,7 @@ func Run(ctx context.Context, script string, caller Caller, limits Limits) (stri
 	err = vm.RegisterHostFunc(callFunc, func(args []any) (any, error) {
 		name, _ := args[0].(string) // always both strings, from the prelude
 		arguments, _ := args[1].(string)
-		id, err := calls.start(name, arguments)
-		if err != nil {
-			return err.Error(), nil // thrown by the prelude, as an Error from the Script's line
-		}
-		return id, nil
+		return calls.start(name, arguments)
 	})
 	if err != nil {
 		return "", fmt.Errorf("setting up call: %w", err)
@@ -302,7 +303,7 @@ type calls struct {
 	caller   Caller
 	settle   quickjs.Value // the prelude's settling function
 	ended    chan ended
-	turns    chan struct{} // one token per call running at the Caller; nil for no limit
+	turns    chan struct{} // one token per call running at the Caller
 	maxCalls int           // calls the Script may make, or 0 for no limit
 
 	next    int            // the id of the next call
@@ -328,17 +329,13 @@ func (c *calls) start(name, args string) (int, error) {
 	c.next++
 	c.running++
 	c.wg.Go(func() {
-		if c.turns != nil {
-			select {
-			case c.turns <- struct{}{}:
-			case <-c.ctx.Done():
-				return
-			}
+		select {
+		case c.turns <- struct{}{}:
+		case <-c.ctx.Done():
+			return
 		}
 		value, err := c.caller(c.ctx, name, json.RawMessage(args))
-		if c.turns != nil {
-			<-c.turns
-		}
+		<-c.turns
 		select {
 		case c.ended <- ended{id, value, err}:
 		case <-c.ctx.Done():
