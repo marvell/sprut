@@ -20,7 +20,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 		Usage: "run the gateway as a stdio MCP server",
 		Flags: []ucli.Flag{
 			startupTimeoutFlag(),
-			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call"},
+			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call, those of scripts included"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every upstream as usual, then shut down; exit 1 if any failed"},
 			&ucli.BoolFlag{Name: "code-mode", Usage: "also offer the execute tool, which runs a javascript script in a sandbox"},
 			// For tests only: the limit is fixed, and README doesn't name it.

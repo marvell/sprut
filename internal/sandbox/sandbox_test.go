@@ -2,18 +2,26 @@ package sandbox_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/marvell/sprut/internal/sandbox"
 )
 
+// noTools is a Caller that offers no tool.
+func noTools(_ context.Context, name string, _ json.RawMessage) (json.RawMessage, error) {
+	return nil, fmt.Errorf("no tool %q", name)
+}
+
 // run runs script with no limits and fails the test if it fails.
 func run(t *testing.T, script string) string {
 	t.Helper()
-	out, err := sandbox.Run(t.Context(), script, sandbox.Limits{})
+	out, err := sandbox.Run(t.Context(), script, noTools, sandbox.Limits{})
 	if err != nil {
 		t.Fatalf("Run(%q): %v", script, err)
 	}
@@ -24,7 +32,7 @@ func run(t *testing.T, script string) string {
 // *sandbox.Error it must fail with.
 func runFailing(t *testing.T, script string, limits sandbox.Limits) (string, *sandbox.Error) {
 	t.Helper()
-	out, err := sandbox.Run(t.Context(), script, limits)
+	out, err := sandbox.Run(t.Context(), script, noTools, limits)
 	var scriptErr *sandbox.Error
 	if !errors.As(err, &scriptErr) {
 		t.Fatalf("Run(%q) = %q, %v; want a *sandbox.Error", script, out, err)
@@ -37,7 +45,7 @@ func TestScriptSeesNoHostAPIBeyondConsole(t *testing.T) {
 	for _, name := range []string{
 		"fetch", "require", "std", "os", "print", "process", "module", "exports",
 		"setTimeout", "setInterval", "setImmediate", "queueMicrotask",
-		"XMLHttpRequest", "WebSocket", "Deno", "Bun", "__sprut_print",
+		"XMLHttpRequest", "WebSocket", "Deno", "Bun", "__sprut_print", "__sprut_call",
 	} {
 		if got := run(t, "return typeof "+name); got != `"undefined"`+"\n" {
 			t.Errorf("typeof %s = %s, want undefined", name, got)
@@ -161,7 +169,7 @@ func TestCancelledRunStopsScriptAndReturnsContextError(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(100*time.Millisecond, cancel)
-	out, err := sandbox.Run(ctx, "for (;;) {}", sandbox.Limits{})
+	out, err := sandbox.Run(ctx, "for (;;) {}", noTools, sandbox.Limits{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Run = %q, %v; want context.Canceled", out, err)
 	}
@@ -171,7 +179,7 @@ func TestDeepRecursionFailsAtStackLimit(t *testing.T) {
 	t.Parallel()
 	const recurse = "function depth(n) { return n === 0 ? 0 : 1 + depth(n - 1) }\n"
 	limits := sandbox.Limits{Stack: 200}
-	if out, err := sandbox.Run(t.Context(), recurse+"return depth(50)", limits); err != nil || out != "50\n" {
+	if out, err := sandbox.Run(t.Context(), recurse+"return depth(50)", noTools, limits); err != nil || out != "50\n" {
 		t.Errorf("recursing 50 deep = %q, %v; want 50", out, err)
 	}
 	out, err := runFailing(t, recurse+"console.log('recursing')\nreturn depth(1000)", limits)
@@ -201,7 +209,7 @@ func TestOutputCutAtLimitWithClosingLine(t *testing.T) {
 		{`for (let i = 0; i < 5; i++) console.log("0123456789")`, "0123456789\n[... 45 more characters cut]\n"},
 	}
 	for _, tt := range tests {
-		out, err := sandbox.Run(t.Context(), tt.script, sandbox.Limits{Output: 10})
+		out, err := sandbox.Run(t.Context(), tt.script, noTools, sandbox.Limits{Output: 10})
 		if err != nil || out != tt.want {
 			t.Errorf("%s gave %q, %v; want %q", tt.script, out, err, tt.want)
 		}
@@ -210,7 +218,7 @@ func TestOutputCutAtLimitWithClosingLine(t *testing.T) {
 
 func TestFailedScriptGivesMessageThenOutputCutAtLimit(t *testing.T) {
 	t.Parallel()
-	out, err := sandbox.Run(t.Context(), "console.log('0123456789'.repeat(3))\nthrow new Error('boom')", sandbox.Limits{Output: 25})
+	out, err := sandbox.Run(t.Context(), "console.log('0123456789'.repeat(3))\nthrow new Error('boom')", noTools, sandbox.Limits{Output: 25})
 	var scriptErr *sandbox.Error
 	if !errors.As(err, &scriptErr) || scriptErr.Message != "Error: boom (line 2)" {
 		t.Fatalf("Run = %q, %v; want Error: boom (line 2)", out, err)
@@ -219,7 +227,7 @@ func TestFailedScriptGivesMessageThenOutputCutAtLimit(t *testing.T) {
 		t.Errorf("result %q, want %q", out, want)
 	}
 
-	out, _ = sandbox.Run(t.Context(), "throw new Error('x'.repeat(100))", sandbox.Limits{Output: 25})
+	out, _ = sandbox.Run(t.Context(), "throw new Error('x'.repeat(100))", noTools, sandbox.Limits{Output: 25})
 	if want := "Error: xxxxxxxxxxxxxxxxxx\n[... 91 more characters cut]\n"; out != want {
 		t.Errorf("result %q, want %q", out, want)
 	}
@@ -227,7 +235,7 @@ func TestFailedScriptGivesMessageThenOutputCutAtLimit(t *testing.T) {
 
 func TestScriptPrintingWithoutEndKeepsOnlyOutputLimit(t *testing.T) {
 	t.Parallel()
-	out, err := sandbox.Run(t.Context(), "for (;;) console.log('x'.repeat(1 << 20))", sandbox.Limits{Time: 300 * time.Millisecond, Output: 100})
+	out, err := sandbox.Run(t.Context(), "for (;;) console.log('x'.repeat(1 << 20))", noTools, sandbox.Limits{Time: 300 * time.Millisecond, Output: 100})
 	var scriptErr *sandbox.Error
 	if !errors.As(err, &scriptErr) || scriptErr.Message != "script timed out after 300ms" {
 		t.Fatalf("Run = %v, want a timeout", err)
@@ -235,5 +243,39 @@ func TestScriptPrintingWithoutEndKeepsOnlyOutputLimit(t *testing.T) {
 	head, closing, ok := strings.Cut(out, "\n")
 	if !ok || head != "script timed out after 300ms" || len(closing) > 100+60 || !strings.Contains(closing, "more characters cut]") {
 		t.Errorf("result %.200q, want the timeout, then 100 characters and a closing line", out)
+	}
+}
+
+func TestRunCancelsCallsLeftRunningAndWaitsForThem(t *testing.T) {
+	t.Parallel()
+	var running atomic.Int32
+	block := func(ctx context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		running.Add(1)
+		defer running.Add(-1)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	// The call may not have reached block when the Script returns; then
+	// this checks only that Run returns at all, which a call left
+	// blocked would prevent.
+	for range 20 {
+		out, err := sandbox.Run(t.Context(), "call('block'); return 'done'", block, sandbox.Limits{})
+		if err != nil || out != `"done"`+"\n" {
+			t.Fatalf("Run = %q, %v; want the Script's return value", out, err)
+		}
+		if n := running.Load(); n != 0 {
+			t.Fatalf("Run returned with %d calls still running", n)
+		}
+	}
+}
+
+func TestCallPassesArgumentsAsJSONAndDefaultsThemToAnEmptyObject(t *testing.T) {
+	t.Parallel()
+	echo := func(_ context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal(name + " " + string(args))
+	}
+	out, err := sandbox.Run(t.Context(), `return [await call("a", {n: [1]}), await call("b")]`, echo, sandbox.Limits{})
+	if want := `["a {\"n\":[1]}","b {}"]` + "\n"; err != nil || out != want {
+		t.Errorf("Run = %q, %v; want %q", out, err, want)
 	}
 }

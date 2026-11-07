@@ -1,15 +1,18 @@
 // Package sandbox runs a Script: a JavaScript program, the body of an async
 // function, in a fresh QuickJS VM of its own that offers nothing beyond
-// standard JavaScript but console. It knows nothing of MCP or Upstreams.
+// standard JavaScript but console and call, through which the caller
+// supplies tools. It knows nothing of MCP or Upstreams.
 package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,15 +35,34 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
-// printFunc is the host function console writes through. The prelude takes
-// it off the global object before the Script runs.
-const printFunc = "__sprut_print"
+// Caller calls the tool named name with args, the JSON of the arguments the
+// Script passed, and returns the JSON of the value call resolves to. An
+// error rejects call's Promise with an Error whose message is the error's.
+// A Caller must return once ctx is done: Run waits for every call.
+type Caller func(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
+
+// The host functions that console and call go through. The prelude takes
+// them off the global object before the Script runs.
+const (
+	printFunc = "__sprut_print"
+	callFunc  = "__sprut_call"
+)
+
+// inFlight is how many calls of one Script run at a time; the others wait
+// their turn.
+const inFlight = 1
 
 // prelude defines console, formatting its arguments like console.log in
-// Node: strings as they are, other values as JSON.
+// Node: strings as they are, other values as JSON. It also defines call,
+// which starts a call through the host and returns a Promise, and its
+// value is the function that settles that Promise once the call ends: with
+// the value of the JSON the call returned, or else with an Error saying
+// what went wrong, thrown where the Script called.
 const prelude = `(() => {
 	const print = globalThis.` + printFunc + `;
+	const start = globalThis.` + callFunc + `;
 	delete globalThis.` + printFunc + `;
+	delete globalThis.` + callFunc + `;
 	const format = (v) => {
 		if (typeof v === "string") return v;
 		if (v instanceof Error) return String(v);
@@ -52,24 +74,53 @@ const prelude = `(() => {
 	};
 	const write = (...args) => { print(args.map(format).join(" ")); };
 	globalThis.console = { log: write, error: write, warn: write };
+
+	const calls = new Map();
+	globalThis.call = (name, args) => {
+		// The stack of where the Script called, without this frame.
+		const site = new Error().stack.split("\n").slice(1).join("\n");
+		return new Promise((resolve, reject) => {
+			const id = start(String(name), args === undefined ? "{}" : JSON.stringify(args));
+			calls.set(id, { resolve, reject, site });
+		});
+	};
+	return (id, error, json) => {
+		const { resolve, reject, site } = calls.get(id);
+		calls.delete(id);
+		if (error === null) {
+			resolve(JSON.parse(json));
+			return;
+		}
+		const e = new Error(error);
+		e.stack = site;
+		reject(e);
+	};
 })();`
 
 // Run runs script under limits and returns its result: what it printed,
 // followed by the JSON of the value it returned unless that is undefined.
 // A Script that fails gives an *Error, and its result is the error's
 // message on a line of its own, then what it printed. Either way the result
-// is cut at the output limit. Once ctx is done, the Script is stopped and
-// Run returns ctx's error.
-func Run(ctx context.Context, script string, limits Limits) (string, error) {
+// is cut at the output limit. The Script's calls go to caller, under a
+// context that ends with the Script, so that Run returns only once none is
+// left running. Once ctx is done, the Script is stopped and Run returns
+// ctx's error.
+func Run(ctx context.Context, script string, caller Caller, limits Limits) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	runCtx := ctx
+	var (
+		runCtx context.Context
+		cancel context.CancelFunc
+	)
 	if limits.Time > 0 {
-		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(ctx, limits.Time)
-		defer cancel()
+	} else {
+		runCtx, cancel = context.WithCancel(ctx)
 	}
+	calls := &calls{ctx: runCtx, caller: caller, ended: make(chan ended), turns: make(chan struct{}, inFlight)}
+	defer calls.wait()
+	defer cancel()
 
 	vm, err := quickjs.NewVM()
 	if err != nil {
@@ -103,11 +154,22 @@ func Run(ctx context.Context, script string, limits Limits) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("setting up console: %w", err)
 	}
-	if _, err := vm.Eval(prelude, quickjs.EvalGlobal); err != nil {
-		return "", fmt.Errorf("setting up console: %w", err)
+	err = vm.RegisterHostFunc(callFunc, func(args []any) (any, error) {
+		name, _ := args[0].(string) // always both strings, from the prelude
+		arguments, _ := args[1].(string)
+		return calls.start(name, arguments), nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("setting up call: %w", err)
 	}
+	settle, err := vm.EvalValue(prelude, quickjs.EvalGlobal)
+	if err != nil {
+		return "", fmt.Errorf("setting up the globals: %w", err)
+	}
+	defer settle.Free()
+	calls.settle = settle
 
-	returned, err := run(vm, script)
+	returned, err := run(vm, script, calls)
 	switch {
 	case ctx.Err() != nil:
 		return "", ctx.Err()
@@ -176,9 +238,10 @@ func (o *output) String() string {
 	return text + fmt.Sprintf("[... %d more characters cut]\n", o.cut)
 }
 
-// run runs script on vm as the body of an async function, and returns the
-// JSON of the value it resolves to, or "" for undefined.
-func run(vm *quickjs.VM, script string) (string, error) {
+// run runs script on vm as the body of an async function, settling its
+// calls as they end, and returns the JSON of the value it resolves to, or
+// "" for undefined.
+func run(vm *quickjs.VM, script string, calls *calls) (string, error) {
 	// The body starts on the first line, so the Script's line numbers are
 	// the engine's.
 	promise, err := vm.EvalValue("(async function () {"+script+"\n})().then((v) => v === undefined ? undefined : JSON.stringify(v))", quickjs.EvalGlobal)
@@ -206,17 +269,87 @@ func run(vm *quickjs.VM, script string) (string, error) {
 	}
 	defer then.Free()
 
-	if _, err := vm.ExecutePendingJobs(); err != nil {
-		return "", err
+	for {
+		if _, err := vm.ExecutePendingJobs(); err != nil {
+			return "", err
+		}
+		switch {
+		case failed != nil:
+			return "", failed
+		case settled:
+			return returned, nil
+		case calls.running == 0:
+			return "", errors.New("the script awaited a promise that never settles")
+		}
+		if err := calls.settleNext(); err != nil {
+			return "", err
+		}
 	}
-	if failed != nil {
-		return "", failed
-	}
-	if !settled {
-		return "", errors.New("the script awaited a promise that never settles")
-	}
-	return returned, nil
 }
+
+// calls runs a Script's calls to its Caller, each in a goroutine of its
+// own, and settles their Promises on the VM's goroutine.
+type calls struct {
+	ctx    context.Context // the Script's: done once it ends
+	caller Caller
+	settle quickjs.Value // the prelude's settling function
+	ended  chan ended
+	turns  chan struct{} // one token per call running at the Caller
+
+	next    int            // the id of the next call
+	running int            // calls started and not yet settled
+	wg      sync.WaitGroup // the calls' goroutines
+}
+
+// ended is the outcome of the call with id.
+type ended struct {
+	id    int
+	value json.RawMessage
+	err   error
+}
+
+// start starts a call to the tool name with args, the JSON of its
+// arguments, and returns its id.
+func (c *calls) start(name, args string) int {
+	id := c.next
+	c.next++
+	c.running++
+	c.wg.Go(func() {
+		select {
+		case c.turns <- struct{}{}:
+		case <-c.ctx.Done():
+			return
+		}
+		value, err := c.caller(c.ctx, name, json.RawMessage(args))
+		<-c.turns
+		select {
+		case c.ended <- ended{id, value, err}:
+		case <-c.ctx.Done():
+		}
+	})
+	return id
+}
+
+// settleNext waits for a call to end and settles its Promise, or returns
+// the Script's context's error once that is done.
+func (c *calls) settleNext() error {
+	select {
+	case e := <-c.ended:
+		c.running--
+		var message any // null, unless the call failed
+		if e.err != nil {
+			message = e.err.Error()
+		}
+		_, err := c.settle.Call(quickjs.UndefinedValue, e.id, message, string(e.value))
+		return err
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
+}
+
+// wait waits for the calls' goroutines to return, which they do once the
+// Script's context is done.
+func (c *calls) wait() { c.wg.Wait() }
 
 // frameLine finds the line of the first stack frame in the Script.
 var frameLine = regexp.MustCompile(`<eval>:(\d+):\d+`)

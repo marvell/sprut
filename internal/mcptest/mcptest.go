@@ -1,6 +1,7 @@
 // Package mcptest provides fake Upstreams for tests: a stdio Upstream that
 // is the test binary re-executing itself, and HTTP Upstreams on httptest
-// servers. Each offers the tools echo and fail, plus whatever its spec adds.
+// servers. Each offers the tools echo, which is read-only, and fail, which
+// is not annotated, plus whatever its spec adds.
 package mcptest
 
 import (
@@ -16,6 +17,10 @@ const (
 	Legacy = "2025-06-18"
 	Modern = "2026-07-28"
 )
+
+// readOnly marks a fake Upstream's tool as read-only, which lets a Script
+// call it.
+var readOnly = &mcp.ToolAnnotations{ReadOnlyHint: true}
 
 // The fake Upstreams' tools, as raw JSON so that tests can assert that the
 // Gateway passes them through unchanged.
@@ -41,6 +46,7 @@ var (
 		Description:  "Echoes its text argument back.",
 		InputSchema:  EchoInputSchema,
 		OutputSchema: EchoOutputSchema,
+		Annotations:  readOnly,
 	}
 	failTool = &mcp.Tool{
 		Name:        "fail",

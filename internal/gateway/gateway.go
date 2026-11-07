@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,7 +33,8 @@ type Gateway struct {
 	server      *mcp.Server
 	upstreams   *upstreams
 	skipped     []skippedUpstream // Upstreams that failed or timed out at startup
-	tools       map[string]bool   // tools served, execute included; fixed once Start returns
+	catalog     catalog           // the Namespaced tools served; fixed once Start returns
+	codeMode    bool              // whether the execute tool is served too
 	agentLogged atomic.Bool       // whether "agent connected" is logged
 	log         *slog.Logger
 }
@@ -53,7 +55,7 @@ type skippedUpstream struct {
 func Start(ctx context.Context, configured []config.Upstream, env []string, auths *Auths, startupTimeout time.Duration, codeMode *CodeMode, version string, log *slog.Logger) *Gateway {
 	g := &Gateway{
 		upstreams: newUpstreams(env, auths, startupTimeout, version, log),
-		tools:     map[string]bool{},
+		catalog:   catalog{},
 		log:       log,
 	}
 	// In Config order, so the log and the instructions don't depend on
@@ -319,22 +321,52 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 			err = fmt.Errorf("%v", p)
 		}
 	}()
-	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
-	g.server.AddTool(&namespaced, forward(upstream, session, original, log))
-	g.tools[namespaced.Name] = true
-	log.Debug("tool added")
+	t := &namespacedTool{
+		upstream:    upstream,
+		session:     session,
+		original:    original,
+		annotations: tool.Annotations,
+		log:         g.log.With("upstream", upstream, "tool", namespaced.Name),
+	}
+	g.server.AddTool(&namespaced, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return t.call(ctx, req.Params.Arguments, t.log)
+	})
+	g.catalog[namespaced.Name] = t
+	t.log.Debug("tool added")
 	return nil
+}
+
+// catalog holds the Namespaced tools the Gateway serves, by name.
+type catalog map[string]*namespacedTool
+
+// namespacedTool is an Upstream's tool, as the Gateway serves it.
+type namespacedTool struct {
+	upstream    string
+	session     *mcp.ClientSession
+	original    string // the tool's name at the Upstream
+	annotations *mcp.ToolAnnotations
+	log         *slog.Logger
+}
+
+// readOnly reports whether t's Upstream marks it read-only.
+func (t *namespacedTool) readOnly() bool {
+	return t.annotations != nil && t.annotations.ReadOnlyHint
 }
 
 // answerUnknownTools answers a call to a tool the Gateway doesn't serve with
 // an isError result, where the SDK would answer with a protocol error.
 func (g *Gateway) answerUnknownTools(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		if call, ok := req.(*mcp.CallToolRequest); ok && !g.tools[call.Params.Name] {
+		if call, ok := req.(*mcp.CallToolRequest); ok && !g.serves(call.Params.Name) {
 			return errorResult(fmt.Errorf("unknown tool %q", call.Params.Name)), nil
 		}
 		return next(ctx, method, req)
 	}
+}
+
+// serves reports whether the Gateway serves the tool named name.
+func (g *Gateway) serves(name string) bool {
+	return g.catalog[name] != nil || (g.codeMode && name == executeTool)
 }
 
 // logAgentConnected logs, once, the protocol version the Agent speaks, as
@@ -361,30 +393,28 @@ func (g *Gateway) logAgentConnected(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
-// forward handles calls to a Namespaced tool by calling the Upstream's tool
-// original over session, and logs each call. A call the Upstream doesn't
-// answer, such as one to an Upstream that is gone, ends in an isError result
-// naming it, and so does one where it asks for interactive input.
-func forward(upstream string, session *mcp.ClientSession, original string, log *slog.Logger) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		begin := time.Now()
-		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: original, Arguments: req.Params.Arguments})
-		took, callErr := time.Since(begin), err
-		switch {
-		case res == nil:
-		case res.NeedsInput():
-			res = errorResult(fmt.Errorf("upstream %q asked for input mid-call, but interactive input is not supported by the gateway", upstream))
-		default:
-			// serverInfo identifies the responder of each hop; drop the
-			// Upstream's so the Gateway's own is reported to the Agent.
-			delete(res.Meta, mcp.MetaKeyServerInfo)
-		}
-		if err != nil && ctx.Err() == nil && !answered(err) {
-			res, err = errorResult(fmt.Errorf("call to upstream %q failed: %w", upstream, err)), nil
-		}
-		logCall(log, "tool called", took, res, callErr)
-		return res, err
+// call calls t at its Upstream with args, and logs the call to log. A
+// call the Upstream doesn't answer, such as one to an Upstream that is
+// gone, ends in an isError result naming it, and so does one where it asks
+// for interactive input.
+func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, log *slog.Logger) (*mcp.CallToolResult, error) {
+	begin := time.Now()
+	res, err := t.session.CallTool(ctx, &mcp.CallToolParams{Name: t.original, Arguments: args})
+	took, callErr := time.Since(begin), err
+	switch {
+	case res == nil:
+	case res.NeedsInput():
+		res = errorResult(fmt.Errorf("upstream %q asked for input mid-call, but interactive input is not supported by the gateway", t.upstream))
+	default:
+		// serverInfo identifies the responder of each hop; drop the
+		// Upstream's so the Gateway's own is reported to the Agent.
+		delete(res.Meta, mcp.MetaKeyServerInfo)
 	}
+	if err != nil && ctx.Err() == nil && !answered(err) {
+		res, err = errorResult(fmt.Errorf("call to upstream %q failed: %w", t.upstream, err)), nil
+	}
+	logCall(log, "tool called", took, res, callErr)
+	return res, err
 }
 
 // logCall logs at DEBUG a call that took took and ended in res, or in err

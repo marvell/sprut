@@ -43,6 +43,7 @@ func TestServeListsUpstreamToolsAsNamespacedTools(t *testing.T) {
 			"description":  "Echoes its text argument back.",
 			"inputSchema":  mcptest.EchoInputSchema,
 			"outputSchema": mcptest.EchoOutputSchema,
+			"annotations":  map[string]any{"readOnlyHint": true, "idempotentHint": false},
 		}),
 		"fake__fail": toJSON(t, map[string]any{
 			"name":        "fake__fail",

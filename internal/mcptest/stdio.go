@@ -82,25 +82,33 @@ type Stdio struct {
 	// BadSchemaTool is the name of one more tool, whose input schema is not
 	// an object schema.
 	BadSchemaTool string `json:",omitempty"`
-	// CrashTool adds a tool "crash" that makes it exit 1 mid-call, without
-	// answering. It hangs up its stdout first and exits only once the
-	// Gateway reacts with SIGTERM, so the Gateway always sees the exit after
-	// closing the connection itself.
+	// CrashTool adds a read-only tool "crash" that makes it exit 1
+	// mid-call, without answering. It hangs up its stdout first and exits
+	// only once the Gateway reacts with SIGTERM, so the Gateway always sees
+	// the exit after closing the connection itself.
 	CrashTool bool `json:",omitempty"`
 	// OrphanToolPIDFile adds a tool "orphan" that starts a child sharing
 	// its stdout and stderr, then exits 1 mid-call, without answering. The
 	// child sleeps until killed, holding the Upstream's stdout and stderr
 	// open; the file gets its PID.
 	OrphanToolPIDFile string `json:",omitempty"`
-	// BlockToolFile adds a tool "block" that writes "started" to the file,
-	// blocks until the call is cancelled, then writes "cancelled" to it.
+	// BlockToolFile adds a read-only tool "block" that writes "started" to
+	// the file, blocks until the call is cancelled, then writes "cancelled"
+	// to it.
 	BlockToolFile string `json:",omitempty"`
 	// GatherTool, if positive, adds a tool "gather" that answers only once
 	// GatherTool calls to it are in flight together.
 	GatherTool int `json:",omitempty"`
-	// AskTool adds a tool "ask" that asks for interactive input mid-call
-	// (multi-round-trip), and answers once it has some.
+	// AskTool adds a read-only tool "ask" that asks for interactive input
+	// mid-call (multi-round-trip), and answers once it has some.
 	AskTool bool `json:",omitempty"`
+	// ReplyTool adds a read-only tool "reply" whose result is its
+	// arguments, read as a tool result, so a test can have it answer with
+	// any content, structuredContent or isError.
+	ReplyTool bool `json:",omitempty"`
+	// WriteTool adds a tool "write", annotated as one that writes, which
+	// answers "written".
+	WriteTool bool `json:",omitempty"`
 }
 
 // Rendezvous is where and how many fake Upstreams meet; see Stdio.
@@ -252,7 +260,7 @@ func (s Stdio) addTools(server *mcp.Server, crashed *atomic.Bool) {
 			})
 	}
 	if s.CrashTool {
-		server.AddTool(&mcp.Tool{Name: "crash", InputSchema: ObjectSchema},
+		server.AddTool(&mcp.Tool{Name: "crash", InputSchema: ObjectSchema, Annotations: readOnly},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				crashed.Store(true)
 				sigterm := make(chan os.Signal, 1)
@@ -277,7 +285,7 @@ func (s Stdio) addTools(server *mcp.Server, crashed *atomic.Bool) {
 			})
 	}
 	if path := s.BlockToolFile; path != "" {
-		server.AddTool(&mcp.Tool{Name: "block", InputSchema: ObjectSchema},
+		server.AddTool(&mcp.Tool{Name: "block", InputSchema: ObjectSchema, Annotations: readOnly},
 			func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				if err := os.WriteFile(path, []byte("started"), 0o644); err != nil {
 					return nil, err
@@ -290,7 +298,7 @@ func (s Stdio) addTools(server *mcp.Server, crashed *atomic.Bool) {
 		server.AddTool(&mcp.Tool{Name: "gather", InputSchema: ObjectSchema}, gather(s.GatherTool))
 	}
 	if s.AskTool {
-		server.AddTool(&mcp.Tool{Name: "ask", InputSchema: ObjectSchema},
+		server.AddTool(&mcp.Tool{Name: "ask", InputSchema: ObjectSchema, Annotations: readOnly},
 			func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				if len(req.Params.InputResponses) == 0 {
 					return &mcp.CallToolResult{
@@ -298,6 +306,23 @@ func (s Stdio) addTools(server *mcp.Server, crashed *atomic.Bool) {
 					}, nil
 				}
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "answered"}}}, nil
+			})
+	}
+	if s.ReplyTool {
+		server.AddTool(&mcp.Tool{Name: "reply", InputSchema: ObjectSchema, Annotations: readOnly},
+			func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				var res mcp.CallToolResult
+				if err := json.Unmarshal(req.Params.Arguments, &res); err != nil {
+					return nil, err
+				}
+				return &res, nil
+			})
+	}
+	if s.WriteTool {
+		annotations := &mcp.ToolAnnotations{DestructiveHint: new(true)}
+		server.AddTool(&mcp.Tool{Name: "write", InputSchema: ObjectSchema, Annotations: annotations},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "written"}}}, nil
 			})
 	}
 	if name := s.BadSchemaTool; name != "" {

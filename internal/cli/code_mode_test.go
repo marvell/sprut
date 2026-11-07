@@ -2,12 +2,14 @@ package cli_test
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/marvell/sprut/internal/mcptest"
 )
 
 // execute calls the execute tool with code and returns its result.
@@ -57,7 +59,10 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 	if diff := cmp.Diff(toJSON(t, wantAnnotations), toJSON(t, execute.Annotations)); diff != "" {
 		t.Errorf("annotations (-want +got):\n%s", diff)
 	}
-	for _, part := range []string{"async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "call depth"} {
+	if first, _, _ := strings.Cut(execute.Description, "\n"); !strings.Contains(first, "read-only tools") || !strings.Contains(first, "context") {
+		t.Errorf("description starts %q, want it to lead with composing read-only tools outside the Agent's context", first)
+	}
+	for _, part := range []string{`await call("<upstream>__<tool>", args)`, "readOnlyHint", "call it directly", "structuredContent", "isError", "async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "call depth"} {
 		if !strings.Contains(execute.Description, part) {
 			t.Errorf("description lacks %q:\n%s", part, execute.Description)
 		}
@@ -143,27 +148,25 @@ func TestExecuteLoggedOnceUnderVerboseWithDurationAndOutcome(t *testing.T) {
 	g.wantLogLine(t, "DEBUG", `msg="script executed"`, "tool=execute", "duration=", "isError=true")
 }
 
-func TestServeStopsScriptWhenAgentCancelsExecute(t *testing.T) {
+func TestServeStopsScriptAndItsCallWhenAgentCancelsExecute(t *testing.T) {
 	t.Parallel()
-	g := startFakeGateway(t, "--code-mode", "-v")
+	progress := filepath.Join(t.TempDir(), "block")
+	upstreams := map[string]any{"fake": mcptest.Stdio{BlockToolFile: progress}.Entry(t)}
+	g := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode", "-v")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	called := make(chan error, 1)
 	go func() {
-		_, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "execute", Arguments: map[string]any{"code": "for (;;) {}"}})
+		_, err := g.Agent.CallTool(ctx, &mcp.CallToolParams{Name: "execute", Arguments: map[string]any{"code": `await call("fake__block")`}})
 		called <- err
 	}()
-	// Give the call time to reach the Script before cancelling it. A cancel
-	// that arrives first still ends the call with the context's error, but
-	// then leaves stopping a running Script to the sandbox package's test.
-	time.Sleep(200 * time.Millisecond)
+	waitForFile(t, progress, "started")
 	cancel() // the Agent sends notifications/cancelled
 
 	if err := <-called; err == nil {
 		t.Error("cancelled execute returned no error")
 	}
-	// A Script left running would end only at the 50s time limit, with an
-	// isError result instead.
+	waitForFile(t, progress, "cancelled")
 	if !eventually(func() bool { return g.logged("DEBUG", `msg="script executed"`, `err="context canceled"`) }) {
 		t.Error(`no "script executed" line with the context's error`)
 	}
@@ -187,4 +190,128 @@ func TestExecuteGivesIsErrorWhenScriptTimesOutThenOutputSoFar(t *testing.T) {
 	if got, want := resultText(t, res), "script timed out after 1s\nlooping\n"; !res.IsError || got != want {
 		t.Errorf("result (isError %v) %q, want isError %q", res.IsError, got, want)
 	}
+}
+
+// startCallableGateway starts a Gateway in Code mode, with -v, whose one
+// Upstream, fake, also offers reply and write.
+func startCallableGateway(t *testing.T) *gateway {
+	t.Helper()
+	upstreams := map[string]any{"fake": mcptest.Stdio{ReplyTool: true, WriteTool: true}.Entry(t)}
+	return startGateway(t, writeConfig(t, upstreams), nil, "--code-mode", "-v")
+}
+
+// wantExecuted checks that execute ran code and gave want, not an isError
+// result.
+func (g *gateway) wantExecuted(t *testing.T, code, want string) {
+	t.Helper()
+	res := g.execute(t.Context(), t, code)
+	if got := resultText(t, res); res.IsError || got != want {
+		t.Errorf("%s: result (isError %v) %q, want %q", code, res.IsError, got, want)
+	}
+}
+
+// wantScriptError checks that execute ran code and gave an isError result
+// containing every one of parts.
+func (g *gateway) wantScriptError(t *testing.T, code string, parts ...string) {
+	t.Helper()
+	res := g.execute(t.Context(), t, code)
+	got := resultText(t, res)
+	if !res.IsError {
+		t.Errorf("%s: result %q is not isError", code, got)
+	}
+	for _, part := range parts {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s: result %q lacks %q", code, got, part)
+		}
+	}
+}
+
+func TestScriptCallReturnsStructuredContentFirst(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	g.wantExecuted(t, `const r = await call("fake__echo", {text: "hi"}); return r.echoed`, `"hi"`+"\n")
+	g.wantExecuted(t, `return await call("fake__reply", {content: [{type: "text", text: "[1]"}], structuredContent: {n: 2}})`, `{"n":2}`+"\n")
+}
+
+func TestScriptCallReturnsJSONOfItsOnlyTextBlock(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	g.wantExecuted(t, `const r = await call("fake__reply", {content: [{type: "text", text: '{"ids": [1, 2]}'}]}); return r.ids.length`, "2\n")
+}
+
+func TestScriptCallReturnsTextOfItsOnlyTextBlockThatIsNotJSON(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	g.wantExecuted(t, `const r = await call("fake__reply", {content: [{type: "text", text: "plain {"}]}); return typeof r + ": " + r`, `"string: plain {"`+"\n")
+}
+
+func TestScriptCallReturnsContentArrayOtherwise(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	twoTexts := `{content: [{type: "text", text: "a"}, {type: "text", text: "1"}]}`
+	g.wantExecuted(t, `return await call("fake__reply", `+twoTexts+`)`, `[{"type":"text","text":"a"},{"type":"text","text":"1"}]`+"\n")
+	image := `{content: [{type: "image", data: "AAAA", mimeType: "image/png"}]}`
+	g.wantExecuted(t, `return await call("fake__reply", `+image+`)`, `[{"type":"image","mimeType":"image/png","data":"AAAA"}]`+"\n")
+	g.wantExecuted(t, `return await call("fake__reply", {content: []})`, "[]\n")
+}
+
+func TestScriptCallThrowsCatchableErrorOnIsErrorResult(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	failing := `{isError: true, content: [{type: "text", text: "no such issue"}], structuredContent: {n: 1}}`
+	g.wantExecuted(t, `try { await call("fake__reply", `+failing+`) } catch (e) { return e instanceof Error ? e.message : "not an Error" }`, `"no such issue"`+"\n")
+	g.wantScriptError(t, "console.log('before')\nawait call(\"fake__reply\", "+failing+")", "Error: no such issue (line 2)\nbefore\n")
+	g.wantScriptError(t, `await call("fake__reply", {isError: true, content: []})`, `Error: tool "fake__reply" returned an error (line 1)`)
+}
+
+func TestScriptCallRefusesToolThatIsNotReadOnly(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	for _, tool := range []string{"fake__write", "fake__fail"} { // marked as writing, and not marked
+		g.wantScriptError(t, `await call("`+tool+`")`, `"`+tool+`"`, "not read-only", "call it directly", "(line 1)")
+	}
+	g.closeAgent(t)
+	g.wantNoLogLine(t, "DEBUG", `msg="tool called"`)
+}
+
+func TestScriptCallRefusesUnknownTool(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	for _, tool := range []string{"fake__nope", "nope", "execute"} {
+		g.wantScriptError(t, `await call("`+tool+`")`, `unknown tool "`+tool+`"`, "directly")
+	}
+	g.wantExecuted(t, `try { await call("fake__write") } catch (e) { return "caught" }`, `"caught"`+"\n")
+}
+
+func TestScriptCallThrowsWhenUpstreamAsksForInput(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, map[string]any{"fake": mcptest.Stdio{Protocol: mcptest.Modern, AskTool: true}.Entry(t)})
+	g := startGateway(t, path, nil, "--code-mode")
+	direct, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: "fake__ask"})
+	if err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	g.wantScriptError(t, `await call("fake__ask")`, "Error: "+resultText(t, direct)+" (line 1)")
+}
+
+func TestScriptCallThrowsWhenCallToUpstreamFails(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"doomed": mcptest.Stdio{CrashTool: true}.Entry(t)}
+	g := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode")
+	g.wantScriptError(t, `await call("doomed__crash")`, `Error: call to upstream "doomed" failed`)
+	direct, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: "doomed__echo", Arguments: map[string]any{"text": "x"}})
+	if err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	g.wantScriptError(t, `await call("doomed__echo", {text: "x"})`, "Error: "+resultText(t, direct)+" (line 1)")
+}
+
+func TestScriptCallsLoggedUnderVerboseLikeDirectCallsMarkedAsFromExecute(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	g.wantExecuted(t, `await call("fake__echo", {text: "a"}); await call("fake__reply", {isError: true, content: []}).catch(() => {})`, "")
+	g.closeAgent(t)
+
+	g.wantLogLine(t, "DEBUG", `msg="tool called"`, "upstream=fake", "tool=fake__echo", "via=execute", "duration=", "isError=false")
+	g.wantLogLine(t, "DEBUG", `msg="tool called"`, "upstream=fake", "tool=fake__reply", "via=execute", "isError=true")
 }
