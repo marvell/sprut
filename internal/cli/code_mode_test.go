@@ -30,20 +30,7 @@ func TestServeOffersExecuteBesideNamespacedToolsOnlyInCodeMode(t *testing.T) {
 
 func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 	t.Parallel()
-	g := startFakeGateway(t, "--code-mode")
-	res, err := g.Agent.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("tools/list: %v", err)
-	}
-	var execute *mcp.Tool
-	for _, tool := range res.Tools {
-		if tool.Name == "execute" {
-			execute = tool
-		}
-	}
-	if execute == nil {
-		t.Fatal("no execute tool")
-	}
+	execute := startFakeGateway(t, "--code-mode").executeTool(t)
 
 	wantSchema := map[string]any{
 		"type": "object",
@@ -67,6 +54,67 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 			t.Errorf("description lacks %q:\n%s", part, execute.Description)
 		}
 	}
+}
+
+// executeTool is the execute tool as the Agent lists it.
+func (g *gateway) executeTool(t *testing.T) *mcp.Tool {
+	t.Helper()
+	res, err := g.Agent.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "execute" {
+			return tool
+		}
+	}
+	t.Fatal("no execute tool")
+	return nil
+}
+
+func TestExecuteDescriptionListsReadOnlyToolsByUpstreamAfterScriptContract(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{
+		"linear": mcptest.Stdio{ReplyTool: true, BlockToolFile: filepath.Join(t.TempDir(), "block")}.Entry(t),
+		"fake":   mcptest.Stdio{}.Entry(t),
+	}
+	description := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode").executeTool(t).Description
+
+	want := "\n\nTools a script can call, by upstream, named exactly as in your tool list, where their input schemas are:\n" +
+		"- fake: fake__echo\n" +
+		"- linear: linear__block, linear__echo, linear__reply\n"
+	if !strings.HasSuffix(description, want) {
+		t.Errorf("description doesn't end with the tool list %q:\n%s", want, description)
+	}
+	if contract, _, _ := strings.Cut(description, "Tools a script can call"); !strings.Contains(contract, "Limits:") {
+		t.Errorf("tool list comes before the Script contract:\n%s", description)
+	}
+}
+
+func TestExecuteDescriptionLeavesOutToolsThatAreNotReadOnly(t *testing.T) {
+	t.Parallel()
+	upstreams := map[string]any{"fake": mcptest.Stdio{WriteTool: true, ExtraTools: []string{"plain"}}.Entry(t)}
+	description := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode").executeTool(t).Description
+
+	for _, tool := range []string{"fake__write", "fake__fail", "fake__plain"} { // marked as writing, and not marked
+		if strings.Contains(description, tool) {
+			t.Errorf("description lists %s:\n%s", tool, description)
+		}
+	}
+	if !strings.HasSuffix(description, "\n- fake: fake__echo\n") {
+		t.Errorf("description doesn't end listing fake__echo alone:\n%s", description)
+	}
+}
+
+func TestExecuteServedSayingNoToolIsCallableWhileNoneIsReadOnly(t *testing.T) {
+	t.Parallel()
+	g := startGateway(t, writeConfig(t, map[string]any{}), nil, "--code-mode")
+	description := g.executeTool(t).Description
+	want := "\n\nNo tool can be called from a script: no upstream marks one readOnlyHint: true.\n"
+	if !strings.HasSuffix(description, want) {
+		t.Errorf("description doesn't end with %q:\n%s", want, description)
+	}
+	g.wantExecuted(t, "return 1", "1\n")
 }
 
 func TestExecuteReturnsWhatScriptPrintsThenItsReturnValue(t *testing.T) {

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,8 +44,9 @@ func (c *CodeMode) limits() sandbox.Limits {
 	return sandbox.Limits{Time: c.ScriptTimeLimit, Memory: scriptMemory, Stack: scriptCallDepth, Output: scriptOutput}
 }
 
-// executeDescription is the Script contract, as the Agent reads it.
-func executeDescription(limits sandbox.Limits) string {
+// executeDescription is the Script contract, as the Agent reads it,
+// followed by the tools that a Script may call.
+func executeDescription(limits sandbox.Limits, tools catalog) string {
 	return fmt.Sprintf(`Compose calls to read-only tools in a JavaScript script, so that their results stay out of your context: get back only what the script prints and returns.
 
 The script is the body of an async function, so top-level await works. Write plain JavaScript (ES2023), without TypeScript annotations. The only globals beyond standard JavaScript are call and console.
@@ -61,15 +64,38 @@ console.log, console.error and console.warn print to one output: strings as they
 Each script starts in a fresh VM, so nothing persists between scripts.
 
 A script that fails to parse, throws or runs past a limit gives an error result: the message with its line, then the output printed so far. Limits: %s of wall time, %d MB of memory, a call depth of about %d, and %d characters of output, past which the output is cut with a line saying how much.`,
-		limits.Time, limits.Memory>>20, limits.Stack, limits.Output)
+		limits.Time, limits.Memory>>20, limits.Stack, limits.Output) + "\n\n" + tools.scriptTools()
 }
 
-// addExecute serves the execute tool.
+// scriptTools lists the tools a Script may call, by Upstream: names only,
+// as the Agent takes everything else from the Namespaced tools.
+func (c catalog) scriptTools() string {
+	byUpstream := map[string][]string{}
+	for name, t := range c {
+		if t.readOnly {
+			byUpstream[t.upstream] = append(byUpstream[t.upstream], name)
+		}
+	}
+	if len(byUpstream) == 0 {
+		return "No tool can be called from a script: no upstream marks one readOnlyHint: true.\n"
+	}
+	var b strings.Builder
+	b.WriteString("Tools a script can call, by upstream, named exactly as in your tool list, where their input schemas are:\n")
+	for _, upstream := range slices.Sorted(maps.Keys(byUpstream)) {
+		names := byUpstream[upstream]
+		slices.Sort(names)
+		fmt.Fprintf(&b, "- %s: %s\n", upstream, strings.Join(names, ", "))
+	}
+	return b.String()
+}
+
+// addExecute serves the execute tool. Its description lists the Namespaced
+// tools a Script may call, so it is added once they all are.
 func (g *Gateway) addExecute(c *CodeMode) {
 	limits := c.limits()
 	g.server.AddTool(&mcp.Tool{
 		Name:        executeTool,
-		Description: executeDescription(limits),
+		Description: executeDescription(limits, g.catalog),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
