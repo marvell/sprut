@@ -136,9 +136,9 @@ func (g *Gateway) execute(limits sandbox.Limits, log *slog.Logger) mcp.ToolHandl
 		took := time.Since(begin)
 		logCall(log, "script executed", took, res, err)
 		if g.audit != nil {
-			outcome, why := outcome(ctx, res, err)
-			g.audit.Script(audit.Script{N: run.n, Took: took, Outcome: outcome, Err: why,
-				Calls: int(run.calls.Load()), Code: *in.Code, ResultBytes: size(res)})
+			e := ended(ctx, res, err)
+			g.audit.Script(audit.Script{N: run.n, Took: took, Outcome: e.outcome, Err: e.why,
+				Calls: int(run.calls.Load()), Code: *in.Code, ResultBytes: e.resultBytes})
 		}
 		return res, err
 	}

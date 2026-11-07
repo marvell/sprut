@@ -448,25 +448,34 @@ func (t *namespacedTool) call(ctx context.Context, args json.RawMessage, run *sc
 	}
 	logCall(log, "tool called", took, res, callErr)
 	if t.audit != nil {
-		outcome, why := outcome(ctx, res, err)
+		e := ended(ctx, res, err)
 		t.audit.Call(audit.Call{Tool: t.name, Upstream: t.upstream, Script: script, Took: took,
-			Outcome: outcome, Err: why, ArgsBytes: len(args), ResultBytes: size(res)})
+			Outcome: e.outcome, Err: e.why, ArgsBytes: len(args), ResultBytes: e.resultBytes})
 	}
 	return res, err
 }
 
-// outcome is how a call that ended in res or err, under ctx, went for the
-// Audit log, and why, if it failed.
-func outcome(ctx context.Context, res *mcp.CallToolResult, err error) (audit.Outcome, string) {
+// end is how a call or a Script went, for the Audit log.
+type end struct {
+	outcome     audit.Outcome
+	why         string // with the Error outcome, why
+	resultBytes int
+}
+
+// ended is how a call or a Script that ended in res or err, under ctx,
+// went. err is the one returned to the Agent, after a failure on the way
+// to an Upstream has become an isError res.
+func ended(ctx context.Context, res *mcp.CallToolResult, err error) end {
+	e := end{outcome: audit.OK, resultBytes: size(res)}
 	switch {
 	case err != nil && ctx.Err() != nil:
-		return audit.Cancelled, ""
+		e.outcome = audit.Cancelled
 	case err != nil:
-		return audit.Error, err.Error()
+		e.outcome, e.why = audit.Error, err.Error()
 	case res.IsError:
-		return audit.Error, text(res)
+		e.outcome, e.why = audit.Error, text(res)
 	}
-	return audit.OK, ""
+	return e
 }
 
 // size is the size of res's JSON, or 0 for no res. It leaves out
