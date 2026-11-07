@@ -28,6 +28,14 @@ _Avoid_: settings, manifest
 A tool as the Agent sees it: the Upstream's tool name prefixed with the Upstream's name, so tools from different Upstreams never collide.
 _Avoid_: aliased tool, prefixed tool
 
+**Code mode**:
+The opt-in `sprut serve --code-mode`, in which the Gateway also offers the `execute` tool, so an Agent can run a Script instead of calling Namespaced tools one by one.
+_Avoid_: code execution, sandbox mode
+
+**Script**:
+A JavaScript program an Agent sends to `execute`. It runs inside the Gateway and can call read-only Namespaced tools; only what it prints or returns goes back to the Agent.
+_Avoid_: snippet, code (ambiguous)
+
 **Login**:
 The one-time interactive step, done by the user in a browser, that grants the Gateway access to an HTTP Upstream protected by OAuth.
 _Avoid_: auth, authorization, sign-in
