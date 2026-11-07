@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MISE_VERSION: 2026.10.25
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -17,30 +20,23 @@ jobs:
       # Installs and caches the tools mise.toml pins, at mise.lock's checksums.
       - uses: jdx/mise-action@v5
         with:
-          version: 2026.10.25
+          version: ${{ env.MISE_VERSION }}
 
+      # Saved fresh on every run (the key ends in the commit), so the build
+      # cache follows the code instead of freezing at a go.sum change.
       - uses: actions/cache@v6
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ hashFiles('mise.lock', 'go.sum') }}
-          restore-keys: go-${{ runner.os }}-
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-${{ runner.os }}-
 
-      - name: gofmt
-        run: mise run fmt-check
-
-      - name: go vet
-        run: mise run vet
-
-      - name: golangci-lint (seam rules)
-        run: mise run lint
-
-      - name: go test -race (repeated, shuffled)
-        run: mise run test
-
-      - name: release config, workflows and snapshot build
-        run: mise run release-check
+      - name: mise run check
+        run: mise run check
 
   release:
     needs: check
@@ -56,7 +52,18 @@ jobs:
 
       - uses: jdx/mise-action@v5
         with:
-          version: 2026.10.25
+          version: ${{ env.MISE_VERSION }}
+          install_args: go goreleaser
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-${{ runner.os }}-
 
       - name: goreleaser release
         run: goreleaser release --clean

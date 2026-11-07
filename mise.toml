@@ -1,13 +1,17 @@
-# The toolchain and every task the repo runs: CI runs `mise run <task>` with
+# The toolchain and every task the repo runs: CI runs `mise run check` with
 # these same pins (jdx/mise-action), so a local `mise run check` is CI.
-# Bump a tool with `mise use <tool>@<version>`, then `mise lock`.
+# Bump a tool with `mise use <tool>@<version>`, then `mise lock` to refresh the
+# checksums of the other platforms in mise.lock.
+# Inline scripts run under `sh -o errexit`: a failing command ends the task.
 
+# A floor for local runs; CI pins its own mise in MISE_VERSION (ci.yml).
 min_version = "2026.10.25"
 
 [settings]
 lockfile = true
 
 [tools]
+# The exact toolchain; go.mod's `go` line is only the language floor.
 go = "1.27.3"
 # Built from source with the Go above, so it always understands go.mod's Go
 # version; a prebuilt binary refuses a go.mod newer than its own Go.
@@ -35,7 +39,7 @@ run = "golangci-lint fmt"
 [tasks.fmt-check]
 description = "Fail on files gofmt would change"
 run = '''
-unformatted=$(gofmt -l .) || exit 1
+unformatted=$(gofmt -l .)
 if [ -n "$unformatted" ]; then
   echo "These files are not gofmt-formatted:"
   echo "$unformatted"
@@ -75,7 +79,6 @@ run = "go test -run '^$' -fuzz FuzzParse -fuzztime 60s ./internal/config"
 [tasks.release-check]
 description = "Check the workflows, the goreleaser config and a snapshot build"
 run = '''
-set -e
 actionlint
 goreleaser check
 goreleaser build --snapshot --clean
