@@ -27,6 +27,7 @@ Cursor      ── sprut serve ──┘            └── linear  (HTTP + OA
 - **One broken server breaks nothing else.** An Upstream that fails to start is skipped with a log line; the rest keep working.
 - **Secrets stay out of the file.** `${VAR}` references are filled in from the environment when sprut runs.
 - **Nothing running in the background.** One static binary; each Agent runs its own `sprut serve` over stdio, with no daemon and no open port.
+- **Chain tools without filling the context.** With [Code mode](#code-mode), an Agent runs a Script that calls read-only tools, filters and joins their results inside sprut, and gets back only what it prints or returns.
 - **Old and new MCP alike.** stdio and Streamable HTTP Upstreams; legacy and modern (`2026-07-28`) MCP Agents and Upstreams work in any combination.
 
 ## Quick start
@@ -258,6 +259,61 @@ args = ["serve"]
 ```
 
 If the Agent does not find `sprut` on its `PATH`, use the binary's absolute path as the command.
+
+## Code mode
+
+An Agent that needs data from several tools, or from one tool many times, calls them one by one, and every result passes through its context only to be copied into the next call: 50 issues read to pick five, one model turn per project in a loop, two Upstreams' results joined by eye. That costs tokens and turns, and the model gets worse on large results.
+
+Code mode lets the Agent send a Script instead: a JavaScript program that calls Namespaced tools, chains and filters their results inside sprut, and returns only what the Agent needs.
+
+### Turn it on
+
+Code mode is off by default. Add `--code-mode` to one Agent's `sprut serve` line. In Claude Code, replace the entry from the [Quick start](#quick-start):
+
+```sh
+claude mcp remove --scope user sprut
+claude mcp add --scope user sprut -- sprut serve --code-mode
+```
+
+That Agent then gets one more tool, `execute`, next to the Namespaced tools, which stay as they are. Code mode is per Agent, not in the Config, so that an Agent with a code mode of its own, such as Codex, doesn't get a second one nested inside it: leave the flag off there.
+
+### Scripts
+
+A Script is the body of an async function, so `await` works at the top level. `call("<upstream>__<tool>", args)` calls a Namespaced tool by the name the Agent sees it under, and returns a Promise of its result: the tool's `structuredContent`, else the JSON value of its one text block (or the text itself, if it isn't JSON), else its `content` array. A result with `isError` throws, so `try`/`catch` handles it. What the Script prints with `console.log`, `console.error` or `console.warn`, followed by the JSON of the value it returns (unless `undefined`), is `execute`'s result:
+
+```js
+const { issues } = await call("linear__list_issues", { assignee: "me", state: "In Progress" });
+const threads = await Promise.all(
+  issues.map((issue) => call("linear__list_comments", { issueId: issue.id })),
+);
+issues.forEach((issue, n) => {
+  const count = threads[n].comments.length;
+  if (count > 0) console.log(`${issue.id}: ${issue.title} (${count} comments)`);
+});
+```
+
+Calls inside `Promise.all` run in parallel, up to 8 at a time. A Script that fails to parse, throws or runs past a limit returns an error result with the message and its line, then the output printed so far. Cancelling `execute` stops the Script and cancels its calls still in flight. Under `-v`, each call a Script makes is logged like a direct call, marked as coming from `execute`.
+
+### Read-only tools only
+
+A Script can call only the tools that their Upstream annotates `readOnlyHint: true`; calling any other tool throws an Error. `execute`'s description lists, by Upstream, the tools a Script may call. Upstreams that don't annotate their tools contribute none to Scripts. Writes stay direct calls to the Namespaced tools, so your Agent's per-tool approvals still apply to them, and approving `execute`, itself annotated read-only, never approves a write. `readOnlyHint` is the Upstream's own claim: one that marks a writing tool read-only lets Scripts call it.
+
+### What a Script cannot do
+
+A Script has no network, no filesystem, no timers, no `require` and no access to Credentials: its only way out is `call`. Each Script starts in a fresh VM, so nothing is kept between runs. Scripts are plain JavaScript, not TypeScript.
+
+### Limits
+
+| Limit | Value |
+| --- | --- |
+| Wall time | 50 s, below Codex's 60-second tool timeout |
+| Memory | 64 MB |
+| Calls | 100 per Script; the next one throws |
+| Calls in flight | 8; the others wait their turn |
+| Call depth | about 5,000 nested function calls |
+| Output | 40,000 characters; the rest is cut, with a line saying how much |
+
+The limits are fixed.
 
 ## Check your Config
 
