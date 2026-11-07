@@ -96,8 +96,8 @@ type Stdio struct {
 	// the file, blocks until the call is cancelled, then writes "cancelled"
 	// to it.
 	BlockToolFile string `json:",omitempty"`
-	// GatherTool, if positive, adds a tool "gather" that answers only once
-	// GatherTool calls to it are in flight together.
+	// GatherTool, if positive, adds a read-only tool "gather" that answers
+	// only once GatherTool calls to it are in flight together.
 	GatherTool int `json:",omitempty"`
 	// AskTool adds a read-only tool "ask" that asks for interactive input
 	// mid-call (multi-round-trip), and answers once it has some.
@@ -295,7 +295,7 @@ func (s Stdio) addTools(server *mcp.Server, crashed *atomic.Bool) {
 			})
 	}
 	if s.GatherTool > 0 {
-		server.AddTool(&mcp.Tool{Name: "gather", InputSchema: ObjectSchema}, gather(s.GatherTool))
+		server.AddTool(&mcp.Tool{Name: "gather", InputSchema: ObjectSchema, Annotations: readOnly}, gather(s.GatherTool))
 	}
 	if s.AskTool {
 		server.AddTool(&mcp.Tool{Name: "ask", InputSchema: ObjectSchema, Annotations: readOnly},

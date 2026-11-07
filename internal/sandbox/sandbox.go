@@ -21,10 +21,12 @@ import (
 
 // Limits bound what one Script may use. A zero field sets no limit.
 type Limits struct {
-	Time   time.Duration // wall time, from the start of Run
-	Memory uintptr       // bytes the VM may allocate
-	Stack  uintptr       // call depth, in the engine's stack slots: about one per call
-	Output int           // characters of the result; the rest is cut, and a closing line says how much
+	Time     time.Duration // wall time, from the start of Run
+	Memory   uintptr       // bytes the VM may allocate
+	Stack    uintptr       // call depth, in the engine's stack slots: about one per call
+	Output   int           // characters of the result; the rest is cut, and a closing line says how much
+	InFlight int           // calls running at once; the others wait their turn
+	Calls    int           // calls in all; the next one throws
 }
 
 // Error is a Script that failed: it didn't parse, threw, or ran out of a
@@ -48,16 +50,14 @@ const (
 	callFunc  = "__sprut_call"
 )
 
-// inFlight is how many calls of one Script run at a time; the others wait
-// their turn.
-const inFlight = 1
-
 // prelude defines console, formatting its arguments like console.log in
 // Node: strings as they are, other values as JSON. It also defines call,
-// which starts a call through the host and returns a Promise, and its
-// value is the function that settles that Promise once the call ends: with
-// the value of the JSON the call returned, or else with an Error saying
-// what went wrong, thrown where the Script called.
+// which starts a call through the host and returns a Promise; when the host
+// refuses the call, giving a message in place of the call's id, call throws
+// an Error saying it. The prelude's value is the function that settles a
+// call's Promise once the call ends: with the value of the JSON the call
+// returned, or else with an Error saying what went wrong. Either Error is
+// thrown where the Script called.
 const prelude = `(() => {
 	const print = globalThis.` + printFunc + `;
 	const start = globalThis.` + callFunc + `;
@@ -75,27 +75,26 @@ const prelude = `(() => {
 	const write = (...args) => { print(args.map(format).join(" ")); };
 	globalThis.console = { log: write, error: write, warn: write };
 
+	// An Error saying message, thrown where the Script called: every eval
+	// is "<eval>" to the engine, prelude and Script alike, so the frame of
+	// call is dropped from the stack of site.
+	const thrown = (message, site) => {
+		const e = new Error(message);
+		e.stack = site.stack.split("\n").slice(1).join("\n");
+		return e;
+	};
 	const calls = new Map();
 	globalThis.call = (name, args) => {
-		// Where the Script called, for the line of an Error the call ends
-		// in. Every eval is "<eval>" to the engine, prelude and Script
-		// alike, so this frame is dropped from the stack when it is used.
 		const site = new Error();
-		return new Promise((resolve, reject) => {
-			const id = start(String(name), args === undefined ? "{}" : JSON.stringify(args));
-			calls.set(id, { resolve, reject, site });
-		});
+		const id = start(String(name), args === undefined ? "{}" : JSON.stringify(args));
+		if (typeof id === "string") throw thrown(id, site);
+		return new Promise((resolve, reject) => { calls.set(id, { resolve, reject, site }); });
 	};
 	return (id, error, json) => {
 		const { resolve, reject, site } = calls.get(id);
 		calls.delete(id);
-		if (error === null) {
-			resolve(JSON.parse(json));
-			return;
-		}
-		const e = new Error(error);
-		e.stack = site.stack.split("\n").slice(1).join("\n");
-		reject(e);
+		if (error === null) resolve(JSON.parse(json));
+		else reject(thrown(error, site));
 	};
 })();`
 
@@ -120,7 +119,10 @@ func Run(ctx context.Context, script string, caller Caller, limits Limits) (stri
 	} else {
 		runCtx, cancel = context.WithCancel(ctx)
 	}
-	calls := &calls{ctx: runCtx, caller: caller, ended: make(chan ended), turns: make(chan struct{}, inFlight)}
+	calls := &calls{ctx: runCtx, caller: caller, ended: make(chan ended), maxCalls: limits.Calls}
+	if limits.InFlight > 0 {
+		calls.turns = make(chan struct{}, limits.InFlight)
+	}
 	defer calls.wg.Wait()
 	defer cancel()
 
@@ -159,7 +161,11 @@ func Run(ctx context.Context, script string, caller Caller, limits Limits) (stri
 	err = vm.RegisterHostFunc(callFunc, func(args []any) (any, error) {
 		name, _ := args[0].(string) // always both strings, from the prelude
 		arguments, _ := args[1].(string)
-		return calls.start(name, arguments), nil
+		id, err := calls.start(name, arguments)
+		if err != nil {
+			return err.Error(), nil // thrown by the prelude, as an Error from the Script's line
+		}
+		return id, nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("setting up call: %w", err)
@@ -292,11 +298,12 @@ func run(vm *quickjs.VM, script string, calls *calls) (string, error) {
 // calls runs a Script's calls to its Caller, each in a goroutine of its
 // own, and settles their Promises on the VM's goroutine.
 type calls struct {
-	ctx    context.Context // the Script's: done once it ends
-	caller Caller
-	settle quickjs.Value // the prelude's settling function
-	ended  chan ended
-	turns  chan struct{} // one token per call running at the Caller
+	ctx      context.Context // the Script's: done once it ends
+	caller   Caller
+	settle   quickjs.Value // the prelude's settling function
+	ended    chan ended
+	turns    chan struct{} // one token per call running at the Caller; nil for no limit
+	maxCalls int           // calls the Script may make, or 0 for no limit
 
 	next    int            // the id of the next call
 	running int            // calls started and not yet settled
@@ -311,25 +318,33 @@ type ended struct {
 }
 
 // start starts a call to the tool name with args, the JSON of its
-// arguments, and returns its id.
-func (c *calls) start(name, args string) int {
+// arguments, and returns its id, or an error, thrown where the Script
+// called, once the Script has made all the calls it may.
+func (c *calls) start(name, args string) (int, error) {
+	if c.maxCalls > 0 && c.next == c.maxCalls {
+		return 0, fmt.Errorf("a script may make at most %d calls", c.maxCalls)
+	}
 	id := c.next
 	c.next++
 	c.running++
 	c.wg.Go(func() {
-		select {
-		case c.turns <- struct{}{}:
-		case <-c.ctx.Done():
-			return
+		if c.turns != nil {
+			select {
+			case c.turns <- struct{}{}:
+			case <-c.ctx.Done():
+				return
+			}
 		}
 		value, err := c.caller(c.ctx, name, json.RawMessage(args))
-		<-c.turns
+		if c.turns != nil {
+			<-c.turns
+		}
 		select {
 		case c.ended <- ended{id, value, err}:
 		case <-c.ctx.Done():
 		}
 	})
-	return id
+	return id, nil
 }
 
 // settleNext waits for a call to end and settles its Promise, or returns

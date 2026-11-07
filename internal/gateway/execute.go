@@ -37,11 +37,13 @@ const (
 	scriptMemory    = 64 << 20 // bytes
 	scriptCallDepth = 5000     // the engine's stack slots, about one per call
 	scriptOutput    = 40000    // characters
+	scriptInFlight  = 8        // calls running at once
+	scriptCalls     = 100      // calls in all
 )
 
 // limits bound every Script.
 func (c *CodeMode) limits() sandbox.Limits {
-	return sandbox.Limits{Time: c.ScriptTimeLimit, Memory: scriptMemory, Stack: scriptCallDepth, Output: scriptOutput}
+	return sandbox.Limits{Time: c.ScriptTimeLimit, Memory: scriptMemory, Stack: scriptCallDepth, Output: scriptOutput, InFlight: scriptInFlight, Calls: scriptCalls}
 }
 
 // executeDescription is the Script contract, as the Agent reads it,
@@ -55,7 +57,8 @@ await call("<upstream>__<tool>", args) calls a tool by the name you see it under
 - the result's structuredContent, if it has one;
 - else, when its content is one text block, the JSON value of that text, or the text as a string if it isn't JSON;
 - else its content array.
-A result with isError throws an Error whose message is the result's text; catch it with try/catch. Calls run one at a time.
+A result with isError throws an Error whose message is the result's text; catch it with try/catch.
+Up to %d calls run at once, so Promise.all over calls runs them in parallel; the others wait their turn. A script may make at most %d calls: the next one throws an Error.
 
 A script can call only tools annotated readOnlyHint: true. Calling any other tool throws an Error: call it directly instead, outside the script.
 
@@ -66,7 +69,7 @@ Each script starts in a fresh VM, so nothing persists between scripts.
 A script that fails to parse, throws or runs past a limit gives an error result: the message with its line, then the output printed so far. Limits: %s of wall time, %d MB of memory, a call depth of about %d, and %d characters of output, past which the output is cut with a line saying how much.
 
 %s`,
-		limits.Time, limits.Memory>>20, limits.Stack, limits.Output, tools.scriptTools())
+		limits.InFlight, limits.Calls, limits.Time, limits.Memory>>20, limits.Stack, limits.Output, tools.scriptTools())
 }
 
 // scriptTools lists the tools a Script may call, by Upstream: names only,

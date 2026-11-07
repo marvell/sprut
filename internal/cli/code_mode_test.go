@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -89,8 +90,7 @@ func TestExecuteDescriptionListsReadOnlyToolsByUpstreamAfterScriptContract(t *te
 
 func TestExecuteDescriptionLeavesOutToolsThatAreNotReadOnly(t *testing.T) {
 	t.Parallel()
-	upstreams := map[string]any{"fake": mcptest.Stdio{WriteTool: true, ExtraTools: []string{"plain"}}.Entry(t)}
-	description := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode").executeTool(t).Description
+	description := startCodeModeGateway(t, mcptest.Stdio{WriteTool: true, ExtraTools: []string{"plain"}}).executeTool(t).Description
 
 	for _, tool := range []string{"fake__write", "fake__fail", "fake__plain"} { // marked as writing, and not marked
 		if strings.Contains(description, tool) {
@@ -195,8 +195,7 @@ func TestExecuteLoggedOnceUnderVerboseWithDurationAndOutcome(t *testing.T) {
 func TestServeStopsScriptAndItsCallWhenAgentCancelsExecute(t *testing.T) {
 	t.Parallel()
 	progress := filepath.Join(t.TempDir(), "block")
-	upstreams := map[string]any{"fake": mcptest.Stdio{BlockToolFile: progress}.Entry(t)}
-	g := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode", "-v")
+	g := startCodeModeGateway(t, mcptest.Stdio{BlockToolFile: progress}, "-v")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	called := make(chan error, 1)
@@ -236,12 +235,19 @@ func TestExecuteGivesIsErrorWhenScriptTimesOutThenOutputSoFar(t *testing.T) {
 	}
 }
 
+// startCodeModeGateway starts a Gateway in Code mode, with args, whose one
+// Upstream, fake, is upstream.
+func startCodeModeGateway(t *testing.T, upstream mcptest.Stdio, args ...string) *gateway {
+	t.Helper()
+	upstreams := map[string]any{"fake": upstream.Entry(t)}
+	return startGateway(t, writeConfig(t, upstreams), nil, append([]string{"--code-mode"}, args...)...)
+}
+
 // startCallableGateway starts a Gateway in Code mode, with -v, whose one
 // Upstream, fake, also offers reply and write.
 func startCallableGateway(t *testing.T) *gateway {
 	t.Helper()
-	upstreams := map[string]any{"fake": mcptest.Stdio{ReplyTool: true, WriteTool: true}.Entry(t)}
-	return startGateway(t, writeConfig(t, upstreams), nil, "--code-mode", "-v")
+	return startCodeModeGateway(t, mcptest.Stdio{ReplyTool: true, WriteTool: true}, "-v")
 }
 
 // wantExecuted checks that execute ran code and gave want, not an isError
@@ -329,8 +335,7 @@ func TestScriptCallRefusesUnknownTool(t *testing.T) {
 
 func TestScriptCallThrowsWhenUpstreamAsksForInput(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, map[string]any{"fake": mcptest.Stdio{Protocol: mcptest.Modern, AskTool: true}.Entry(t)})
-	g := startGateway(t, path, nil, "--code-mode")
+	g := startCodeModeGateway(t, mcptest.Stdio{Protocol: mcptest.Modern, AskTool: true})
 	direct, err := g.Agent.CallTool(t.Context(), &mcp.CallToolParams{Name: "fake__ask"})
 	if err != nil {
 		t.Fatalf("tools/call: %v", err)
@@ -358,4 +363,66 @@ func TestScriptCallsLoggedUnderVerboseLikeDirectCallsMarkedAsFromExecute(t *test
 
 	g.wantLogLine(t, "DEBUG", `msg="tool called"`, "upstream=fake", "tool=fake__echo", "via=execute", "duration=", "isError=false")
 	g.wantLogLine(t, "DEBUG", `msg="tool called"`, "upstream=fake", "tool=fake__reply", "via=execute", "isError=true")
+}
+
+// gatherAll is a Script that calls fake__gather n times at once.
+func gatherAll(n int) string {
+	return fmt.Sprintf(`const r = await Promise.all(Array.from({length: %d}, () => call("fake__gather"))); return r.length`, n)
+}
+
+func TestScriptCallsStartedTogetherRunConcurrentlyEightAtATime(t *testing.T) {
+	t.Parallel()
+	// The Upstream answers only once eight calls are in flight to it; the
+	// eight after them wait their turn and then are answered at once.
+	g := startCodeModeGateway(t, mcptest.Stdio{GatherTool: 8})
+	g.wantExecuted(t, gatherAll(16), "16\n")
+}
+
+func TestScriptCallsBeyondEightWaitWhileEightAreInFlight(t *testing.T) {
+	t.Parallel()
+	// Nine calls in flight at once would be answered; eight at a time never
+	// are, so the Script runs out of time.
+	g := startCodeModeGateway(t, mcptest.Stdio{GatherTool: 9}, "--script-time-limit", "1s")
+	g.wantScriptError(t, gatherAll(9), "script timed out after 1s")
+}
+
+func TestScriptMayMakeAtMost100Calls(t *testing.T) {
+	t.Parallel()
+	g := startCallableGateway(t)
+	const reply = `call("fake__reply", {content: [{type: "text", text: "1"}]})`
+	g.wantExecuted(t, `let n = 0
+try {
+	for (;;) n += await `+reply+`
+} catch (e) {
+	return [n, e.message]
+}`, `[100,"a script may make at most 100 calls"]`+"\n")
+	g.wantScriptError(t, `console.log("looping")
+for (;;) await `+reply,
+		"a script may make at most 100 calls (line 2)\nlooping\n")
+}
+
+func TestScriptRunOutOfTimeCancelsItsCallsInFlight(t *testing.T) {
+	t.Parallel()
+	progress := filepath.Join(t.TempDir(), "block")
+	g := startCodeModeGateway(t, mcptest.Stdio{BlockToolFile: progress}, "--script-time-limit", "2s")
+
+	g.wantScriptError(t, `await call("fake__block")`, "script timed out after 2s")
+	waitForFile(t, progress, "cancelled")
+	g.closeAgent(t)
+}
+
+func TestExecuteDescriptionStatesConcurrencyAndCallCaps(t *testing.T) {
+	t.Parallel()
+	description := startFakeGateway(t, "--code-mode").executeTool(t).Description
+	for _, want := range []string{
+		"Up to 8 calls run at once, so Promise.all over calls runs them in parallel; the others wait their turn.",
+		"A script may make at most 100 calls: the next one throws an Error.",
+	} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description lacks %q:\n%s", want, description)
+		}
+	}
+	if strings.Contains(description, "one at a time") {
+		t.Errorf("description still says calls run one at a time:\n%s", description)
+	}
 }
