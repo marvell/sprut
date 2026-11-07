@@ -24,7 +24,7 @@ func serveCommand(env []string, stdin io.Reader, stdout, stderr io.Writer) *ucli
 			&ucli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log at DEBUG level: every namespaced tool and tool call, those of scripts included"},
 			&ucli.BoolFlag{Name: "dry-run", Usage: "start every upstream as usual, then shut down; exit 1 if any failed"},
 			&ucli.BoolFlag{Name: "code-mode", Usage: "also offer the execute tool, which runs a javascript script in a sandbox"},
-			&ucli.BoolFlag{Name: "audit", Usage: "write the agent's tool calls and scripts, without their arguments or results, to $XDG_STATE_HOME/sprut/audit/<agent>/<start time>.jsonl"},
+			&ucli.BoolFlag{Name: "audit", Usage: "write the agent's tool calls and scripts, with each script's code but without arguments or results, to $XDG_STATE_HOME/sprut/audit/<agent>/<start time>.jsonl"},
 			// For tests only: the limit is fixed, and README doesn't name it.
 			&ucli.DurationFlag{Name: "script-time-limit", Value: gateway.ScriptTimeLimit, Hidden: true, Validator: positive},
 		},

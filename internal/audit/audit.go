@@ -1,7 +1,7 @@
 // Package audit writes the Audit log: one JSONL file per sprut serve, of
 // the Agent's session, every Namespaced tool call that reaches an Upstream
-// and every Script, with timings, outcomes and sizes, but never arguments
-// or results.
+// and every Script, with timings, outcomes and sizes. Arguments and results
+// are never written, only their sizes; a Script's code is.
 package audit
 
 import (

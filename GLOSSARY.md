@@ -37,7 +37,7 @@ A JavaScript program an Agent sends to `execute`. It runs inside the Gateway and
 _Avoid_: snippet, code (ambiguous)
 
 **Audit log**:
-The opt-in record that `sprut serve --audit` writes of one Agent session: each Namespaced tool call and Script, with timings, outcomes and sizes, but never arguments or results.
+The opt-in record that `sprut serve --audit` writes of one Agent session: each Namespaced tool call and Script, with timings, outcomes and sizes. Arguments and results are never written, only their sizes; a Script's code is.
 _Avoid_: trace, telemetry, call log
 
 **Login**:
