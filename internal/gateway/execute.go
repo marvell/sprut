@@ -23,13 +23,15 @@ const executeTool = "execute"
 var scriptLimits = sandbox.Limits{Time: 50 * time.Second, Memory: 64 << 20}
 
 // executeDescription is the Script contract, as the Agent reads it.
-var executeDescription = fmt.Sprintf(`Run a JavaScript script in a sandbox inside the gateway, and get back only what it prints and returns.
+var executeDescription = fmt.Sprintf(`Run a JavaScript script in a sandbox and get back only what it prints and returns.
 
-The script is the body of an async function, so top-level await works. Print with console.log, console.error or console.warn: strings as they are, other values as JSON, all to one output. If the script returns a value other than undefined, its JSON follows the output on a line of its own.
+The script is the body of an async function, so top-level await works. Write plain JavaScript (ES2023), without TypeScript annotations. The only global beyond standard JavaScript is console.
 
-JavaScript only: no TypeScript syntax. The sandbox has standard JavaScript and console, nothing else: no network, no filesystem, no timers, no modules. Scripts cannot call tools yet. Every script starts from a fresh VM; nothing is kept between scripts.
+console.log, console.error and console.warn print to one output: strings as they are, other values as JSON. A return value other than undefined follows as JSON on a line of its own.
 
-A script that fails to parse or throws gives an error result with the message, its line and the output printed so far. Limits: %s of wall time and %d MB of memory.`,
+Each script starts in a fresh VM, so nothing persists between calls.
+
+A script that fails to parse, throws or runs past a limit gives an error result: the message with its line, then the output printed so far. Limits: %s of wall time, %d MB of memory.`,
 	scriptLimits.Time, scriptLimits.Memory>>20)
 
 // addExecute serves the execute tool.

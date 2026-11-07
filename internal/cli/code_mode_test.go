@@ -66,7 +66,7 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 	if diff := cmp.Diff(toJSON(t, wantAnnotations), toJSON(t, execute.Annotations)); diff != "" {
 		t.Errorf("annotations (-want +got):\n%s", diff)
 	}
-	for _, part := range []string{"async function", "await", "console.log", "returns a value", "JSON", "TypeScript", "50s", "64 MB"} {
+	for _, part := range []string{"async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB"} {
 		if !strings.Contains(execute.Description, part) {
 			t.Errorf("description lacks %q:\n%s", part, execute.Description)
 		}
