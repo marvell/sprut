@@ -49,9 +49,9 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 		t.Errorf("annotations (-want +got):\n%s", diff)
 	}
 	if first, _, _ := strings.Cut(execute.Description, "\n"); !strings.Contains(first, "read-only tools") || !strings.Contains(first, "context") {
-		t.Errorf("description starts %q, want it to lead with composing read-only tools outside the Agent's context", first)
+		t.Errorf("description starts %q, want it to lead with running read-only tools outside the Agent's context", first)
 	}
-	for _, part := range []string{`await call("<upstream>__<tool>", args)`, "readOnlyHint", "call it directly", "structuredContent", "isError", "async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "call depth"} {
+	for _, part := range []string{`await call("<upstream>__<tool>", args)`, "readOnlyHint", "call it directly", "structuredContent", "isError", "async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "leave the prefix out"} {
 		if !strings.Contains(execute.Description, part) {
 			t.Errorf("description lacks %q:\n%s", part, execute.Description)
 		}
@@ -77,7 +77,7 @@ func TestExecuteDescriptionListsReadOnlyToolsByUpstreamAfterScriptContract(t *te
 	}
 	description := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode").executeTool(t).Description
 
-	want := "\n\nTools a script can call, by upstream, named exactly as in your tool list, where their input schemas are:\n" +
+	want := "\n\nTools a script can call, by upstream; their input schemas are on the tools of the same name in your tool list:\n" +
 		"- fake: fake__echo\n" +
 		"- linear: linear__block, linear__echo, linear__reply\n"
 	if !strings.HasSuffix(description, want) {
