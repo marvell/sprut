@@ -24,13 +24,21 @@ const ScriptTimeLimit = 50 * time.Second
 
 // CodeMode turns on Code mode: the Gateway also serves the execute tool.
 type CodeMode struct {
-	// ScriptTimeLimit is ScriptTimeLimit outside tests.
+	// ScriptTimeLimit is how long a Script may run: the constant of that
+	// name, except in tests.
 	ScriptTimeLimit time.Duration
 }
 
+// The other limits of a Script.
+const (
+	scriptMemory    = 64 << 20 // bytes
+	scriptCallDepth = 5000     // the engine's stack slots, about one per call
+	scriptOutput    = 40000    // characters
+)
+
 // limits bound every Script.
 func (c *CodeMode) limits() sandbox.Limits {
-	return sandbox.Limits{Time: c.ScriptTimeLimit, Memory: 64 << 20, Stack: 5000, Output: 40000}
+	return sandbox.Limits{Time: c.ScriptTimeLimit, Memory: scriptMemory, Stack: scriptCallDepth, Output: scriptOutput}
 }
 
 // executeDescription is the Script contract, as the Agent reads it.

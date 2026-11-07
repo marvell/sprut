@@ -20,16 +20,16 @@ func run(t *testing.T, script string) string {
 	return out
 }
 
-// runFailing runs script under limits and returns the *sandbox.Error it
-// must fail with, and the result that comes with it.
-func runFailing(t *testing.T, script string, limits sandbox.Limits) (*sandbox.Error, string) {
+// runFailing runs script under limits and returns its result and the
+// *sandbox.Error it must fail with.
+func runFailing(t *testing.T, script string, limits sandbox.Limits) (string, *sandbox.Error) {
 	t.Helper()
 	out, err := sandbox.Run(t.Context(), script, limits)
 	var scriptErr *sandbox.Error
 	if !errors.As(err, &scriptErr) {
 		t.Fatalf("Run(%q) = %q, %v; want a *sandbox.Error", script, out, err)
 	}
-	return scriptErr, out
+	return out, scriptErr
 }
 
 func TestScriptSeesNoHostAPIBeyondConsole(t *testing.T) {
@@ -50,11 +50,11 @@ func TestScriptSeesNoHostAPIBeyondConsole(t *testing.T) {
 
 func TestScriptCannotLoadModules(t *testing.T) {
 	t.Parallel()
-	err, _ := runFailing(t, `await import("os")`, sandbox.Limits{})
+	_, err := runFailing(t, `await import("os")`, sandbox.Limits{})
 	if !strings.Contains(err.Message, "could not load module") {
 		t.Errorf("error = %q, want it to say the module could not load", err.Message)
 	}
-	err, _ = runFailing(t, `import * as os from "os"`, sandbox.Limits{})
+	_, err = runFailing(t, `import * as os from "os"`, sandbox.Limits{})
 	if !strings.Contains(err.Message, "SyntaxError") {
 		t.Errorf("error = %q, want a SyntaxError for a static import", err.Message)
 	}
@@ -122,7 +122,7 @@ func TestFailingScriptGivesErrorWithLineAndOutputSoFar(t *testing.T) {
 		{"console.log('before')\nawait new Promise(() => {})", "the script awaited a promise that never settles"},
 	}
 	for _, tt := range tests {
-		err, out := runFailing(t, tt.script, sandbox.Limits{})
+		out, err := runFailing(t, tt.script, sandbox.Limits{})
 		if err.Message != tt.want {
 			t.Errorf("%q failed with %q, want %q", tt.script, err.Message, tt.want)
 		}
@@ -141,7 +141,7 @@ func TestScriptStoppedAtTimeLimit(t *testing.T) {
 	for _, script := range []string{"for (;;) {}", "await 1; for (;;) {}"} {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
-			err, out := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
+			out, err := runFailing(t, "console.log('looping')\n"+script, sandbox.Limits{Time: 100 * time.Millisecond})
 			if err.Message != "script timed out after 100ms" || out != "script timed out after 100ms\nlooping\n" {
 				t.Errorf("error %q with result %q, want a timeout, then its output", err.Message, out)
 			}
@@ -151,7 +151,7 @@ func TestScriptStoppedAtTimeLimit(t *testing.T) {
 
 func TestScriptFailsAtMemoryLimit(t *testing.T) {
 	t.Parallel()
-	err, _ := runFailing(t, "const a = []; for (;;) a.push('x'.repeat(1024) + a.length)", sandbox.Limits{Memory: 16 << 20})
+	_, err := runFailing(t, "const a = []; for (;;) a.push('x'.repeat(1024) + a.length)", sandbox.Limits{Memory: 16 << 20})
 	if !strings.Contains(err.Message, "out of memory") {
 		t.Errorf("error = %q, want out of memory", err.Message)
 	}
@@ -174,7 +174,7 @@ func TestDeepRecursionFailsAtStackLimit(t *testing.T) {
 	if out, err := sandbox.Run(t.Context(), recurse+"return depth(50)", limits); err != nil || out != "50\n" {
 		t.Errorf("recursing 50 deep = %q, %v; want 50", out, err)
 	}
-	err, out := runFailing(t, recurse+"console.log('recursing')\nreturn depth(1000)", limits)
+	out, err := runFailing(t, recurse+"console.log('recursing')\nreturn depth(1000)", limits)
 	if !strings.Contains(err.Message, "stack overflow") || out != err.Message+"\nrecursing\n" {
 		t.Errorf("error %q with result %q, want a stack overflow, then its output", err.Message, out)
 	}
@@ -182,7 +182,7 @@ func TestDeepRecursionFailsAtStackLimit(t *testing.T) {
 
 func TestUnboundedRecursionFailsWithoutCrashing(t *testing.T) {
 	t.Parallel()
-	err, _ := runFailing(t, "function f() { return f() + 1 }\nf()", sandbox.Limits{})
+	_, err := runFailing(t, "function f() { return f() + 1 }\nf()", sandbox.Limits{})
 	if !strings.Contains(err.Message, "stack overflow") {
 		t.Errorf("error = %q, want a stack overflow", err.Message)
 	}

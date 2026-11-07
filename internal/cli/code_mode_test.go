@@ -182,9 +182,9 @@ func TestExecuteCutsOutputAt40000Characters(t *testing.T) {
 
 func TestExecuteGivesIsErrorWhenScriptTimesOutThenOutputSoFar(t *testing.T) {
 	t.Parallel()
-	g := startFakeGateway(t, "--code-mode", "--script-time-limit", "300ms")
+	g := startFakeGateway(t, "--code-mode", "--script-time-limit", "1s")
 	res := g.execute(t.Context(), t, "console.log('looping')\nfor (;;) {}")
-	if got, want := resultText(t, res), "script timed out after 300ms\nlooping\n"; !res.IsError || got != want {
+	if got, want := resultText(t, res), "script timed out after 1s\nlooping\n"; !res.IsError || got != want {
 		t.Errorf("result (isError %v) %q, want isError %q", res.IsError, got, want)
 	}
 }

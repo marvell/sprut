@@ -112,9 +112,9 @@ func Run(ctx context.Context, script string, limits Limits) (string, error) {
 	case ctx.Err() != nil:
 		return "", ctx.Err()
 	case runCtx.Err() != nil:
-		return failed(fmt.Sprintf("script timed out after %s", limits.Time), &out)
+		return out.failed(fmt.Sprintf("script timed out after %s", limits.Time))
 	case err != nil:
-		return failed(describe(err), &out)
+		return out.failed(describe(err))
 	}
 	if returned != "" {
 		out.write(returned)
@@ -124,11 +124,11 @@ func Run(ctx context.Context, script string, limits Limits) (string, error) {
 }
 
 // failed is the result and the *Error of a Script that failed with message
-// after printing out.
-func failed(message string, out *output) (string, error) {
-	res := output{limit: out.limit, cut: out.cut}
+// after printing o.
+func (o *output) failed(message string) (string, error) {
+	res := output{limit: o.limit, cut: o.cut}
 	res.write(message)
-	if printed := out.text.String(); printed != "" {
+	if printed := o.text.String(); printed != "" {
 		res.write("\n")
 		res.write(printed)
 	}
