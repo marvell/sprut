@@ -326,7 +326,7 @@ The limits are fixed.
 (`$XDG_STATE_HOME/sprut/audit/...` if that is set.) Each line is one JSON event:
 
 ```jsonl
-{"ts":"2026-11-07T14:03:25.120+03:00","type":"session","sprut":"0.5.0","agent":"claude-code","agent_version":"2.1.0","protocol":"2025-06-18","code_mode":true}
+{"ts":"2026-11-07T14:03:25.120+03:00","type":"session","sprut":"v0.4.0","agent":"claude-code","agent_version":"2.1.0","protocol":"2025-06-18","code_mode":true}
 {"ts":"2026-11-07T14:03:31.402+03:00","type":"call","tool":"linear__get_issue","upstream":"linear","script":null,"ms":412,"outcome":"ok","args_bytes":21,"result_bytes":5120}
 {"ts":"2026-11-07T14:03:40.011+03:00","type":"call","tool":"linear__list_comments","upstream":"linear","script":1,"ms":230,"outcome":"ok","args_bytes":24,"result_bytes":8730}
 {"ts":"2026-11-07T14:03:40.230+03:00","type":"script","script":1,"ms":1840,"outcome":"ok","calls":12,"code":"const { issues } = await call(...)...","code_bytes":610,"result_bytes":900}
