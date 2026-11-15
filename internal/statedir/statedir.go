@@ -3,6 +3,7 @@
 package statedir
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -21,16 +22,24 @@ func Dir(lookupEnv config.LookupEnv) (string, bool) {
 
 // MkdirPrivate makes dir, which is root or under it, and every directory
 // from root down to it readable only by the user, including those that
-// already exist.
+// already exist. It fails, touching nothing, if dir is not root or under
+// it: the directories above root are not sprut's to change.
 func MkdirPrivate(root, dir string) error {
+	// Rel compares the paths as cleaned, so any spelling of root is found
+	// on the way up from dir.
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return fmt.Errorf("making %s private: not under %s", dir, root)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	for d := dir; ; d = filepath.Dir(d) {
+	root = filepath.Clean(root)
+	for d := filepath.Join(root, rel); ; d = filepath.Dir(d) {
 		if err := os.Chmod(d, 0o700); err != nil {
 			return err
 		}
-		if d == root || d == filepath.Dir(d) {
+		if d == root {
 			return nil
 		}
 	}

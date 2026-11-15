@@ -13,7 +13,7 @@ Package `statedir` locates sprut's state directory, where the Credentials and th
 
 - `Dir` reads the environment only through the `lookupEnv` it is given, never `os.Getenv`: only `main` touches the process environment (see `CLAUDE.md` and ADR-0004).
 - `Dir` resolves the base directory with `config.XDGDir(lookupEnv, "XDG_STATE_HOME", ".local/state")` and always appends `sprut`.
-- `MkdirPrivate` requires `dir` to be `root` or a directory under it. It walks up from `dir` with `filepath.Dir` and stops at `root`; given a `dir` outside `root`, it would `chmod` every ancestor up to the filesystem root.
+- `MkdirPrivate` changes no directory above `root`. It compares `root` and `dir` with `filepath.Rel`, so `root` need not be a cleaned path (a trailing slash or a `..` is fine), and it returns an error, creating and changing nothing, when `dir` is neither `root` nor under it. The comparison is of the paths as written: it does not resolve symlinks.
 - `MkdirPrivate` sets `0700` with `os.Chmod` on existing directories too, so the mode does not depend on the umask or on who made the directory first.
 
 ## Side Effects
@@ -23,4 +23,4 @@ Package `statedir` locates sprut's state directory, where the Credentials and th
 
 ## Verification
 
-- Run: `go test ./internal/statedir/...` (the package has no test files of its own; it is exercised through `go test ./internal/credentials/... ./internal/audit/...`)
+- Run: `go test ./internal/statedir/...`. `credentials` and `audit` exercise it too: `go test ./internal/credentials/... ./internal/audit/...`
