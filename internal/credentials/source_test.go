@@ -164,6 +164,51 @@ func TestSourceNeedsALoginOnceTheAuthorizationServerRejectsTheRefreshToken(t *te
 	}
 }
 
+// A renewal ahead of the expiry that fails, as when the Authorization Server
+// can't be reached, costs nothing yet: the access token is sent until it
+// expires, and each request tries the renewal again. A 401 is another
+// matter: the Upstream has refused that token.
+func TestSourceSendsATokenItCouldNotRenewUntilItExpires(t *testing.T) {
+	t.Parallel()
+	unreachable := errors.New("authorization server unreachable")
+	tests := []struct {
+		name      string
+		expiresIn time.Duration
+		wantToken string // "" if the renewal's error is wanted
+	}{
+		{name: "expiring soon", expiresIn: 4 * time.Minute, wantToken: "access-1"},
+		{name: "expired", expiresIn: -time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := openStore(t, stateHome(t))
+			save(t, s, linear, loggedIn(linear, tt.expiresIn))
+			as := &authServer{err: unreachable}
+			src := source(t, s, linear, as)
+
+			const requests = 2
+			for range requests {
+				got, err := src.Token(t.Context())
+				if tt.wantToken == "" {
+					if !errors.Is(err, unreachable) {
+						t.Errorf("Token = %q, %v, want the renewal's error", got, err)
+					}
+				} else if err != nil || got != tt.wantToken {
+					t.Errorf("Token = %q, %v, want %q, nil", got, err, tt.wantToken)
+				}
+			}
+			if as.Calls() != requests {
+				t.Errorf("refreshes = %d, want %d: one for each request", as.Calls(), requests)
+			}
+
+			if got, err := src.Rejected(t.Context(), "access-1", ""); !errors.Is(err, unreachable) {
+				t.Errorf("Rejected = %q, %v, want the renewal's error", got, err)
+			}
+		})
+	}
+}
+
 // A process that renewed without waiting for the lock leaves this one's
 // refresh token stale, so the Authorization Server rejects it: the
 // Credentials that the other process saved are the ones to use.

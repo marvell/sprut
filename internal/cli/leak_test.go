@@ -46,6 +46,8 @@ func TestNoSecretAnAuthorizationServerEchoesReachesTheOutput(t *testing.T) {
 			t.Parallel()
 			l := logIn(t, 60) // renewed at startup
 			l.FailRefresh(how)
+			// The access token the failed renewal leaves is no good either.
+			l.RevokeAccessTokens()
 
 			g := startGateway(t, l.config, l.env, "-v")
 

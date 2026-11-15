@@ -33,7 +33,7 @@ Store:
 Source:
 
 - `type Source struct`: the Credentials of one Upstream as one process uses them.
-- `func (s *Source) Token(ctx context.Context) (string, error)`: the access token to send, renewed first if it expires within 5 minutes (`renewBefore`), or `""` without Credentials.
+- `func (s *Source) Token(ctx context.Context) (string, error)`: the access token to send, renewed first if it expires within 5 minutes (`renewBefore`), or `""` without Credentials. A renewal that fails leaves the access token to send until it expires, unless the Credentials need a Login.
 - `func (s *Source) Rejected(ctx context.Context, token, metadata string) (string, error)`: renews the Credentials whose access token the Upstream answered 401 to, at most once for each token, and returns the new access token. `metadata` is the URL of the Protected Resource Metadata that the 401 named, if any.
 - `func (s *Source) Unauthorized() error`: why the Upstream needs a Login when it answers 401 past `Token` and `Rejected`.
 - `type Refresh func(ctx context.Context, c *Credentials, metadata string) (*Credentials, error)`: gets a new access token for `c` from their Authorization Server and returns the Credentials it makes. It returns `ErrRefreshRejected` when the server rejects the refresh token, and a `*LoginNeededError` when `c` can't be used any more; any other error leaves them as they are.
@@ -71,7 +71,7 @@ Renewal:
 - When renewed Credentials can't be saved, they are still used by this process, and the failure is logged as a warning.
 - A `*LoginNeededError` from a renewal is kept (`Source.dead`) and returned by every later `Token` and `Rejected` until the Credentials file changes, which the next `Token` notices. Any other error leaves the Credentials as they are, and the next request tries again.
 - `Token` renews only Credentials with a non-zero `Expiry` that is less than `renewBefore` away. Credentials without a refresh token are sent until they expire, then are dead (`ReasonExpired`).
-- A renewal that `Token` starts inside that window and that fails for a reason other than a needed Login fails the request with `renewing credentials: ...`, although the access token is still good: `Token` returns the renewal's error, not the old token. The next request tries again (`Source.Token`, `Source.renewShared`).
+- A renewal that `Token` starts inside that window and that fails for a reason other than a needed Login does not fail the request: `Token` returns the access token it has, which is good until it expires, and logs the failure as a warning. The next request tries again. Once the access token has expired, `Token` returns the renewal's error, `renewing credentials: ...`. `Rejected` always returns it: the Upstream has refused that token (`Source.Token`, `Source.renewShared`).
 - A `Refresh` must bound its own time. It gets a context without cancellation or deadline (`context.WithoutCancel`) and runs while `Store.renew` holds the Upstream's lock, so one that hangs keeps every other process waiting for `lockTimeout`, and keeps `Store.Wait`, which has no timeout, from returning.
 - `Rejected` renews at most once for each access token: when the Upstream also answers 401 to the token that a renewal on a 401 got (`Source.rejected`), the result is a `*LoginNeededError`.
 - A Source reads the Credentials again whenever their file is no longer the one it read (`Source.reload`, on every `Token`). That is how a running `sprut serve` picks up a Login, a logout or another process's renewal without a restart.
@@ -89,6 +89,7 @@ Renewal:
 - A Source keeps one file descriptor open, on the Credentials file it last read.
 - A renewal runs in a goroutine of its own, calls the `Refresh` it was given (which is where any network call happens), and may block for up to `lockTimeout` waiting for another process.
 - A renewal whose Credentials can't be saved writes one WARN record, `renewed credentials not saved`, with the Upstream's name and the error, to the `slog.Logger`.
+- Each `Token` that sends an access token it could not renew writes one WARN record, `credentials not renewed; sending the access token until it expires`, with the Upstream's name and the error.
 - `flock` comes from `syscall.Flock`, so the package builds only where that exists (the release targets are Linux and macOS).
 
 ## Verification

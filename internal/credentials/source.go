@@ -95,8 +95,9 @@ func (s *Store) Source(u config.Upstream, refresh Refresh, log *slog.Logger) *So
 }
 
 // Token returns the access token to send, renewed first if it expires
-// within renewBefore, or "" without Credentials. A *LoginNeededError means
-// that they can't be used.
+// within renewBefore, or "" without Credentials. A renewal that fails
+// leaves the access token to send until it expires, unless the failure is a
+// *LoginNeededError, which means that the Credentials can't be used.
 func (s *Source) Token(ctx context.Context) (string, error) {
 	if s == nil {
 		return "", nil
@@ -115,7 +116,14 @@ func (s *Source) Token(ctx context.Context) (string, error) {
 	case creds.Expiry.IsZero() || time.Until(creds.Expiry) > renewBefore:
 		return creds.AccessToken, nil
 	}
-	return s.renew(ctx, creds.AccessToken, "", false)
+	token, err := s.renew(ctx, creds.AccessToken, "", false)
+	if err == nil || ctx.Err() != nil || creds.Expired() || errors.As(err, new(*LoginNeededError)) {
+		return token, err
+	}
+	// The renewal was early: the Upstream still takes the access token.
+	s.log.Warn("credentials not renewed; sending the access token until it expires",
+		"upstream", s.upstream.Name, "err", err)
+	return creds.AccessToken, nil
 }
 
 // Rejected renews the Credentials whose access token the Upstream answered
