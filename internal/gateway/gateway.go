@@ -196,9 +196,10 @@ type ready struct {
 }
 
 // upstreams starts the Upstreams and stops them again. Each gets timeout
-// to connect and list its tools. env is the environment sprut was given: a
-// stdio Upstream's process inherits it, and an HTTP Upstream's proxy comes
-// from it. auths holds the Credentials of every OAuth Upstream.
+// to connect and list its tools. env is the environment that a stdio
+// Upstream's process inherits. auths holds the Credentials of every OAuth
+// Upstream, and the env it was opened with is where an HTTP Upstream's proxy
+// comes from.
 type upstreams struct {
 	client  *mcp.Client
 	env     []string

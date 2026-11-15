@@ -448,6 +448,50 @@ v0.3 removes the `sprut auth` command group, with no alias:
 
 Stored Credentials carry over unchanged.
 
+## System Overview
+
+The sections from here to [License](#license) are the repository's contract for contributors and coding agents: what the code is made of and what must stay true when it changes. The terms are those of [GLOSSARY.md](GLOSSARY.md).
+
+sprut is one Go module, `github.com/marvell/sprut`, that builds one binary. `main.go` passes the process's arguments, environment and standard streams to `cli.Run` in `internal/cli`, which parses the command line and returns the exit code. `internal/cli` delegates the work: `internal/config` reads and edits the Config, and `internal/gateway` starts the Upstreams, serves their tools to the Agent as one MCP server, and holds OAuth and Code mode. `internal/gateway` in turn uses `internal/credentials` for stored Credentials and `internal/sandbox` to run Scripts. The Audit log of `internal/audit` is created and closed by `internal/cli`, which hands it to `internal/gateway` to write the events.
+
+Each Agent runs its own `sprut serve` process over stdio, and that process starts every Upstream itself: there is no daemon and no shared process ([ADR-0001](docs/adr/0001-stdio-process-per-agent-no-daemon.md)). Upstream tools are exposed only over MCP ([ADR-0002](docs/adr/0002-mcp-server-only-no-shell-interface.md)). Several `sprut` processes share one Upstream's Credentials through locked files ([ADR-0003](docs/adr/0003-credentials-in-locked-files.md)). Code mode runs Scripts in an embedded QuickJS VM ([ADR-0005](docs/adr/0005-code-mode-embedded-quickjs-read-only-tools.md)).
+
+## Local Interface & Invariants
+
+- `main` (`main.go`): the binary's entry point. It calls `cli.Run(ctx, os.Args, os.Environ(), os.Stdin, os.Stdout, os.Stderr)` and exits with the code that returns.
+- Invariant: `ctx` is cancelled by the first SIGINT or SIGTERM (`signal.NotifyContext`). Once it is cancelled, `main` restores the default signal behaviour (`stop`), so a second signal kills a shutdown that hangs.
+- Side effects: `main` reads `os.Args` and the process environment, hands over the standard streams, handles SIGINT and SIGTERM, and calls `os.Exit`.
+
+## Subdirectories & System Boundaries
+
+- internal: [./internal/README.md](./internal/README.md) - Every package besides `main`: `cli` (the program as a function), `gateway` (Upstreams, the MCP server, OAuth, Code mode), `config` (the Config file), `credentials` (stored Credentials and their renewal), `sandbox` (Scripts), `audit` (the Audit log), the helpers `statedir`, `atomicfile` and `chars`, and `mcptest` (fake Upstreams for tests).
+
+## Global Invariants
+
+- Only `main` touches `os.Args`, the process environment, `os.Stdin`, `os.Stdout`, `os.Stderr` and `os.Exit`; every other package takes them as parameters, starting at `cli.Run`. `forbidigo` in `.golangci.yml` enforces it, with exceptions for `main.go`, `internal/mcptest/stdio.go` (the fake stdio Upstream is a process of its own) and `_test.go` files.
+- Every test file is in an external `_test` package and reaches its package through the exported API alone ([ADR-0004](docs/adr/0004-black-box-tests-in-any-package.md)). `testpackage` in `.golangci.yml` enforces it; the one exception is the test of package `main`.
+- While `sprut serve` serves an Agent, stdout carries only MCP traffic. Logs go to stderr as logfmt (`internal/cli`: `newLogger`), and so do a usage error and the help shown with it (`internal/cli`: `usageError`). Help asked for with `-h` or `--help`, and `--version`, print to stdout and exit without serving.
+- A Namespaced tool is named `<upstream>__<tool>` (`internal/gateway`: `separator`). An Upstream's name matches `^[a-z0-9-]+$` (`internal/config`: `validName`), so the separator never appears in it.
+- An Upstream that fails or times out at startup is skipped, never fatal: `gateway.Start` returns no error, and `Gateway.SkippedCount` counts the skipped ones.
+- A Script calls only tools annotated `readOnlyHint: true` (`internal/gateway`: `scriptRun.call`), and reaches its host only through `console` and `call` (`internal/sandbox`: `Run`).
+- A Credentials file is written and deleted only under an exclusive flock on its sibling lock file, and replaced through `atomicfile.Write`, never in place (`internal/credentials`: `Store.lock`, `lock.save`).
+- `cli.Run` returns 0 for success, 1 for a failure and 2 for a usage error; see [Exit codes](#exit-codes).
+
+## Global Side Effects
+
+- The Config file: read by `config.Open`; written by `config.Edit` through `atomicfile.Write`, a new file with mode 0600 and missing parent directories with 0700.
+- The state directory, `$XDG_STATE_HOME/sprut` or `~/.local/state/sprut` (`statedir.Dir`), with its directories set to 0700 (`statedir.MkdirPrivate`): `credentials/<upstream>.json` and `credentials/<upstream>.lock` (`internal/credentials`), and `audit/<agent>/<start time>.jsonl` (`internal/audit`), each file with mode 0600.
+- Child processes: each stdio Upstream runs in its own process group, and is stopped with SIGTERM, then SIGKILL (`internal/gateway`: `stdioUpstream`).
+- Network: Streamable HTTP connections to HTTP Upstreams, and OAuth requests to their Authorization Servers at Login and at renewal (`internal/gateway`).
+- A Login listens on `127.0.0.1` at a port the OS chooses for the OAuth callback, and opens the browser with `open` or `xdg-open` (`internal/gateway`: `Auth.Login`, `openBrowser`).
+- Standard streams: in `sprut serve`, MCP with the Agent on stdin and stdout, and logs on stderr. The `sprut upstream` commands print their results to stdout, and notes, warnings and errors to stderr; `upstream login` writes only to stderr.
+
+## System Verification
+
+- Run: `go test ./...`
+- `mise run check` runs everything CI checks, one step after another: `fmt-check`, `vet`, `lint`, `test` (`go test -race -count=3 -shuffle=on ./...`) and `release-check`.
+- The root `main_test.go` runs `testdata/script/*.txtar` under testscript. Each `sprut` in a script runs `main` as a process of its own: the test binary re-executed as the command `sprut-main`, not a release build.
+
 ## License
 
 [MIT](LICENSE)

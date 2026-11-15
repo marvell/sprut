@@ -533,8 +533,8 @@ func (u *OAuthUpstream) FailCodeExchange(how string) {
 	u.failExchange = how
 }
 
-// echoed is what a careless Authorization Server says when it fails, every
-// secret of the fake included.
+// echoed is what a careless Authorization Server says when it fails, the
+// fake's refresh token, client secret and code included.
 var echoed = "refresh token " + RefreshToken + " of client " + ClientSecret + " with code " + Code
 
 // writeEcho fails a request to the Authorization Server, echoing its
