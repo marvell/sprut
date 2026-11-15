@@ -28,9 +28,14 @@ func loginCommand(env []string, stderr io.Writer) *ucli.Command {
 			if err != nil {
 				return err
 			}
+			name := cmd.StringArg("upstream")
 			if err := a.Login(ctx, !cmd.Bool("no-browser"), stderr, version(), log); err != nil {
-				return fmt.Errorf("upstream %q: %w", cmd.StringArg("upstream"), err)
+				return fmt.Errorf("upstream %q: %w", name, err)
 			}
+			// A serve that has the Upstream running takes the Credentials at
+			// its next request. One that skipped it at startup doesn't start
+			// it again, and login can't tell which serves did.
+			_, _ = fmt.Fprintf(stderr, "note: a running agent that started without upstream %q gets its tools only after its sprut restarts: %s\n", name, restartHow)
 			return nil
 		},
 	}

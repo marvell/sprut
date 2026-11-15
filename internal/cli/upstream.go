@@ -209,9 +209,14 @@ func warn(stderr io.Writer, c *config.Config, name string) {
 	}
 }
 
+// restartHow is how the user restarts the sprut of a running Agent, as the
+// notes say it. Agents name the step differently, and some have only the
+// restart, so it names no Agent; README lists the steps of each.
+const restartHow = "reconnect sprut in the agent, or restart the agent"
+
 // changed reports a change to the Config: what changed on stdout, and on
-// stderr that running Agents don't see it yet.
+// stderr that running Agents don't see it yet, and how they get to.
 func changed(stdout, stderr io.Writer, format string, a ...any) {
 	_, _ = fmt.Fprintf(stdout, format+"\n", a...)
-	_, _ = fmt.Fprintln(stderr, "note: running agents see this change only after their sprut restarts")
+	_, _ = fmt.Fprintln(stderr, "note: running agents see this change only after their sprut restarts: "+restartHow)
 }

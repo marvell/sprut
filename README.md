@@ -118,11 +118,11 @@ Each key under `mcpServers` names an Upstream. It must match `^[a-z0-9-]+$`, and
 ```console
 $ sprut upstream add memory -- npx -y @modelcontextprotocol/server-memory
 added upstream "memory"
-note: running agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts: reconnect sprut in the agent, or restart the agent
 upstream "memory": ok (9 tools)
 $ sprut upstream add linear https://mcp.linear.app/mcp
 added upstream "linear"
-note: running agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts: reconnect sprut in the agent, or restart the agent
 upstream "linear": needs login; run: sprut upstream login linear
 ```
 
@@ -149,7 +149,7 @@ $ sprut upstream add postgres -e 'DATABASE_URI=${DATABASE_URI}' -- uvx postgres-
 
 If there is no Config, `add` creates it where `sprut serve` reads it, readable only by you (file `0600`, directory `0700`); an existing Config keeps its mode. Before writing, it checks the result with the same parser `sprut serve` uses: a mistake such as an invalid name exits 1 and leaves the file as it was, while a warning such as an unset variable is printed and the Upstream is added anyway. It refuses to change a Config that already has errors. A name that is already in the Config fails; `--force` replaces that Upstream, keeping its place. The rest of the Config is kept as you wrote it, including fields and keys sprut doesn't know, but re-indented with two spaces. The file is replaced atomically, so an interrupted `add` never leaves it half-written; a Config that is a symlink is written at its target.
 
-Running `sprut serve` processes read the Config only when they start, so restart your Agents (or their MCP servers) to see the change.
+Running `sprut serve` processes read the Config only when they start, so a running Agent sees the change once its sprut restarts: [reconnect sprut in the Agent](#restart-sprut-in-a-running-agent), or restart the Agent.
 
 ### The check after add and enable
 
@@ -164,7 +164,7 @@ Only the Upstream just written is checked, and only if `sprut serve` would start
 ```console
 $ sprut upstream remove linear
 removed upstream "linear" and deleted its credentials
-note: running agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts: reconnect sprut in the agent, or restart the agent
 ```
 
 It keeps the rest of the Config as [`add`](#add-an-upstream) does, and refuses to change a Config that already has errors. A name that is not in the Config, or a missing Config, exits 1 and creates no file. The Credentials are deleted only once the Config is saved.
@@ -176,10 +176,10 @@ It keeps the rest of the Config as [`add`](#add-an-upstream) does, and refuses t
 ```console
 $ sprut upstream disable postgres
 disabled upstream "postgres"
-note: running agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts: reconnect sprut in the agent, or restart the agent
 $ sprut upstream enable postgres
 enabled upstream "postgres"
-note: running agents see this change only after their sprut restarts
+note: running agents see this change only after their sprut restarts: reconnect sprut in the agent, or restart the agent
 upstream "postgres": ok (18 tools)
 ```
 
@@ -259,6 +259,13 @@ args = ["serve"]
 ```
 
 If the Agent does not find `sprut` on its `PATH`, use the binary's absolute path as the command.
+
+### Restart sprut in a running Agent
+
+A running `sprut serve` keeps the Upstreams it started with. It sees a change to the Config, or starts an Upstream it skipped for want of a [Login](#log-in), only when it starts again. Restarting the Agent does that, and some Agents can restart sprut alone, which keeps the conversation:
+
+- **Claude Code**: run `/mcp`, select sprut and reconnect it.
+- **Other Agents**: restart the one MCP server if the Agent has a way to, or else the Agent.
 
 ## Code mode
 
@@ -382,7 +389,7 @@ Opening this URL in your browser; if it does not open, open it yourself:
   https://mcp.linear.app/authorize?...
 ```
 
-sprut prints the authorization server and the scopes it requests before the URL, and waits up to 5 minutes for the browser to come back to it on `http://127.0.0.1:<port>/callback`. Running `sprut serve` processes pick up the new Credentials at their next request, without a restart; an Upstream that was skipped at startup appears once the Agent restarts.
+sprut prints the authorization server and the scopes it requests before the URL, and waits up to 5 minutes for the browser to come back to it on `http://127.0.0.1:<port>/callback`. Running `sprut serve` processes pick up the new Credentials at their next request, without a restart. An Upstream that was skipped at startup is different: its tools appear only once that Agent's sprut restarts, which the note that ends a Login says, so [reconnect sprut in the Agent](#restart-sprut-in-a-running-agent), or restart the Agent.
 
 **Over ssh**, `--no-browser` only prints the URL. The callback goes to the machine sprut runs on, so forward its port: start the Login, note the port in the URL's `redirect_uri`, and in another terminal run `ssh -L <port>:127.0.0.1:<port> <host>` before opening the URL in your local browser.
 
@@ -397,7 +404,7 @@ linear: logged out
 
 `sprut upstream logout` deletes the Credentials; every running `sprut serve` stops sending them at its next request. It does not revoke the tokens at the server. [`sprut upstream list`](#list-your-upstreams) shows the state of every OAuth Upstream's Credentials in its `AUTH` column.
 
-When Credentials die (the server rejects the refresh token, or there is none and the access token expired), the Upstream's tool calls return an error naming `sprut upstream login <upstream>` (with `-c` and the Config's absolute path, unless the Config is at the default location), and an Upstream skipped at startup for that reason is listed in the Gateway's MCP `instructions`, so the Agent can tell you.
+When Credentials die (the server rejects the refresh token, or there is none and the access token expired), the Upstream's tool calls return an error naming `sprut upstream login <upstream>` (with `-c` and the Config's absolute path, unless the Config is at the default location), and an Upstream skipped at startup for that reason is listed in the Gateway's MCP `instructions`, so the Agent can tell you, along with the restart of sprut that the fix needs.
 
 ### The `oauth` object
 

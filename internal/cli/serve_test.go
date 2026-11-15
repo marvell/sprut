@@ -907,7 +907,7 @@ func TestServeListsUpstreamsSkippedAtStartupInItsInstructions(t *testing.T) {
 			}), nil, "--startup-timeout", "1s")
 
 			instructions := g.Agent.InitializeResult().Instructions
-			for _, want := range []string{"failing", "hanging", "startup timed out after 1s"} {
+			for _, want := range []string{"failing", "hanging", "startup timed out after 1s", "tell the user to reconnect it, or to restart you"} {
 				if !strings.Contains(instructions, want) {
 					t.Errorf("instructions do not mention %q:\n%s", want, instructions)
 				}

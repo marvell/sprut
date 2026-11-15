@@ -141,7 +141,9 @@ Startup and shutdown:
 
 - A failed Upstream is never fatal. `Start` has no error return; the Upstream is
   logged, counted by `SkippedCount`, and named with its error and remedy in the
-  server's instructions to the Agent (`instructions`, `withHint`).
+  server's instructions to the Agent (`instructions`, `withHint`). The
+  instructions end by saying that a fix shows only once sprut restarts, so the
+  Agent tells the user to reconnect it or to restart the Agent.
 - Upstreams start concurrently, but results, instructions, tool registration
   and the INFO `upstream ready` lines are in Config order (`upstreams.start`,
   `Start`). The WARN `upstream failed; skipped` line is logged by each

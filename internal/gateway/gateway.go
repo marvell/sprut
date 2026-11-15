@@ -135,8 +135,9 @@ func implementation(version string) *mcp.Implementation {
 func (g *Gateway) SkippedCount() int { return len(g.skipped) }
 
 // instructions tells the Agent which Upstreams were skipped at startup and
-// why, so that it can tell the user why their tools are missing. It is
-// empty when none was.
+// why, so that it can tell the user why their tools are missing, and that
+// a fixed one is started only by the next sprut: the Agent knows how the
+// user restarts an MCP server in it. It is empty when none was skipped.
 func instructions(skipped []skippedUpstream) string {
 	if len(skipped) == 0 {
 		return ""
@@ -146,6 +147,7 @@ func instructions(skipped []skippedUpstream) string {
 	for _, s := range skipped {
 		fmt.Fprintf(&b, "- %s: %s\n", s.name, withHint(s.err))
 	}
+	b.WriteString("After a fix, the tools appear only once this MCP server, sprut, restarts: tell the user to reconnect it, or to restart you.\n")
 	return b.String()
 }
 

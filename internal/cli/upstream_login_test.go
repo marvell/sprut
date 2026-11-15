@@ -71,6 +71,18 @@ func TestUpstreamLoginPrintsTheIssuerAndScopesBeforeTheURL(t *testing.T) {
 	}
 }
 
+func TestUpstreamLoginEndsBySayingHowARunningAgentGetsTheUpstreamsTools(t *testing.T) {
+	t.Parallel()
+	u := mcptest.StartOAuth(t)
+	config := writeConfig(t, map[string]any{"fake": map[string]any{"url": u.URL}})
+
+	stderr := mustLogin(t, u, []string{"XDG_STATE_HOME=" + t.TempDir()}, config)
+	want := `note: a running agent that started without upstream "fake" gets its tools only after its sprut restarts: reconnect sprut in the agent, or restart the agent` + "\n"
+	if !strings.HasSuffix(stderr, want) {
+		t.Errorf("stderr does not end with %q:\n%s", want, stderr)
+	}
+}
+
 // The SDK refuses a discovery redirect to a private address unless the
 // client decides on redirects itself; the fake's loopback address stands in
 // for one.
@@ -411,6 +423,9 @@ func TestUpstreamLoginExits1ForAnUpstreamThatNeverAsksForAuthorization(t *testin
 
 	if code != 1 || !strings.Contains(stderr, "did not ask for authorization") {
 		t.Errorf("exit code = %d, want 1 saying it did not ask for authorization", code)
+	}
+	if strings.Contains(stderr, "note:") {
+		t.Errorf("a failed Login prints the note of a finished one:\n%s", stderr)
 	}
 	if _, err := os.Stat(filepath.Join(state, "sprut", "credentials", "up.json")); err == nil {
 		t.Error("Credentials were written")

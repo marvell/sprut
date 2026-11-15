@@ -104,6 +104,8 @@ its own.
 
 - `--no-browser`: only print the authorization URL.
 - `--verbose`, `-v`: log at DEBUG level.
+- Output: a finished Login ends with a note on stderr, the last line under
+  Notices below.
 
 `upstream logout <upstream>` (`upstream_logout.go:logoutCommand`): no flags
 of its own.
@@ -209,9 +211,12 @@ Prints `<name>: logged out` or `<name>: no credentials`.
   `$XDG_STATE_HOME/sprut/audit/<agent>/<start time>.jsonl`
   (`serve.go:serveCommand`).
 - Notices: every Config change prints what changed on stdout and
-  `note: running agents see this change only after their sprut restarts` on
-  stderr (`upstream.go:changed`). Config warnings for the written Upstream go
-  to stderr (`upstream.go:warn`).
+  `note: running agents see this change only after their sprut restarts: reconnect sprut in the agent, or restart the agent`
+  on stderr (`upstream.go:changed`). Config warnings for the written Upstream
+  go to stderr (`upstream.go:warn`). A finished `upstream login` ends with
+  `note: a running agent that started without upstream "<name>" gets its tools only after its sprut restarts: reconnect sprut in the agent, or restart the agent`
+  on stderr; a failed one prints no note (`upstream_login.go:loginCommand`).
+  Both notes end with `restartHow` (`upstream.go`), which names no Agent.
 - Package state: `Version` is the only package-level variable meant to be
   set; `transportFlags` and `upstreams` (`upstream_add.go`) are tables that
   nothing writes after initialisation. `Run` itself does not read `os.Args`,
