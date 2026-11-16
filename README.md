@@ -282,7 +282,7 @@ claude mcp remove --scope user sprut
 claude mcp add --scope user sprut -- sprut serve --code-mode
 ```
 
-That Agent then gets one more tool, `execute`, next to the Namespaced tools, which stay as they are. Code mode is per Agent, not in the Config, so that an Agent with a code mode of its own, such as Codex, doesn't get a second one nested inside it: leave the flag off there.
+That Agent then gets one more tool, `execute`, next to the Namespaced tools. They work as before; the description of each one a Script can call gains a closing line saying when to call it from a Script instead. sprut's instructions to the Agent say when a Script beats direct calls (a step that chains read-only calls, fans one out over many items, or brings back much more than it needs), because an Agent that loads tool descriptions on demand sees only `execute`'s name until then. They say so only when some Upstream has a tool a Script can call. Code mode is per Agent, not in the Config, so that an Agent with a code mode of its own, such as Codex, doesn't get a second one nested inside it: leave the flag off there.
 
 ### Scripts
 

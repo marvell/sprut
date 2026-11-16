@@ -61,7 +61,7 @@ await call("<upstream>__<tool>", args) calls a tool by its name in the list belo
 - else its content array.
 When you don't know a result's shape, print a slice of it first.
 A result with isError throws an Error whose message is the result's text; catch it with try/catch.
-Up to %d calls run at once, so Promise.all over calls runs them in parallel; the others wait their turn. A script may make at most %d calls: the next one throws an Error.
+Make independent calls together with Promise.all: up to %d run at once, and the others wait their turn. A script may make at most %d calls: the next one throws an Error.
 
 A script can call only tools annotated readOnlyHint: true. Calling any other tool throws an Error: call it directly instead, outside the script.
 
@@ -113,7 +113,6 @@ func (g *Gateway) addExecute(c *CodeMode) {
 		},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(true)},
 	}, g.execute(limits, g.log.With("tool", executeTool)))
-	g.codeMode = true
 }
 
 // execute handles calls to the execute tool by running their Script, whose

@@ -192,6 +192,16 @@ Code mode:
 
 - `execute` is registered only when `Features.CodeMode` is non-nil, and after
   every Namespaced tool, because its description lists them (`addExecute`).
+- With Code mode on and a started Upstream that has a `readOnlyHint: true` tool,
+  the server's instructions end with `codeModeInstructions`: when to send a
+  Script instead of calling tools directly. They name no Upstream and no tool
+  but `execute`, so they hold for any Config. `scriptable` is asked before the
+  tools are added, because the server takes its instructions when it is made,
+  so it counts a tool that `addTool` then rejects.
+- With Code mode on, the description of each `readOnlyHint: true` Namespaced
+  tool ends with one more line: when to call it from a Script instead, and the
+  `call` that does (`withScriptHint`). Every other tool's description, and
+  every description without Code mode, is the Upstream's own.
 - A Script may call only tools whose Upstream marks them `readOnlyHint: true`.
   Any other name is an error telling the Agent to call the tool directly
   (`scriptRun.call`).

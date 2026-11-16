@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,6 +80,7 @@ func Start(ctx context.Context, configured []config.Upstream, auths *Auths, o *S
 	g := &Gateway{
 		upstreams: newUpstreams(auths, o),
 		catalog:   catalog{},
+		codeMode:  f.CodeMode != nil,
 		version:   version,
 		audit:     f.Audit,
 		log:       log,
@@ -101,7 +103,7 @@ func Start(ctx context.Context, configured []config.Upstream, auths *Auths, o *S
 	g.server = mcp.NewServer(implementation(version), &mcp.ServerOptions{
 		// Advertise only tools; the tool list is fixed for the session.
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: instructions(skips),
+		Instructions: instructions(skips, f.CodeMode != nil && scriptable(running)),
 	})
 	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.agentConnected)
 
@@ -137,18 +139,63 @@ func (g *Gateway) SkippedCount() int { return len(g.skipped) }
 // instructions tells the Agent which Upstreams were skipped at startup and
 // why, so that it can tell the user why their tools are missing, and that
 // a fixed one is started only by the next sprut: the Agent knows how the
-// user restarts an MCP server in it. It is empty when none was skipped.
-func instructions(skipped []skippedUpstream) string {
-	if len(skipped) == 0 {
-		return ""
-	}
+// user restarts an MCP server in it. With codeMode, they then say when a
+// Script beats direct calls: an Agent that loads tool descriptions only on
+// demand sees no more of execute than its name, and the instructions are
+// what it always has. They are empty when there is nothing to say.
+func instructions(skipped []skippedUpstream, codeMode bool) string {
 	var b strings.Builder
-	b.WriteString("These MCP servers failed to start, so their tools are missing. Tell the user why, and how to fix it where a fix is given:\n")
-	for _, s := range skipped {
-		fmt.Fprintf(&b, "- %s: %s\n", s.name, withHint(s.err))
+	if len(skipped) > 0 {
+		b.WriteString("These MCP servers failed to start, so their tools are missing. Tell the user why, and how to fix it where a fix is given:\n")
+		for _, s := range skipped {
+			fmt.Fprintf(&b, "- %s: %s\n", s.name, withHint(s.err))
+		}
+		b.WriteString("After a fix, the tools appear only once this MCP server, sprut, restarts: tell the user to reconnect it, or to restart you.\n")
 	}
-	b.WriteString("After a fix, the tools appear only once this MCP server, sprut, restarts: tell the user to reconnect it, or to restart you.\n")
+	if codeMode {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(codeModeInstructions)
+	}
 	return b.String()
+}
+
+// codeModeInstructions tell the Agent when to send a Script instead of
+// calling tools directly. They name no Upstream and no tool but execute,
+// whose description has the rest.
+const codeModeInstructions = "Use the " + executeTool + ` tool in place of direct calls to this server's read-only tools when one step would chain several of them, fan one out over many items, or bring back a result much larger than the part you need. Its script makes the calls and gives back only what it prints, so the full results stay out of your context.
+`
+
+// scriptable reports whether any Upstream in running has a tool that a
+// Script may call. It is asked before the tools are added, as the server
+// takes its instructions when it is made, so it counts a tool that addTool
+// then rejects.
+func scriptable(running []*ready) bool {
+	for _, r := range running {
+		if slices.ContainsFunc(r.tools, readOnly) {
+			return true
+		}
+	}
+	return false
+}
+
+// withScriptHint is description, of the read-only Namespaced tool name,
+// followed by when to call it from a Script instead. The Agent reads a
+// tool's description as it picks the tool, which is when the hint can still
+// change the pick.
+func withScriptHint(description, name string) string {
+	hint := fmt.Sprintf("Call it from an %s script when one step makes several calls or needs only part of a large result: await call(%q, args).", executeTool, name)
+	if description == "" {
+		return hint
+	}
+	return description + "\n\n" + hint
+}
+
+// readOnly reports whether tool's Upstream marks it readOnlyHint: true,
+// which is what lets a Script call it.
+func readOnly(tool *mcp.Tool) bool {
+	return tool.Annotations != nil && tool.Annotations.ReadOnlyHint
 }
 
 // hinted is an error that carries a remedy the user can act on, such as a
@@ -349,13 +396,16 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 			err = fmt.Errorf("%v", p)
 		}
 	}()
+	if g.codeMode && readOnly(tool) {
+		namespaced.Description = withScriptHint(tool.Description, namespaced.Name)
+	}
 	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
 	t := &namespacedTool{
 		name:      namespaced.Name,
 		upstream:  upstream,
 		session:   session,
 		original:  original,
-		readOnly:  tool.Annotations != nil && tool.Annotations.ReadOnlyHint,
+		readOnly:  readOnly(tool),
 		log:       log,
 		scriptLog: log.With("via", executeTool),
 		audit:     g.audit,

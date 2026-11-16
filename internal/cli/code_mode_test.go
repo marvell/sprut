@@ -113,6 +113,83 @@ func TestExecuteServedSayingNoToolIsCallableWhileNoneIsReadOnly(t *testing.T) {
 	g.wantExecuted(t, "return 1", "1\n")
 }
 
+func TestCodeModeEndsReadOnlyToolsDescriptionsSayingWhenToCallThemFromScript(t *testing.T) {
+	t.Parallel()
+	const hint = "Call it from an execute script when one step makes several calls or needs only part of a large result: await call(%q, args)."
+	descriptions := func(g *gateway) map[string]string {
+		byName := map[string]string{}
+		for _, tool := range g.tools(t) {
+			byName[tool.Name] = tool.Description
+		}
+		return byName
+	}
+	// reply is read-only like echo, and has no description of its own.
+	upstream := mcptest.Stdio{WriteTool: true, ReplyTool: true, ExtraTools: []string{"plain"}}
+
+	direct := descriptions(startFakeGatewayWith(t, upstream))
+	codeMode := descriptions(startCodeModeGateway(t, upstream))
+
+	if want := direct["fake__echo"] + "\n\n" + fmt.Sprintf(hint, "fake__echo"); codeMode["fake__echo"] != want {
+		t.Errorf("fake__echo's description in Code mode = %q, want %q", codeMode["fake__echo"], want)
+	}
+	if want := fmt.Sprintf(hint, "fake__reply"); codeMode["fake__reply"] != want {
+		t.Errorf("fake__reply's description in Code mode = %q, want the hint alone: %q", codeMode["fake__reply"], want)
+	}
+	for _, tool := range []string{"fake__write", "fake__fail", "fake__plain"} { // marked as writing, and not marked
+		if codeMode[tool] != direct[tool] {
+			t.Errorf("%s's description in Code mode = %q, want it unchanged: %q", tool, codeMode[tool], direct[tool])
+		}
+	}
+	if strings.Contains(direct["fake__echo"], "execute") {
+		t.Errorf("fake__echo's description outside Code mode mentions execute: %q", direct["fake__echo"])
+	}
+}
+
+func TestServeSaysInItsInstructionsWhenToUseExecuteInCodeMode(t *testing.T) {
+	t.Parallel()
+	g := startFakeGateway(t, "--code-mode")
+	instructions := g.Agent.InitializeResult().Instructions
+	for _, want := range []string{"execute tool", "read-only tools", "chain several of them", "fan one out", "much larger than the part you need", "out of your context"} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("instructions do not mention %q:\n%s", want, instructions)
+		}
+	}
+	// They hold for any Config, so they name no Upstream and none of its tools.
+	if strings.Contains(instructions, "fake") {
+		t.Errorf("instructions name an Upstream or its tool:\n%s", instructions)
+	}
+	g.closeAgent(t)
+}
+
+func TestServeLeavesExecuteOutOfItsInstructionsWhileNoToolIsReadOnly(t *testing.T) {
+	t.Parallel()
+	g := startGateway(t, writeConfig(t, map[string]any{}), nil, "--code-mode")
+	if got := g.Agent.InitializeResult().Instructions; got != "" {
+		t.Errorf("instructions = %q, want empty", got)
+	}
+	g.closeAgent(t)
+}
+
+func TestServeInstructionsSayWhenToUseExecuteAfterUpstreamsSkippedAtStartup(t *testing.T) {
+	t.Parallel()
+	g := startGateway(t, writeConfig(t, map[string]any{
+		"fake":    mcptest.Stdio{}.Entry(t),
+		"failing": mcptest.Stdio{Startup: mcptest.Fail}.Entry(t),
+	}), nil, "--code-mode")
+	instructions := g.Agent.InitializeResult().Instructions
+	skipped, codeMode, found := strings.Cut(instructions, "restart you.\n\nUse the execute tool")
+	if !found {
+		t.Fatalf("instructions don't follow the skipped Upstreams with Code mode, a blank line between:\n%s", instructions)
+	}
+	if !strings.Contains(skipped, "- failing: ") {
+		t.Errorf("instructions do not list the skipped Upstream first:\n%s", instructions)
+	}
+	if !strings.Contains(codeMode, "chain several of them") {
+		t.Errorf("instructions do not say when to use execute:\n%s", instructions)
+	}
+	g.closeAgent(t)
+}
+
 func TestExecuteReturnsWhatScriptPrintsThenItsReturnValue(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t, "--code-mode")
@@ -414,7 +491,7 @@ func TestExecuteDescriptionStatesConcurrencyAndCallCaps(t *testing.T) {
 	t.Parallel()
 	description := startFakeGateway(t, "--code-mode").executeTool(t).Description
 	for _, want := range []string{
-		"Up to 8 calls run at once, so Promise.all over calls runs them in parallel; the others wait their turn.",
+		"Make independent calls together with Promise.all: up to 8 run at once, and the others wait their turn.",
 		"A script may make at most 100 calls: the next one throws an Error.",
 	} {
 		if !strings.Contains(description, want) {
