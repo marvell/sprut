@@ -35,10 +35,12 @@ homebrew_casks:
     homepage: https://github.com/marvell/sprut
     description: One MCP config for every AI agent
     # The binaries are not notarized: without this, macOS refuses to run one
-    # that brew downloaded.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sprut"]
-          end
+    # that brew downloaded. Not hooks.post.install: goreleaser renders that as
+    # a `postflight` block, which brew deprecated for `postflight_steps`. brew
+    # expands {{staged_path}} itself, so it is escaped from goreleaser here.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/sprut"]
+        end
+      end
