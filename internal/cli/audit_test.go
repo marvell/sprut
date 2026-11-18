@@ -167,18 +167,19 @@ func TestAuditLogRecordsScriptsWithTheirCallsByNumber(t *testing.T) {
 	direct := g.echo(ctx, t) // what a direct call of the Script's first call sends
 	code := `const a = await call("fake__echo", {text: "hi"});
 let refused = "";
-try { await call("fake__write", {}) } catch (e) { refused = "refused" }
+try { await call("fake__nope", {}) } catch (e) { refused = "refused" }
 const b = await call("fake__echo", {text: "there"});
-return [a.echoed, b.echoed, refused]`
-	first := g.execute(ctx, t, code)
+return [a.echoed, b.echoed, refused, await call("fake__write", {})]`
+	first := g.execute(ctx, t, code) // its call to a tool the Gateway doesn't serve is no call
 	failed := g.execute(ctx, t, `throw new Error("boom")`)
 
 	events := withoutMS(t, auditEvents(t, state))[2:] // after the session's and the direct call's
-	echoThere := events[1]["result_bytes"]
+	echoThere, written := events[1]["result_bytes"], events[2]["result_bytes"]
 	want := []map[string]any{
 		{"type": "call", "tool": "fake__echo", "upstream": "fake", "script": 1.0, "outcome": "ok", "args_bytes": float64(len(`{"text":"hi"}`)), "result_bytes": sentBytes(t, direct)},
 		{"type": "call", "tool": "fake__echo", "upstream": "fake", "script": 1.0, "outcome": "ok", "args_bytes": float64(len(`{"text":"there"}`)), "result_bytes": echoThere},
-		{"type": "script", "script": 1.0, "outcome": "ok", "calls": 2.0, "code": code, "code_bytes": float64(len(code)), "result_bytes": sentBytes(t, first)},
+		{"type": "call", "tool": "fake__write", "upstream": "fake", "script": 1.0, "outcome": "ok", "args_bytes": 2.0, "result_bytes": written},
+		{"type": "script", "script": 1.0, "outcome": "ok", "calls": 3.0, "code": code, "code_bytes": float64(len(code)), "result_bytes": sentBytes(t, first)},
 		{"type": "script", "script": 2.0, "outcome": "error", "error": resultText(t, failed), "calls": 0.0, "code": `throw new Error("boom")`, "code_bytes": 23.0, "result_bytes": sentBytes(t, failed)},
 	}
 	if diff := cmp.Diff(want, events); diff != "" {

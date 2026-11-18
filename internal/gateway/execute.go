@@ -51,7 +51,7 @@ func (c *CodeMode) limits() sandbox.Limits {
 // executeDescription is the Script contract, as the Agent reads it,
 // followed by the tools that a Script may call.
 func executeDescription(limits sandbox.Limits, tools catalog) string {
-	return fmt.Sprintf(`Run a JavaScript script that calls read-only tools and gives back only what it prints and returns: chain calls, fan out over many items, or cut a large result down, so that intermediate results stay out of your context.
+	return fmt.Sprintf(`Run a JavaScript script that calls this server's tools and gives back only what it prints and returns: chain calls, fan out over many items, or cut a large result down, so that intermediate results stay out of your context.
 
 The script is the body of an async function, so top-level await works. Write plain JavaScript (ES2023), without TypeScript annotations. The only globals beyond standard JavaScript are call and console.
 
@@ -63,7 +63,9 @@ When you don't know a result's shape, print a slice of it first.
 A result with isError throws an Error whose message is the result's text; catch it with try/catch.
 Make independent calls together with Promise.all: up to %d run at once, and the others wait their turn. A script may make at most %d calls: the next one throws an Error.
 
-A script can call only tools annotated readOnlyHint: true. Calling any other tool throws an Error: call it directly instead, outside the script.
+A script can call every tool in the list below, those that write or delete included. Your client approves the script as a whole, not each call in it, so make only the writes the user's request covers.
+Await every call: one you don't await is still made, and the script's result waits for it, but its result is lost and its failure isn't reported.
+When a script fails, the writes it has made stand, and its calls still running are cancelled with their outcome unknown: find out what was written before you run it again. Where one failed write must not stop the others, use Promise.allSettled.
 
 console.log, console.error and console.warn print to one output: strings as they are, other values as JSON. A return value other than undefined follows as JSON on a line of its own.
 
@@ -75,17 +77,15 @@ A script that fails to parse, throws or runs past a limit gives an error result:
 		limits.InFlight, limits.Calls, limits.Time, limits.Memory>>20, limits.Output, tools.scriptTools())
 }
 
-// scriptTools lists the tools a Script may call, by Upstream: names only,
-// as the Agent takes everything else from the Namespaced tools.
+// scriptTools lists the Namespaced tools by Upstream, for a Script to call:
+// names only, as the Agent takes everything else from the tools themselves.
 func (c catalog) scriptTools() string {
+	if len(c) == 0 {
+		return "No tool can be called from a script: no upstream started with one.\n"
+	}
 	byUpstream := map[string][]string{}
 	for name, t := range c {
-		if t.readOnly {
-			byUpstream[t.upstream] = append(byUpstream[t.upstream], name)
-		}
-	}
-	if len(byUpstream) == 0 {
-		return "No tool can be called from a script: no upstream marks one readOnlyHint: true.\n"
+		byUpstream[t.upstream] = append(byUpstream[t.upstream], name)
 	}
 	var b strings.Builder
 	b.WriteString("Tools a script can call, by upstream; their input schemas are on the tools of the same name in your tool list:\n")
@@ -111,7 +111,9 @@ func (g *Gateway) addExecute(c *CodeMode) {
 			},
 			"required": []any{"code"},
 		},
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(true)},
+		// A Script may call any tool, so execute may destroy whatever the
+		// Config holds: an approval of execute outlives a change to it.
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(true)},
 	}, g.execute(limits, g.log.With("tool", executeTool)))
 }
 
@@ -168,16 +170,13 @@ type scriptRun struct {
 
 // call calls the Namespaced tool name with args for the Script, by the
 // path a direct call takes, and returns the JSON of the value the Script
-// gets. Only a read-only tool may be called this way: a Script runs
-// without the Agent approving each call, and a write must have that
-// approval. A result with isError is an error saying its text.
+// gets. Any tool may be called this way, one that writes included: the
+// Agent approves the Script, not each call (ADR-0006). A result with isError
+// is an error saying its text.
 func (r *scriptRun) call(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	t := r.catalog[name]
-	switch {
-	case t == nil:
-		return nil, fmt.Errorf("unknown tool %q: call takes a name listed in execute's description, without any prefix your client adds; a tool not listed there is not read-only, so call it directly", name)
-	case !t.readOnly:
-		return nil, fmt.Errorf("tool %q is not read-only, so a script can't call it; call it directly", name)
+	if t == nil {
+		return nil, fmt.Errorf("unknown tool %q: call takes a name listed in execute's description, without any prefix your client adds", name)
 	}
 	r.calls.Add(1)
 	res, err := t.call(ctx, args, r)

@@ -33,7 +33,7 @@ The opt-in `sprut serve --code-mode`, in which the Gateway also offers the `exec
 _Avoid_: code execution, sandbox mode
 
 **Script**:
-A JavaScript program an Agent sends to `execute`. It runs inside the Gateway and can call read-only Namespaced tools; only what it prints or returns goes back to the Agent.
+A JavaScript program an Agent sends to `execute`. It runs inside the Gateway and can call Namespaced tools; only what it prints or returns goes back to the Agent.
 _Avoid_: snippet, code (ambiguous)
 
 **Audit log**:

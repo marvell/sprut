@@ -27,7 +27,7 @@ Cursor      ── sprut serve ──┘            └── linear  (HTTP + OA
 - **One broken server breaks nothing else.** An Upstream that fails to start is skipped with a log line; the rest keep working.
 - **Secrets stay out of the file.** `${VAR}` references are filled in from the environment when sprut runs.
 - **Nothing running in the background.** One static binary; each Agent runs its own `sprut serve` over stdio, with no daemon and no open port.
-- **Chain tools without filling the context.** With [Code mode](#code-mode), an Agent runs a Script that calls read-only tools, filters and joins their results inside sprut, and gets back only what it prints or returns.
+- **Chain tools without filling the context.** With [Code mode](#code-mode), an Agent runs a Script that calls tools, filters and joins their results inside sprut, and gets back only what it prints or returns.
 - **Old and new MCP alike.** stdio and Streamable HTTP Upstreams; legacy and modern (`2026-07-28`) MCP Agents and Upstreams work in any combination.
 
 ## Quick start
@@ -282,7 +282,7 @@ claude mcp remove --scope user sprut
 claude mcp add --scope user sprut -- sprut serve --code-mode
 ```
 
-That Agent then gets one more tool, `execute`, next to the Namespaced tools. They work as before; the description of each one a Script can call gains a closing line saying when to call it from a Script instead. sprut's instructions to the Agent say when a Script beats direct calls (a step that chains read-only calls, fans one out over many items, or brings back much more than it needs), because an Agent that loads tool descriptions on demand sees only `execute`'s name until then. They say so only when some Upstream has a tool a Script can call. Code mode is per Agent, not in the Config, so that an Agent with a code mode of its own, such as Codex, doesn't get a second one nested inside it: leave the flag off there.
+That Agent then gets one more tool, `execute`, next to the Namespaced tools. They work as before. sprut's instructions to the Agent say when a Script beats direct calls (a step that chains calls, fans one out over many items, or brings back much more than it needs), because an Agent that loads tool descriptions on demand sees only `execute`'s name until then. They say so only when some Upstream started with a tool. Code mode is per Agent, not in the Config, so that an Agent with a code mode of its own, such as Codex or Claude Code with its Code Mode turned on, doesn't get a second one nested inside it: leave the flag off there.
 
 ### Scripts
 
@@ -299,11 +299,13 @@ issues.forEach((issue, n) => {
 });
 ```
 
-Calls inside `Promise.all` run in parallel, up to 8 at a time. A Script that fails to parse, throws or runs past a limit returns an error result with the message and its line, then the output printed so far. Cancelling `execute` stops the Script and cancels its calls still in flight. Under `-v`, each call a Script makes is logged like a direct call, marked as coming from `execute`.
+Calls inside `Promise.all` run in parallel, up to 8 at a time. A call the Script doesn't await is still made in full before `execute` answers, but its failure goes unreported. A Script that fails to parse, throws or runs past a limit returns an error result with the message and its line, then the output printed so far; the writes it made before failing stand, and its calls still running are cancelled. Cancelling `execute` stops the Script and cancels its calls still in flight. Under `-v`, each call a Script makes is logged like a direct call, marked as coming from `execute`.
 
-### Read-only tools only
+### Approving a Script approves its calls
 
-A Script can call only the tools that their Upstream annotates `readOnlyHint: true`; calling any other tool throws an Error. `execute`'s description lists, by Upstream, the tools a Script may call. Upstreams that don't annotate their tools contribute none to Scripts. Writes stay direct calls to the Namespaced tools, so your Agent's per-tool approvals still apply to them, and approving `execute`, itself annotated read-only, never approves a write. `readOnlyHint` is the Upstream's own claim: one that marks a writing tool read-only lets Scripts call it.
+A Script can call every Namespaced tool, those that write or delete included; `execute`'s description lists them by Upstream. Your Agent approves the Script as a whole, from its code: the rules you set in the Agent for a single tool, such as asking before `linear__save_issue`, don't apply to that tool's calls from a Script. So allowing `execute` without asking allows every write in every Upstream. Keep `execute` on ask if you want to read a Script before it writes ([ADR-0006](docs/adr/0006-scripts-call-every-tool.md)).
+
+`execute` is annotated `destructiveHint: true`, so an Agent that asks about writes asks about each Script, one that only reads included. With `--audit`, each call a Script makes is written to the [Audit log](#audit-log) with the number of its Script.
 
 ### What a Script cannot do
 
@@ -461,7 +463,7 @@ The sections from here to [License](#license) are the repository's contract for 
 
 sprut is one Go module, `github.com/marvell/sprut`, that builds one binary. `main.go` passes the process's arguments, environment and standard streams to `cli.Run` in `internal/cli`, which parses the command line and returns the exit code. `internal/cli` delegates the work: `internal/config` reads and edits the Config, and `internal/gateway` starts the Upstreams, serves their tools to the Agent as one MCP server, and holds OAuth and Code mode. `internal/gateway` in turn uses `internal/credentials` for stored Credentials and `internal/sandbox` to run Scripts. The Audit log of `internal/audit` is created and closed by `internal/cli`, which hands it to `internal/gateway` to write the events.
 
-Each Agent runs its own `sprut serve` process over stdio, and that process starts every Upstream itself: there is no daemon and no shared process ([ADR-0001](docs/adr/0001-stdio-process-per-agent-no-daemon.md)). Upstream tools are exposed only over MCP ([ADR-0002](docs/adr/0002-mcp-server-only-no-shell-interface.md)). Several `sprut` processes share one Upstream's Credentials through locked files ([ADR-0003](docs/adr/0003-credentials-in-locked-files.md)). Code mode runs Scripts in an embedded QuickJS VM ([ADR-0005](docs/adr/0005-code-mode-embedded-quickjs-read-only-tools.md)).
+Each Agent runs its own `sprut serve` process over stdio, and that process starts every Upstream itself: there is no daemon and no shared process ([ADR-0001](docs/adr/0001-stdio-process-per-agent-no-daemon.md)). Upstream tools are exposed only over MCP ([ADR-0002](docs/adr/0002-mcp-server-only-no-shell-interface.md)). Several `sprut` processes share one Upstream's Credentials through locked files ([ADR-0003](docs/adr/0003-credentials-in-locked-files.md)). Code mode runs Scripts in an embedded QuickJS VM ([ADR-0005](docs/adr/0005-code-mode-embedded-quickjs-read-only-tools.md)), and a Script may call every Namespaced tool ([ADR-0006](docs/adr/0006-scripts-call-every-tool.md)).
 
 ## Local Interface & Invariants
 
@@ -480,7 +482,7 @@ Each Agent runs its own `sprut serve` process over stdio, and that process start
 - While `sprut serve` serves an Agent, stdout carries only MCP traffic. Logs go to stderr as logfmt (`internal/cli`: `newLogger`), and so do a usage error and the help shown with it (`internal/cli`: `usageError`). Help asked for with `-h` or `--help`, and `--version`, print to stdout and exit without serving.
 - A Namespaced tool is named `<upstream>__<tool>` (`internal/gateway`: `separator`). An Upstream's name matches `^[a-z0-9-]+$` (`internal/config`: `validName`), so the separator never appears in it.
 - An Upstream that fails or times out at startup is skipped, never fatal: `gateway.Start` returns no error, and `Gateway.SkippedCount` counts the skipped ones.
-- A Script calls only tools annotated `readOnlyHint: true` (`internal/gateway`: `scriptRun.call`), and reaches its host only through `console` and `call` (`internal/sandbox`: `Run`).
+- A Script calls only Namespaced tools, never `execute` itself (`internal/gateway`: `scriptRun.call`), and reaches its host only through `console` and `call` (`internal/sandbox`: `Run`).
 - A Credentials file is written and deleted only under an exclusive flock on its sibling lock file, and replaced through `atomicfile.Write`, never in place (`internal/credentials`: `Store.lock`, `lock.save`).
 - `cli.Run` returns 0 for success, 1 for a failure and 2 for a usage error; see [Exit codes](#exit-codes).
 

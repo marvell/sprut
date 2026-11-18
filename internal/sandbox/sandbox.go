@@ -243,7 +243,7 @@ func (o *output) String() string {
 
 // run runs script on vm as the body of an async function, settling its
 // calls as they end, and returns the JSON of the value it resolves to, or
-// "" for undefined.
+// "" for undefined, once every call it started has ended.
 func run(vm *quickjs.VM, script string, calls *calls) (string, error) {
 	// The body starts on the first line, so the Script's line numbers are
 	// the engine's.
@@ -279,7 +279,9 @@ func run(vm *quickjs.VM, script string, calls *calls) (string, error) {
 		switch {
 		case failed != nil:
 			return "", failed
-		case settled:
+		case settled && calls.running == 0:
+			// Not before: a call the Script didn't await is made in full,
+			// as it may be a write.
 			return returned, nil
 		case calls.running == 0:
 			return "", errors.New("the script awaited a promise that never settles")

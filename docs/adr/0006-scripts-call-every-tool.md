@@ -1,0 +1,12 @@
+# Scripts call every tool; the Agent approves the Script
+
+A Script may now call any Namespaced tool, not only those whose Upstream marks them `readOnlyHint: true`. This supersedes the read-only restriction of [ADR-0005](0005-code-mode-embedded-quickjs-read-only-tools.md); the rest of that ADR stands. The restriction made Code mode weak in two ways. An Upstream that annotates nothing, such as DeepWiki or Dokploy, gave Scripts no tool at all, reads included, and nothing told the user why. And a step that reads, filters and then writes could not be one Script. Agents with a code mode of their own don't need the Gateway's: Claude Code's calls Namespaced tools from its code, writes included, each under the Agent's own rules (checked on v2.1.327). But most Agents have none, and Code mode is for them.
+
+What is lost is the per-tool approval of a write. The Agent now approves a Script as a whole, from its code, as Claude Code's auto mode does for its own code mode; its rules for a single Namespaced tool don't apply to that tool's calls from a Script. `execute`'s annotations say so: it is `destructiveHint: true`. An Agent that asks about writes therefore asks about each Script, one that only reads included. The only per-call record left is the Audit log, which is opt-in: with `--audit`, every call a Script makes is written there with the number of its Script.
+
+## Considered Options
+
+- **Keep the restriction; let the user mark tools read-only in the Config**: `execute` stays honestly read-only. But a user has to work out why a Script can't call a tool before finding the setting, and writes stay out of Scripts.
+- **A second tool for Scripts that write, next to a read-only `execute`**: reads keep running unasked in Agents that ask about writes. But two tools with one contract confuse the choice, and Upstreams that annotate nothing still give the read-only one no tool.
+- **Annotate `execute` read-only while every tool the Gateway serves is `readOnlyHint: true`**: Scripts keep running unasked for a Config that can't write. But Agents keep an approval by the tool's name, so one given while `execute` was read-only would cover writes as soon as an Upstream that writes is added or starts.
+- **Ask the user about each write through elicitation**: keeps per-call approval, and `execute` read-only. But the Script has to be held between two calls of `execute`, with its clock stopped; it prompts in modes where the user expects no prompt; and an Agent without elicitation still needs one of the other options. It can be added on top of this one later.

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,7 +102,7 @@ func Start(ctx context.Context, configured []config.Upstream, auths *Auths, o *S
 	g.server = mcp.NewServer(implementation(version), &mcp.ServerOptions{
 		// Advertise only tools; the tool list is fixed for the session.
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: instructions(skips, f.CodeMode != nil && scriptable(running)),
+		Instructions: instructions(skips, f.CodeMode != nil && hasTools(running)),
 	})
 	g.server.AddReceivingMiddleware(g.answerUnknownTools, g.agentConnected)
 
@@ -164,38 +163,19 @@ func instructions(skipped []skippedUpstream, codeMode bool) string {
 // codeModeInstructions tell the Agent when to send a Script instead of
 // calling tools directly. They name no Upstream and no tool but execute,
 // whose description has the rest.
-const codeModeInstructions = "Use the " + executeTool + ` tool in place of direct calls to this server's read-only tools when one step would chain several of them, fan one out over many items, or bring back a result much larger than the part you need. Its script makes the calls and gives back only what it prints, so the full results stay out of your context.
+const codeModeInstructions = "Use the " + executeTool + ` tool in place of direct calls to this server's tools when one step would chain several of them, fan one out over many items, or bring back a result much larger than the part you need. Its script makes the calls and gives back only what it prints, so the full results stay out of your context.
 `
 
-// scriptable reports whether any Upstream in running has a tool that a
-// Script may call. It is asked before the tools are added, as the server
-// takes its instructions when it is made, so it counts a tool that addTool
-// then rejects.
-func scriptable(running []*ready) bool {
+// hasTools reports whether any Upstream in running has a tool. It is asked
+// before the tools are added, as the server takes its instructions when it
+// is made, so it counts a tool that addTool then rejects.
+func hasTools(running []*ready) bool {
 	for _, r := range running {
-		if slices.ContainsFunc(r.tools, readOnly) {
+		if len(r.tools) > 0 {
 			return true
 		}
 	}
 	return false
-}
-
-// withScriptHint is description, of the read-only Namespaced tool name,
-// followed by when to call it from a Script instead. The Agent reads a
-// tool's description as it picks the tool, which is when the hint can still
-// change the pick.
-func withScriptHint(description, name string) string {
-	hint := fmt.Sprintf("Call it from an %s script when one step makes several calls or needs only part of a large result: await call(%q, args).", executeTool, name)
-	if description == "" {
-		return hint
-	}
-	return description + "\n\n" + hint
-}
-
-// readOnly reports whether tool's Upstream marks it readOnlyHint: true,
-// which is what lets a Script call it.
-func readOnly(tool *mcp.Tool) bool {
-	return tool.Annotations != nil && tool.Annotations.ReadOnlyHint
 }
 
 // hinted is an error that carries a remedy the user can act on, such as a
@@ -396,16 +376,12 @@ func (g *Gateway) addTool(upstream string, session *mcp.ClientSession, tool *mcp
 			err = fmt.Errorf("%v", p)
 		}
 	}()
-	if g.codeMode && readOnly(tool) {
-		namespaced.Description = withScriptHint(tool.Description, namespaced.Name)
-	}
 	log := g.log.With("upstream", upstream, "tool", namespaced.Name)
 	t := &namespacedTool{
 		name:      namespaced.Name,
 		upstream:  upstream,
 		session:   session,
 		original:  original,
-		readOnly:  readOnly(tool),
 		log:       log,
 		scriptLog: log.With("via", executeTool),
 		audit:     g.audit,
@@ -427,7 +403,6 @@ type namespacedTool struct {
 	upstream  string
 	session   *mcp.ClientSession
 	original  string       // the tool's name at the Upstream
-	readOnly  bool         // whether the Upstream marks it read-only
 	log       *slog.Logger // for direct calls
 	scriptLog *slog.Logger // for calls from a Script
 	audit     *audit.Log

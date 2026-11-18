@@ -30,7 +30,7 @@ func TestServeOffersExecuteBesideNamespacedToolsOnlyInCodeMode(t *testing.T) {
 	startFakeGateway(t, "--code-mode").wantTools(t, "execute", "fake__echo", "fake__fail")
 }
 
-func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
+func TestExecuteTakesCodeAndIsAnnotatedAsDestructive(t *testing.T) {
 	t.Parallel()
 	execute := startFakeGateway(t, "--code-mode").executeTool(t)
 
@@ -44,14 +44,14 @@ func TestExecuteIsReadOnlyToolTakingCode(t *testing.T) {
 	if diff := cmp.Diff(toJSON(t, wantSchema), toJSON(t, execute.InputSchema)); diff != "" {
 		t.Errorf("input schema (-want +got):\n%s", diff)
 	}
-	wantAnnotations := map[string]any{"readOnlyHint": true, "openWorldHint": true, "idempotentHint": false}
+	wantAnnotations := map[string]any{"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true, "idempotentHint": false}
 	if diff := cmp.Diff(toJSON(t, wantAnnotations), toJSON(t, execute.Annotations)); diff != "" {
 		t.Errorf("annotations (-want +got):\n%s", diff)
 	}
-	if first, _, _ := strings.Cut(execute.Description, "\n"); !strings.Contains(first, "read-only tools") || !strings.Contains(first, "context") {
-		t.Errorf("description starts %q, want it to lead with running read-only tools outside the Agent's context", first)
+	if first, _, _ := strings.Cut(execute.Description, "\n"); !strings.Contains(first, "this server's tools") || !strings.Contains(first, "context") {
+		t.Errorf("description starts %q, want it to lead with running the Gateway's tools outside the Agent's context", first)
 	}
-	for _, part := range []string{`await call("<upstream>__<tool>", args)`, "readOnlyHint", "call it directly", "structuredContent", "isError", "async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "leave the prefix out"} {
+	for _, part := range []string{`await call("<upstream>__<tool>", args)`, "those that write or delete included", "approves the script as a whole", "Await every call", "the writes it has made stand", "Promise.allSettled", "structuredContent", "isError", "async function", "await", "console.log", "return value", "JSON", "TypeScript", "50s", "64 MB", "40000 characters", "leave the prefix out"} {
 		if !strings.Contains(execute.Description, part) {
 			t.Errorf("description lacks %q:\n%s", part, execute.Description)
 		}
@@ -69,17 +69,17 @@ func (g *gateway) executeTool(t *testing.T) *mcp.Tool {
 	return tools[i]
 }
 
-func TestExecuteDescriptionListsReadOnlyToolsByUpstreamAfterScriptContract(t *testing.T) {
+func TestExecuteDescriptionListsEveryToolByUpstreamAfterScriptContract(t *testing.T) {
 	t.Parallel()
 	upstreams := map[string]any{
 		"linear": mcptest.Stdio{ReplyTool: true, BlockToolFile: filepath.Join(t.TempDir(), "block")}.Entry(t),
-		"fake":   mcptest.Stdio{}.Entry(t),
+		"fake":   mcptest.Stdio{WriteTool: true}.Entry(t),
 	}
 	description := startGateway(t, writeConfig(t, upstreams), nil, "--code-mode").executeTool(t).Description
 
 	want := "\n\nTools a script can call, by upstream; their input schemas are on the tools of the same name in your tool list:\n" +
-		"- fake: fake__echo\n" +
-		"- linear: linear__block, linear__echo, linear__reply\n"
+		"- fake: fake__echo, fake__fail, fake__write\n" + // read-only, not marked, and marked as writing
+		"- linear: linear__block, linear__echo, linear__fail, linear__reply\n"
 	if !strings.HasSuffix(description, want) {
 		t.Errorf("description doesn't end with the tool list %q:\n%s", want, description)
 	}
@@ -88,60 +88,31 @@ func TestExecuteDescriptionListsReadOnlyToolsByUpstreamAfterScriptContract(t *te
 	}
 }
 
-func TestExecuteDescriptionLeavesOutToolsThatAreNotReadOnly(t *testing.T) {
-	t.Parallel()
-	description := startCodeModeGateway(t, mcptest.Stdio{WriteTool: true, ExtraTools: []string{"plain"}}).executeTool(t).Description
-
-	for _, tool := range []string{"fake__write", "fake__fail", "fake__plain"} { // marked as writing, and not marked
-		if strings.Contains(description, tool) {
-			t.Errorf("description lists %s:\n%s", tool, description)
-		}
-	}
-	if !strings.HasSuffix(description, "\n- fake: fake__echo\n") {
-		t.Errorf("description doesn't end listing fake__echo alone:\n%s", description)
-	}
-}
-
-func TestExecuteServedSayingNoToolIsCallableWhileNoneIsReadOnly(t *testing.T) {
+func TestExecuteServedSayingNoToolIsCallableWhileNoUpstreamHasOne(t *testing.T) {
 	t.Parallel()
 	g := startGateway(t, writeConfig(t, map[string]any{}), nil, "--code-mode")
 	description := g.executeTool(t).Description
-	want := "\n\nNo tool can be called from a script: no upstream marks one readOnlyHint: true.\n"
+	want := "\n\nNo tool can be called from a script: no upstream started with one.\n"
 	if !strings.HasSuffix(description, want) {
 		t.Errorf("description doesn't end with %q:\n%s", want, description)
 	}
 	g.wantExecuted(t, "return 1", "1\n")
 }
 
-func TestCodeModeEndsReadOnlyToolsDescriptionsSayingWhenToCallThemFromScript(t *testing.T) {
+func TestCodeModeLeavesNamespacedToolsAsTheyAreWithoutIt(t *testing.T) {
 	t.Parallel()
-	const hint = "Call it from an execute script when one step makes several calls or needs only part of a large result: await call(%q, args)."
-	descriptions := func(g *gateway) map[string]string {
-		byName := map[string]string{}
+	namespaced := func(g *gateway) map[string]any {
+		byName := map[string]any{}
 		for _, tool := range g.tools(t) {
-			byName[tool.Name] = tool.Description
+			if tool.Name != "execute" {
+				byName[tool.Name] = toJSON(t, tool)
+			}
 		}
 		return byName
 	}
-	// reply is read-only like echo, and has no description of its own.
-	upstream := mcptest.Stdio{WriteTool: true, ReplyTool: true, ExtraTools: []string{"plain"}}
-
-	direct := descriptions(startFakeGatewayWith(t, upstream))
-	codeMode := descriptions(startCodeModeGateway(t, upstream))
-
-	if want := direct["fake__echo"] + "\n\n" + fmt.Sprintf(hint, "fake__echo"); codeMode["fake__echo"] != want {
-		t.Errorf("fake__echo's description in Code mode = %q, want %q", codeMode["fake__echo"], want)
-	}
-	if want := fmt.Sprintf(hint, "fake__reply"); codeMode["fake__reply"] != want {
-		t.Errorf("fake__reply's description in Code mode = %q, want the hint alone: %q", codeMode["fake__reply"], want)
-	}
-	for _, tool := range []string{"fake__write", "fake__fail", "fake__plain"} { // marked as writing, and not marked
-		if codeMode[tool] != direct[tool] {
-			t.Errorf("%s's description in Code mode = %q, want it unchanged: %q", tool, codeMode[tool], direct[tool])
-		}
-	}
-	if strings.Contains(direct["fake__echo"], "execute") {
-		t.Errorf("fake__echo's description outside Code mode mentions execute: %q", direct["fake__echo"])
+	upstream := mcptest.Stdio{WriteTool: true, ReplyTool: true}
+	if diff := cmp.Diff(namespaced(startFakeGatewayWith(t, upstream)), namespaced(startCodeModeGateway(t, upstream))); diff != "" {
+		t.Errorf("Namespaced tools in Code mode (-without +with):\n%s", diff)
 	}
 }
 
@@ -149,7 +120,7 @@ func TestServeSaysInItsInstructionsWhenToUseExecuteInCodeMode(t *testing.T) {
 	t.Parallel()
 	g := startFakeGateway(t, "--code-mode")
 	instructions := g.Agent.InitializeResult().Instructions
-	for _, want := range []string{"execute tool", "read-only tools", "chain several of them", "fan one out", "much larger than the part you need", "out of your context"} {
+	for _, want := range []string{"execute tool", "this server's tools", "chain several of them", "fan one out", "much larger than the part you need", "out of your context"} {
 		if !strings.Contains(instructions, want) {
 			t.Errorf("instructions do not mention %q:\n%s", want, instructions)
 		}
@@ -161,7 +132,7 @@ func TestServeSaysInItsInstructionsWhenToUseExecuteInCodeMode(t *testing.T) {
 	g.closeAgent(t)
 }
 
-func TestServeLeavesExecuteOutOfItsInstructionsWhileNoToolIsReadOnly(t *testing.T) {
+func TestServeLeavesExecuteOutOfItsInstructionsWhileNoUpstreamHasTool(t *testing.T) {
 	t.Parallel()
 	g := startGateway(t, writeConfig(t, map[string]any{}), nil, "--code-mode")
 	if got := g.Agent.InitializeResult().Instructions; got != "" {
@@ -390,23 +361,23 @@ func TestScriptCallThrowsCatchableErrorOnIsErrorResult(t *testing.T) {
 	g.wantScriptError(t, `await call("fake__reply", {isError: true, content: []})`, `Error: tool "fake__reply" returned an error (line 1)`)
 }
 
-func TestScriptCallRefusesToolThatIsNotReadOnly(t *testing.T) {
+func TestScriptCallsToolThatWrites(t *testing.T) {
 	t.Parallel()
 	g := startCallableGateway(t)
-	for _, tool := range []string{"fake__write", "fake__fail"} { // marked as writing, and not marked
-		g.wantScriptError(t, `await call("`+tool+`")`, `"`+tool+`"`, "not read-only", "call it directly", "(line 1)")
-	}
+	g.wantExecuted(t, `return await call("fake__write")`, `"written"`+"\n")
 	g.closeAgent(t)
-	g.wantNoLogLine(t, "DEBUG", `msg="tool called"`)
+	g.wantLogLine(t, "DEBUG", `msg="tool called"`, "tool=fake__write", "via=execute")
 }
 
 func TestScriptCallRefusesUnknownTool(t *testing.T) {
 	t.Parallel()
 	g := startCallableGateway(t)
 	for _, tool := range []string{"fake__nope", "nope", "execute"} {
-		g.wantScriptError(t, `await call("`+tool+`")`, `unknown tool "`+tool+`"`, "directly")
+		g.wantScriptError(t, `await call("`+tool+`")`, `unknown tool "`+tool+`"`, "listed in execute's description", "(line 1)")
 	}
-	g.wantExecuted(t, `try { await call("fake__write") } catch (e) { return "caught" }`, `"caught"`+"\n")
+	g.wantExecuted(t, `try { await call("fake__nope") } catch (e) { return "caught" }`, `"caught"`+"\n")
+	g.closeAgent(t)
+	g.wantNoLogLine(t, "DEBUG", `msg="tool called"`)
 }
 
 func TestScriptCallThrowsWhenUpstreamAsksForInput(t *testing.T) {

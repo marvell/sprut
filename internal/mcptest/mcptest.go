@@ -18,8 +18,7 @@ const (
 	Modern = "2026-07-28"
 )
 
-// readOnly marks a fake Upstream's tool as read-only, which lets a Script
-// call it.
+// readOnly marks a fake Upstream's tool as read-only.
 var readOnly = &mcp.ToolAnnotations{ReadOnlyHint: true}
 
 // The fake Upstreams' tools, as raw JSON so that tests can assert that the

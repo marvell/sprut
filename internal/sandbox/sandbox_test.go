@@ -250,7 +250,29 @@ func TestScriptPrintingWithoutEndKeepsOnlyOutputLimit(t *testing.T) {
 	}
 }
 
-func TestRunCancelsCallsLeftRunningAndWaitsForThem(t *testing.T) {
+func TestRunWaitsForCallScriptDidNotAwait(t *testing.T) {
+	t.Parallel()
+	var made atomic.Int32
+	slow := func(ctx context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		select {
+		case <-time.After(20 * time.Millisecond):
+			made.Add(1)
+			return json.RawMessage("null"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	// The second call starts only once the first has settled.
+	out, err := sandbox.Run(t.Context(), "call('slow').then(() => call('slow')); return 'done'", slow, sandbox.Limits{})
+	if err != nil || out != `"done"`+"\n" {
+		t.Fatalf("Run = %q, %v; want the Script's return value", out, err)
+	}
+	if n := made.Load(); n != 2 {
+		t.Errorf("%d calls were made in full, want both", n)
+	}
+}
+
+func TestRunCancelsCallsLeftRunningByFailedScriptAndWaitsForThem(t *testing.T) {
 	t.Parallel()
 	var running atomic.Int32
 	block := func(ctx context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
@@ -259,13 +281,13 @@ func TestRunCancelsCallsLeftRunningAndWaitsForThem(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	// The call may not have reached block when the Script returns; then
+	// The call may not have reached block when the Script fails; then
 	// this checks only that Run returns at all, which a call left
 	// blocked would prevent.
 	for range 20 {
-		out, err := sandbox.Run(t.Context(), "call('block'); return 'done'", block, sandbox.Limits{})
-		if err != nil || out != `"done"`+"\n" {
-			t.Fatalf("Run = %q, %v; want the Script's return value", out, err)
+		_, err := sandbox.Run(t.Context(), "call('block'); throw new Error('boom')", block, sandbox.Limits{})
+		if !errors.As(err, new(*sandbox.Error)) {
+			t.Fatalf("Run failed with %v, want the Script's failure", err)
 		}
 		if n := running.Load(); n != 0 {
 			t.Fatalf("Run returned with %d calls still running", n)
